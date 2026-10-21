@@ -1,0 +1,3078 @@
+[
+  {
+    "coverage_id": ".github%2Fworkflows%2Fci.yml%23pull_request::.github%2Fworkflows%2Fci.yml%23permissions::.github%2Fworkflows::SUPPLY-CHAIN-AND-RELEASE.md%23CI%20and%20automation%20attack%20classes",
+    "canonical_refs": {
+      "surface": ".github/workflows/ci.yml#pull_request",
+      "boundary": ".github/workflows/ci.yml#permissions",
+      "subsystem": ".github/workflows",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes"
+    },
+    "surface": "GitHub Actions workflows",
+    "boundary": "pull_request token permissions",
+    "subsystem": ".github/workflows/ci.yml",
+    "attack_class": "Untrusted PR code reaching secrets",
+    "starting_paths": [
+      ".github/workflows/ci.yml",
+      ".github/workflows/installer.yml",
+      ".github/workflows/parity.yml",
+      ".github/workflows/site.yml",
+      ".github/workflows/vercel.yml"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-supply",
+    "reviewed_paths": [
+      ".github/workflows/ci.yml",
+      ".github/workflows/installer.yml",
+      ".github/workflows/parity.yml",
+      ".github/workflows/site.yml",
+      ".github/workflows/vercel.yml",
+      "scripts/ci-rust-changes.sh"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          ".github/workflows/ci.yml",
+          ".github/workflows/installer.yml",
+          ".github/workflows/parity.yml",
+          ".github/workflows/site.yml",
+          ".github/workflows/vercel.yml"
+        ],
+        "invariant": "A pull_request run has contents:read, no secrets, and no pull_request_target or other untrusted privileged trigger.",
+        "method": "source",
+        "result": "ci, installer, site, and parity trigger on pull_request to main with workflow permissions contents:read, persist-credentials:false, and no secrets expression. vercel.yml triggers only on push to main, repeats that guard on the deploy job, and is the only workflow that references secrets.VERCEL_TOKEN. No workflow uses pull_request_target, workflow_run, or issue_comment. Third-party actions are full commit SHAs.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          ".github/workflows/ci.yml",
+          "scripts/ci-rust-changes.sh"
+        ],
+        "invariant": "The PR change probe cannot turn a Rust change into a skipped verify, and it does not write untrusted text into GITHUB_OUTPUT.",
+        "method": "source",
+        "result": "ci-rust-changes.sh starts at rust=true and sets rust=false only when the event is pull_request and every diff path is site/* or .github/workflows/site.yml. A failed or empty diff stays rust=true. The only GITHUB_OUTPUT write is rust=true or rust=false. Later steps compare that output in an if expression; they do not interpolate it into a shell.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "hardened_curl and the curls inside install.sh do not pass -q/--disable first, so a curlrc on the same account can add --insecure or a proxy. That file belongs to the invoking user, who is already the authority for tsk update.",
+      "The updater executes the gettsk.sh installer after TLS without a separate digest. install.sh then checks the release archive against SHA256SUMS from the same GitHub release. That HTTPS execution is the designed update path.",
+      "InstallerFile mode 0700 cannot be weakened by umask, and open_downloaded rejects a symlink or a different uid before the shell reads the descriptor. An in-place overwrite also needs a non-sticky attacker-writable TMPDIR and an other-writable download (umask 000). Default /tmp is sticky and the usual umask is 022.",
+      "vercel.yml installs vercel@58.11.0 with npm install -g and no integrity digest. The version is pinned, secrets.VERCEL_TOKEN is not in that step's environment, and the job does not run on pull_request."
+    ]
+  },
+  {
+    "coverage_id": ".github%2Fworkflows%2Frelease.yml%23workflow_dispatch::.github%2Fworkflows%2Frelease.yml%23contents%20write::.github%2Fworkflows::SUPPLY-CHAIN-AND-RELEASE.md%23CI%20and%20automation%20attack%20classes",
+    "canonical_refs": {
+      "surface": ".github/workflows/release.yml#workflow_dispatch",
+      "boundary": ".github/workflows/release.yml#contents write",
+      "subsystem": ".github/workflows",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes"
+    },
+    "surface": "Prepare release workflow",
+    "boundary": "contents write only on the draft job after workflow_dispatch",
+    "subsystem": ".github/workflows",
+    "attack_class": "Untrusted code reaching a write token or publishing a release",
+    "starting_paths": [
+      ".github/workflows/release.yml",
+      "scripts/release.py",
+      ".github/workflows/vercel.yml",
+      ".github/workflows/installer.yml"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-supply",
+    "reviewed_paths": [
+      ".github/workflows/installer.yml",
+      ".github/workflows/release.yml",
+      ".github/workflows/vercel.yml",
+      "scripts/release.py",
+      "tests/packaging/test_workflow.py"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          ".github/workflows/release.yml",
+          "tests/packaging/test_workflow.py"
+        ],
+        "invariant": "contents:write exists only on the maintainer-dispatched draft job, and a pull request cannot enter that job.",
+        "method": "source",
+        "result": "release.yml triggers only on workflow_dispatch. Workflow permissions are contents:read. The draft job alone sets contents:write. There is no tag-push or pull_request trigger. Checkout uses the resolved commit SHA with persist-credentials:false. The create step is a single gh release create of dist-release/* with --verify-tag --draft.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          ".github/workflows/release.yml",
+          "scripts/release.py"
+        ],
+        "invariant": "The dispatch tag cannot inject shell or select a different commit than the one that was built.",
+        "method": "source",
+        "result": "TAG is an environment value, not interpolated into the script text. Both the resolve job and the build job require ^v[0-9]+\\.[0-9]+\\.[0-9]+$. The resolve job accepts the tag commit only when it is 40 hex digits, and build and draft check out that output. Draft re-reads the tag and refuses to continue when the SHA moved. release.py repeats the tag regex, refuses unknown targets, and refuses archive member lists other than the three expected names before writing installers and checksums.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          ".github/workflows/installer.yml",
+          ".github/workflows/vercel.yml"
+        ],
+        "invariant": "Release publishing is not reachable from the installer pull_request workflow or from a Vercel pull-request event.",
+        "method": "source",
+        "result": "installer.yml is contents:read on push and pull_request and runs unit tests plus shellcheck. vercel.yml has no pull_request trigger. Its token step is additionally gated to a push of refs/heads/main. VERCEL_ORG_ID and VERCEL_PROJECT_ID are project identifiers in that step, not credentials.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "hardened_curl and the curls inside install.sh do not pass -q/--disable first, so a curlrc on the same account can add --insecure or a proxy. That file belongs to the invoking user, who is already the authority for tsk update.",
+      "The updater executes the gettsk.sh installer after TLS without a separate digest. install.sh then checks the release archive against SHA256SUMS from the same GitHub release. That HTTPS execution is the designed update path.",
+      "InstallerFile mode 0700 cannot be weakened by umask, and open_downloaded rejects a symlink or a different uid before the shell reads the descriptor. An in-place overwrite also needs a non-sticky attacker-writable TMPDIR and an other-writable download (umask 000). Default /tmp is sticky and the usual umask is 022.",
+      "vercel.yml installs vercel@58.11.0 with npm install -g and no integrity digest. The version is pinned, secrets.VERCEL_TOKEN is not in that step's environment, and the job does not run on pull_request."
+    ]
+  },
+  {
+    "coverage_id": "CHANGELOG.md%23Unreleased::src%2Fmain.rs%23main::repository-delta::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "CHANGELOG.md#Unreleased",
+      "boundary": "src/main.rs#main",
+      "subsystem": "repository-delta",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "v0.13.0 delta files for secrets, debug gates, and command execution",
+    "boundary": "No production debug flag or secret store in the changed files",
+    "subsystem": "repository delta",
+    "attack_class": "Obvious exposures in the audited diff",
+    "starting_paths": [
+      "CHANGELOG.md",
+      "Cargo.toml",
+      "Cargo.lock",
+      "skills/tsk-coordinator/SKILL.md",
+      "skills/tsk-cli/SKILL.md",
+      "src/agents.rs",
+      "src/dispatch.rs",
+      "src/backup.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Wildcard",
+        "reason": "Thread normalization, notice rendering, and the version handoff each have their own assigned unit. No remaining changed path is uncategorized."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-supply",
+    "reviewed_paths": [
+      ".github/workflows/vercel.yml",
+      ".gitignore",
+      "CHANGELOG.md",
+      "Cargo.lock",
+      "Cargo.toml",
+      "skills/tsk-cli/SKILL.md",
+      "skills/tsk-coordinator/SKILL.md",
+      "src/agents.rs",
+      "src/app.rs",
+      "src/backup.rs",
+      "src/dispatch.rs",
+      "src/main.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          ".github/workflows/vercel.yml",
+          ".gitignore",
+          "CHANGELOG.md",
+          "Cargo.lock",
+          "Cargo.toml",
+          "skills/tsk-cli/SKILL.md",
+          "skills/tsk-coordinator/SKILL.md",
+          "src/agents.rs",
+          "src/backup.rs",
+          "src/dispatch.rs",
+          "src/main.rs"
+        ],
+        "invariant": "The delta has no hardcoded credential, committed secret file, or production debug backdoor.",
+        "method": "source",
+        "result": "No pem, .env, or key file is present. .gitignore ignores .env and .env.*. Grep of the listed sources found no Bearer token, private-key block, or live API key. agents.rs and dispatch.rs use fixture strings such as sk-secret-value inside tests. vercel.yml's VERCEL_ORG_ID and VERCEL_PROJECT_ID are identifiers; the credential is secrets.VERCEL_TOKEN. TSK_MODE selects capture versus board only. main routes CLI surfaces and does not expose a debug, admin, or metrics endpoint. There is no cookie, CORS, or open-redirect surface in these files.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          "src/app.rs",
+          "src/main.rs"
+        ],
+        "invariant": "TSK_MODE cannot enable a production debug or auth-bypass mode.",
+        "method": "source",
+        "result": "resolve_mode_from returns Capture only when the env value or an argument equals capture, case-insensitive, and otherwise returns Board. main passes that mode into the router. No branch treats the variable as a debug, test, or admin gate.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "hardened_curl and the curls inside install.sh do not pass -q/--disable first, so a curlrc on the same account can add --insecure or a proxy. That file belongs to the invoking user, who is already the authority for tsk update.",
+      "The updater executes the gettsk.sh installer after TLS without a separate digest. install.sh then checks the release archive against SHA256SUMS from the same GitHub release. That HTTPS execution is the designed update path.",
+      "InstallerFile mode 0700 cannot be weakened by umask, and open_downloaded rejects a symlink or a different uid before the shell reads the descriptor. An in-place overwrite also needs a non-sticky attacker-writable TMPDIR and an other-writable download (umask 000). Default /tmp is sticky and the usual umask is 022.",
+      "vercel.yml installs vercel@58.11.0 with npm install -g and no integrity digest. The version is pinned, secrets.VERCEL_TOKEN is not in that step's environment, and the job does not run on pull_request."
+    ]
+  },
+  {
+    "coverage_id": "Cargo.toml%23version::site%2Fpublic%2Finstall.sh%23TSK_CURRENT_VERSION::src%2Fcli%2Fupdate.rs::SUPPLY-CHAIN-AND-RELEASE.md%23Release%20and%20update%20attack%20classes",
+    "canonical_refs": {
+      "surface": "Cargo.toml#version",
+      "boundary": "site/public/install.sh#TSK_CURRENT_VERSION",
+      "subsystem": "src/cli/update.rs",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes"
+    },
+    "surface": "Compiled 0.12.0 version handed to the updater",
+    "boundary": "install.sh accepts TSK_CURRENT_VERSION only as a dotted release tag",
+    "subsystem": "src/cli/update.rs",
+    "attack_class": "Release version string reaches the installer environment",
+    "starting_paths": [
+      "Cargo.toml",
+      "herdr-plugin.toml",
+      "site/src/version.mjs",
+      "src/cli/update.rs",
+      "src/update.rs",
+      "site/public/install.sh",
+      "CHANGELOG.md"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Dependency and build-input attack classes",
+        "reason": "Cargo.lock changes only this package version. No dependency coordinate moved."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "No workflow file changed in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "The version handoff is an environment variable into a local installer, not an HTTP session."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "site/src/version.mjs is a static header string, not DOM from the capture parser."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+        "reason": "The updater runs as the invoking user. Helper confusion is not this handoff."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "No model or tool call consumes the version."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "The version is a compile-time string, not a binary parser."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Comparing two dotted versions is fixed work."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-supply",
+    "reviewed_paths": [
+      "CHANGELOG.md",
+      "Cargo.lock",
+      "Cargo.toml",
+      "herdr-plugin.toml",
+      "site/public/install.ps1",
+      "site/public/install.sh",
+      "site/src/version.mjs",
+      "src/cli/update.rs",
+      "src/update.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          "Cargo.lock",
+          "Cargo.toml",
+          "herdr-plugin.toml",
+          "site/src/version.mjs",
+          "src/cli/update.rs"
+        ],
+        "invariant": "The version handed to the installer is the compile-time dotted release, set as an environment value, and an inherited TSK_VERSION cannot replace it.",
+        "method": "source",
+        "result": "Cargo.toml package version, the tsk-tui Cargo.lock entry, herdr-plugin.toml, and site/src/version.mjs are all 0.13.0. Unix and Windows update spawn set TSK_CURRENT_VERSION to concat v plus CARGO_PKG_VERSION and env_remove TSK_VERSION. The child is not started through a shell string, so the value is not expanded by the parent.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          "CHANGELOG.md",
+          "site/public/install.ps1",
+          "site/public/install.sh",
+          "src/update.rs"
+        ],
+        "invariant": "install.sh and install.ps1 use TSK_CURRENT_VERSION only as a quoted dotted tag for the downgrade comparison.",
+        "method": "source",
+        "result": "install.sh prints the value with printf %s and runs the numeric compare only after grep -Eq ^v[0-9]+\\.[0-9]+\\.[0-9]+$. It does not insert the value into a URL, eval, or unquoted expansion. install.ps1 uses the same regex before [Version] compare. The download tag is TSK_VERSION or the latest redirect, separately regex-checked. The board notice path compares semver for display and does not pass the cached tag to the installer.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "hardened_curl and the curls inside install.sh do not pass -q/--disable first, so a curlrc on the same account can add --insecure or a proxy. That file belongs to the invoking user, who is already the authority for tsk update.",
+      "The updater executes the gettsk.sh installer after TLS without a separate digest. install.sh then checks the release archive against SHA256SUMS from the same GitHub release. That HTTPS execution is the designed update path.",
+      "InstallerFile mode 0700 cannot be weakened by umask, and open_downloaded rejects a symlink or a different uid before the shell reads the descriptor. An in-place overwrite also needs a non-sticky attacker-writable TMPDIR and an other-writable download (umask 000). Default /tmp is sticky and the usual umask is 022.",
+      "vercel.yml installs vercel@58.11.0 with npm install -g and no integrity digest. The version is pinned, secrets.VERCEL_TOKEN is not in that step's environment, and the job does not run on pull_request."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Fboard-demo.js%23innerHTML::site%2Fpublic%2Fboard-demo.js%23esc::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/board-demo.js#innerHTML",
+      "boundary": "site/public/board-demo.js#esc",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Board demo capture thread names reaching innerHTML",
+    "boundary": "esc() before innerHTML",
+    "subsystem": "site/public",
+    "attack_class": "DOM XSS in the static board demo",
+    "starting_paths": [
+      "site/public/board-demo.js",
+      "site/public/capture.js",
+      "site/test/capture-thread.test.mjs",
+      "src/domain/thread.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "CLIENT-SIDE.md#Core discipline",
+      "CLIENT-SIDE.md#DOM and object-state attack classes",
+      "CLIENT-SIDE.md#Universal moves",
+      "CLIENT-SIDE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes",
+        "reason": "The demo does not call postMessage or open a credentialed socket."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Service-worker and browser-storage attack classes",
+        "reason": "No service worker or token storage in board-demo.js."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Cross-site information leak classes",
+        "reason": "The demo renders a bundled fixture, not a credentialed cross-origin state."
+      },
+      {
+        "block": "CLIENT-SIDE.md#UI-redress and navigation attack classes",
+        "reason": "capture.js only changes thread normalization. The demo adds no frame, redirect, or window.open."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-site",
+    "reviewed_paths": [
+      "site/public/board-demo.js",
+      "site/public/capture.js",
+      "site/src/pages/index.astro",
+      "site/test/capture-thread.test.mjs",
+      "src/domain/thread.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-site",
+        "reviewed_paths": [
+          "site/public/board-demo.js",
+          "site/public/capture.js",
+          "site/test/capture-thread.test.mjs",
+          "src/domain/thread.rs"
+        ],
+        "invariant": "A capture thread name, and block, review, title, notes, step, project, and assignee text, is encoded by esc() before it is interpolated into the string assigned to innerHTML.",
+        "method": "source",
+        "result": "esc() at board-demo.js:594-605 replaces & < > \" '. parseCapture (capture.js:7-36) stores a thread only after normalizeThread (capture.js:1-4), the same ASCII letter-digit-dot-hyphen, 32-character, lowercase rule as src/domain/thread.rs:17-31. saveDraft (board-demo.js:3183-3199) and expandQuickAdd (board-demo.js:3041-3056) copy that value. Row labels (#thread and project) pass through titleLinesHtml esc() (board-demo.js:951-988 and 4247-4258). Thread picker labels pass through esc() at board-demo.js:1087 and 1806. Group labels built from the thread (board-demo.js:842-844) pass through esc() at 4211-4214. The task page encodes title (3848-3859), notes and dispatch lines (3866-3877), step text (3880-3893), and the meta line that includes #thread, project, and assignee (3910-3947). blockSection encodes why, needs, done, next, options, and check text through line() (651-696). Peek and live lines encode the same block and review fields (2631-2643, 2688-2761, 2781-2788). Paper-trail text is encoded at 635. The only innerHTML assignments are the numeric scrollbar at 4425-4429 and root.innerHTML at 4507. The page states changes stay in the page (index.astro:354). No location, storage, referrer, window.name, or postMessage value enters these strings.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-site",
+        "reviewed_paths": [
+          "site/public/board-demo.js",
+          "site/src/pages/index.astro"
+        ],
+        "invariant": "The two data-task attributes that skip esc() still receive only demo-generated identifiers on the public page.",
+        "method": "source",
+        "result": "Rail and board rows interpolate task.id raw at board-demo.js:4261 and 4288. Preview rows and copy targets use esc(task.id) at 4039 and 3851. Seed ids are t plus the counter (53-54). Saved capture ids are n plus nextId (3111, 3190). The expanded draft id capture-draft is rendered by the task page, which encodes the id. index.astro has no tsk-demo-fixture element; the fixture read at board-demo.js:37-40 is null on the landing page, so a visitor cannot supply an id. task.number in the adjacent title and aria-label attributes is the same numeric counter.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Board rows at site/public/board-demo.js:4261 and 4288 put task.id into data-task without esc(), while the preview row and the copy target encode the same id. On the public page those ids are the tN and nN counters, and index.astro has no fixture element a visitor can fill.",
+      "site/public/github-stars.js:22-26 displays a sessionStorage count without the Number.isInteger check used on the fetch path. The write stays on textContent and setAttribute, so the cache can change the visible count only for script that already shares the origin."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Fgithub-stars.js%23fetch::site%2Fpublic%2Fgithub-stars.js%23textContent::site%2Fpublic::CLIENT-SIDE.md%23Cross-origin%20messaging%20and%20network%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/github-stars.js#fetch",
+      "boundary": "site/public/github-stars.js#textContent",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes"
+    },
+    "surface": "GitHub stars script",
+    "boundary": "textContent update from a fixed API URL",
+    "subsystem": "site/public",
+    "attack_class": "DOM or cross-origin injection via the stars response",
+    "starting_paths": [
+      "site/public/github-stars.js",
+      "site/src/lib/github-stars.mjs",
+      "site/src/components/GitHubStars.astro"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "CLIENT-SIDE.md#Core discipline",
+      "CLIENT-SIDE.md#Cross-origin messaging and network attack classes",
+      "CLIENT-SIDE.md#Universal moves",
+      "CLIENT-SIDE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-site",
+    "reviewed_paths": [
+      "site/public/github-stars.js",
+      "site/src/components/GitHubStars.astro",
+      "site/src/lib/github-stars.mjs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-site",
+        "reviewed_paths": [
+          "site/public/github-stars.js",
+          "site/src/lib/github-stars.mjs",
+          "site/src/components/GitHubStars.astro"
+        ],
+        "invariant": "The stars request uses a fixed GitHub URL, and the count reaches the page only as text.",
+        "method": "source",
+        "result": "github-stars.js:30 fetches the literal https://api.github.com/repos/smarzban/tsk with an Accept header and no credentials mode. The network path shows the count only when Number.isInteger (36-37). show() writes format(count) with textContent (16) and setAttribute for the aria-label (17). textContent and setAttribute do not parse HTML. The browser file has no postMessage and no WebSocket. The build helper (github-stars.mjs:3-18) uses the same URL and returns an integer or null; GitHubStars.astro:8-13 prints that integer. The browser script does not import the build helper, so the build Authorization header is not part of the page script.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-site",
+        "reviewed_paths": [
+          "site/public/github-stars.js"
+        ],
+        "invariant": "A sessionStorage star cache cannot inject markup through the stars sinks.",
+        "method": "source",
+        "result": "github-stars.js:22-26 JSON-parses sessionStorage key tsk-gh-stars and may call show(cached.count) without Number.isInteger. show() still uses textContent and setAttribute (14-18). A string count fails the numeric comparisons in format() (8-11) and becomes NaNk, which textContent shows as text. sessionStorage is same-origin; the script never reads a cross-origin message into that key. JSON.parse here has no reviver and no recursive merge.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Board rows at site/public/board-demo.js:4261 and 4288 put task.id into data-task without esc(), while the preview row and the copy target encode the same id. On the public page those ids are the tN and nN counters, and index.astro has no fixture element a visitor can fill.",
+      "site/public/github-stars.js:22-26 displays a sessionStorage count without the Number.isInteger check used on the fetch path. The write stays on textContent and setAttribute, so the cache can change the visible count only for script that already shares the origin."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Flanding.js%23c6b8de1::site%2Fpublic%2Flanding.js%23steps::site%2Fpublic::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "site/public/landing.js#c6b8de1",
+      "boundary": "site/public/landing.js#steps",
+      "subsystem": "site/public",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "Commit c6b8de1 landing.js diff",
+    "boundary": "Static section label literals with no secret or debug gate",
+    "subsystem": "site/public landing diff",
+    "attack_class": "Obvious exposures in the landing label diff",
+    "starting_paths": [
+      "site/public/landing.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "DOM write of the same labels is the other in-scope unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Injection of the cycle strings is the other in-scope unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "The obvious-things block already covers hardcoded secrets in this two-line diff."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-site",
+    "reviewed_paths": [
+      "site/public/landing.js"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-site",
+        "reviewed_paths": [
+          "site/public/landing.js"
+        ],
+        "invariant": "The status-cycle label literals contain no secret, debug gate, executable sink, credential, or open redirect.",
+        "method": "source",
+        "result": "The steps array (landing.js:30-68) is seven static objects of section name, glyph, key, and next status. paint() (74-79) assigns those four fields with textContent. The block has no password, token, Bearer, private key, TODO/FIXME/HACK/XXX, debug or query flag, eval, Function, dynamic import, cookie, CORS header, or redirect parameter. The strings are display labels.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Board rows at site/public/board-demo.js:4261 and 4288 put task.id into data-task without esc(), while the preview row and the copy target encode the same id. On the public page those ids are the tN and nN counters, and index.astro has no fixture element a visitor can fill.",
+      "site/public/github-stars.js:22-26 displays a sessionStorage count without the Number.isInteger check used on the fetch path. The write stays on textContent and setAttribute, so the cache can change the visible count only for script that already shares the origin."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Flanding.js%23data-copy::site%2Fpublic%2Flanding.js%23clipboard::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/landing.js#data-copy",
+      "boundary": "site/public/landing.js#clipboard",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Landing install copy button",
+    "boundary": "clipboard write of shell example text",
+    "subsystem": "site/public landing copy",
+    "attack_class": "Clipboard read of page text",
+    "starting_paths": [
+      "site/public/landing.js"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Unchanged by c6b8de1 and not reached by steps[].sec. Recorded so a later full pass can review it. Not a covered claim."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-site",
+    "reviewed_paths": [
+      "site/public/landing.js",
+      "site/src/pages/index.astro"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-site",
+        "reviewed_paths": [
+          "site/public/landing.js",
+          "site/src/pages/index.astro"
+        ],
+        "invariant": "The copy control writes the author shell text of the button the visitor clicked and does not read clipboard contents.",
+        "method": "source",
+        "result": "landing.js:358-371 takes the closest [data-copy-source] innerText, strips a leading prompt, and calls navigator.clipboard.writeText. There is no readText. The sources are static author nodes in index.astro: the install curl (215, 621), the agent prompt (558), tsk setup grok (582), the docs URL (587), brew install (626), the Windows installer line (631), and tsk setup herdr (643-644). The text is not taken from location, storage, or a message.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Board rows at site/public/board-demo.js:4261 and 4288 put task.id into data-task without esc(), while the preview row and the copy target encode the same id. On the public page those ids are the tN and nN counters, and index.astro has no fixture element a visitor can fill.",
+      "site/public/github-stars.js:22-26 displays a sessionStorage count without the Number.isInteger check used on the fetch path. The write stays on textContent and setAttribute, so the cache can change the visible count only for script that already shares the origin."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Flanding.js%23readout::site%2Fpublic%2Flanding.js%23columns::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/landing.js#readout",
+      "boundary": "site/public/landing.js#columns",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Landing column readout",
+    "boundary": "innerHTML of a measured column count",
+    "subsystem": "site/public landing layout",
+    "attack_class": "DOM XSS in the column readout",
+    "starting_paths": [
+      "site/public/landing.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Unchanged by c6b8de1 and not reached by steps[].sec. Recorded so a later full pass can review it. Not a covered claim."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-site",
+    "reviewed_paths": [
+      "site/public/landing.js",
+      "site/src/pages/index.astro"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-site",
+        "reviewed_paths": [
+          "site/public/landing.js",
+          "site/src/pages/index.astro"
+        ],
+        "invariant": "The column readout innerHTML interpolates a layout measurement and two fixed words.",
+        "method": "source",
+        "result": "columns() (landing.js:170-171) is Math.round of the board's content width divided by a measured glyph width. readout() (208-212) sets [data-cols] (index.astro:368) to `<b>${n}</b> cols \u00b7 ${wide ? \"stage slider\" : \"peek\"}` where wide is n >= 110. A number, NaN, or Infinity stringifies without markup. No location, storage, or message value is interpolated.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Board rows at site/public/board-demo.js:4261 and 4288 put task.id into data-task without esc(), while the preview row and the copy target encode the same id. On the public page those ids are the tN and nN counters, and index.astro has no fixture element a visitor can fill.",
+      "site/public/github-stars.js:22-26 displays a sessionStorage count without the Number.isInteger check used on the fetch path. The write stays on textContent and setAttribute, so the cache can change the visible count only for script that already shares the origin."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Flanding.js%23steps::site%2Fpublic%2Flanding.js%23paint::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/landing.js#steps",
+      "boundary": "site/public/landing.js#paint",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Landing status-cycle section labels",
+    "boundary": "paint assigns step fields with textContent",
+    "subsystem": "site/public landing script",
+    "attack_class": "DOM XSS from the status-cycle labels",
+    "starting_paths": [
+      "site/public/landing.js",
+      "site/src/pages/index.astro"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "CLIENT-SIDE.md#Core discipline",
+      "CLIENT-SIDE.md#DOM and object-state attack classes",
+      "CLIENT-SIDE.md#Universal moves",
+      "CLIENT-SIDE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes",
+        "reason": "landing.js has no postMessage, WebSocket, or credentialed fetch on the status-cycle path."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Service-worker and browser-storage attack classes",
+        "reason": "The cycle writes no worker, cache, or storage."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Cross-site information leak classes",
+        "reason": "The labels are public page copy and do not distinguish a protected cross-origin state."
+      },
+      {
+        "block": "CLIENT-SIDE.md#UI-redress and navigation attack classes",
+        "reason": "The cycle does not navigate or complete a framed state change."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "The landing page has no authenticator or per-resource authorization."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Resource and file handling",
+        "reason": "The cycle does not read or write files."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "Obvious-exposure review of the same diff is a separate unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Business logic",
+        "reason": "Section labels do not drive task status. The unread status field is display data only."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+        "reason": "No export, search, or notification path is in this diff."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries",
+        "reason": "The changed strings stop at textContent and are not consumed by a later trust decision."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Wildcard",
+        "reason": "The changed path is the cycle DOM write. Other sinks in the file are separate out-of-scope units."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Obvious things",
+        "reason": "Assigned as its own unit for the same diff."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-site",
+    "reviewed_paths": [
+      "site/public/landing.js",
+      "site/src/pages/index.astro"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-site",
+        "reviewed_paths": [
+          "site/public/landing.js",
+          "site/src/pages/index.astro"
+        ],
+        "invariant": "Status-cycle labels reach the DOM through textContent from a fixed array.",
+        "method": "source",
+        "result": "paint() (landing.js:74-79) writes steps[i].sec, glyph, key, and next with textContent onto [data-cycle-sec], [data-cycle-glyph], [data-cycle-key], and [data-cycle-next]. The array (30-68) is source literals. The host markup (index.astro:509-522) is the same kind of static initial text and is overwritten by paint. textContent does not parse HTML. The cycle does not read location, storage, or messages.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Board rows at site/public/board-demo.js:4261 and 4288 put task.id into data-task without esc(), while the preview row and the copy target encode the same id. On the public page those ids are the tN and nN counters, and index.astro has no fixture element a visitor can fill.",
+      "site/public/github-stars.js:22-26 displays a sessionStorage count without the Number.isInteger check used on the fetch path. The write stays on textContent and setAttribute, so the cache can change the visible count only for script that already shares the origin."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Flanding.js%23tsk%3Aset-stage::site%2Fpublic%2Fboard-demo.js%23stage::site%2Fpublic::CLIENT-SIDE.md%23Cross-origin%20messaging%20and%20network%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/landing.js#tsk:set-stage",
+      "boundary": "site/public/board-demo.js#stage",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes"
+    },
+    "surface": "Landing layout stage event",
+    "boundary": "CustomEvent detail is board or split",
+    "subsystem": "site/public landing layout event",
+    "attack_class": "Stage event influencing the board demo",
+    "starting_paths": [
+      "site/public/landing.js"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes",
+        "reason": "The event detail is a same-document literal and the diff does not touch it."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-site",
+    "reviewed_paths": [
+      "site/public/board-demo.js",
+      "site/public/landing.js",
+      "site/src/pages/index.astro"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-site",
+        "reviewed_paths": [
+          "site/public/landing.js",
+          "site/public/board-demo.js",
+          "site/src/pages/index.astro"
+        ],
+        "invariant": "tsk:set-stage is a same-document CustomEvent whose detail is one of two layout words, and the demo ignores any other detail.",
+        "method": "source",
+        "result": "The layout buttons are data-layout full and beside (index.astro:365-366). setLayout (landing.js:185-205) dispatches CustomEvent tsk:set-stage on #board-demo with detail board when the name is beside and split otherwise. The listener (board-demo.js:6340-6342) returns unless detail is board, split, rail, or page, then assigns that stage. There is no postMessage, no origin check to weaken, and no message from another window.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Board rows at site/public/board-demo.js:4261 and 4288 put task.id into data-task without esc(), while the preview row and the copy target encode the same id. On the public page those ids are the tN and nN counters, and index.astro has no fixture element a visitor can fill.",
+      "site/public/github-stars.js:22-26 displays a sessionStorage count without the Number.isInteger check used on the fetch path. The write stays on textContent and setAttribute, so the cache can change the visible count only for script that already shares the origin."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fsrc%2Fpages%2Findex.astro%23BOARD_PINS::site%2Fpublic%2Flanding.js%23pin-paint::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/src/pages/index.astro#BOARD_PINS",
+      "boundary": "site/public/landing.js#pin-paint",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Landing pin callout HTML",
+    "boundary": "innerHTML of author BOARD_PINS templates",
+    "subsystem": "site/public landing pins",
+    "attack_class": "DOM XSS in pin callouts",
+    "starting_paths": [
+      "site/public/landing.js",
+      "site/src/pages/index.astro"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Unchanged by c6b8de1 and not reached by steps[].sec. Recorded so a later full pass can review it. Not a covered claim."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-site",
+    "reviewed_paths": [
+      "site/public/landing.js",
+      "site/src/pages/index.astro"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-site",
+        "reviewed_paths": [
+          "site/src/pages/index.astro",
+          "site/public/landing.js"
+        ],
+        "invariant": "Pin callout HTML copied into innerHTML is the author BOARD_PINS markup, keyed by the author pin numbers.",
+        "method": "source",
+        "result": "BOARD_PINS (index.astro:22-47) is five source objects. Bodies use b, kbd, and code only; they contain no script, event handler, or javascript URL. Templates (283-286) and the initial card (290-291) render that markup. landing.js:325-333 copies each template's innerHTML under data-pin-copy and writes it to [data-pin-body] when the key matches. Buttons pass data-pin 1 through 5 (index.astro:229-259). An unknown key returns before the write (landing.js:330-331). No location, storage, or message supplies the HTML.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Board rows at site/public/board-demo.js:4261 and 4288 put task.id into data-task without esc(), while the preview row and the copy target encode the same id. On the public page those ids are the tN and nN counters, and index.astro has no fixture element a visitor can fill.",
+      "site/public/github-stars.js:22-26 displays a sessionStorage count without the Number.isInteger check used on the fetch path. The write stays on textContent and setAttribute, so the cache can change the visible count only for script that already shares the origin."
+    ]
+  },
+  {
+    "coverage_id": "src%2Factivity.rs%23paper%20trail::src%2Fui%2Fmod.rs%23terminal_text::src%2Factivity.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/activity.rs#paper trail",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/activity.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Paper trail lines",
+    "boundary": "terminal_text before paint and CLI list",
+    "subsystem": "src/activity.rs",
+    "attack_class": "Terminal control injection from history or block text",
+    "starting_paths": [
+      "src/activity.rs",
+      "src/ui/mod.rs",
+      "src/cli/list.rs",
+      "src/cli/presenter.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-ui",
+    "reviewed_paths": [
+      "src/activity.rs",
+      "src/cli/presenter.rs",
+      "src/ui/board/draw.rs",
+      "src/ui/mod.rs",
+      "src/ui/render.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-ui",
+        "reviewed_paths": [
+          "src/activity.rs",
+          "src/ui/board/draw.rs",
+          "src/ui/mod.rs",
+          "src/cli/presenter.rs",
+          "src/ui/render.rs"
+        ],
+        "invariant": "Paper-trail and block text from history, including branch, base, assignee, why, reply, and check fields, cannot inject C0 or C1 controls into the task page or tsk list.",
+        "method": "source",
+        "result": "event_text, record_summary, on_text, and record_lines interpolate those stored strings. trail_page_rows and block_page_rows pass them through beside_lead, which calls terminal_text and then wrap_text. append_activity passes entry.line through terminal_text into append_wrapped, and append_wrapped runs wrap_text. Blocked-why list lines use terminal_text. Row live lines, which include reply text, are terminal_text'd before live_line_rows. Cc scalars therefore become visible escapes before stdout or the frame.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "terminal_text leaves Unicode format and bidi controls, and U+2028 and U+2029, unchanged because char::is_control is only Cc. present_line documents that choice. Stored titles and paths can still display reordered, but selection, status verbs, and cleanup use task ids and stored paths, and the terminal user is the same OS user who owns the store.",
+      "SearchQueryDeleteWord and ListPickerQueryDeleteWord are not on the save-recovery allowlist, so those chords re-raise the banner. CommandQueryDeleteWord and HelpQueryDeleteWord are allowlisted and only edit their query strings."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fagents.rs%23powershell_script::src%2Fagents.rs%23TskProgram::src%2Fagents.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/agents.rs#powershell_script",
+      "boundary": "src/agents.rs#TskProgram",
+      "subsystem": "src/agents.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Windows PowerShell agent launcher",
+    "boundary": "base64 embedding and batch-only refusal",
+    "subsystem": "src/agents.rs",
+    "attack_class": "PowerShell or cmd injection from task text",
+    "starting_paths": [
+      "src/agents.rs",
+      "src/dispatch.rs",
+      "tests/cli_dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-launch",
+    "reviewed_paths": [
+      "src/agents.rs",
+      "src/dispatch.rs",
+      "tests/cli_dispatch.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-launch",
+        "reviewed_paths": [
+          "src/agents.rs"
+        ],
+        "invariant": "Task text and env values are embedded only as unpadded standard base64 inside PowerShell single quotes, and expandable strings do not reparse those decoded values.",
+        "method": "source",
+        "result": "powershell_script encodes every env key, env value, program, and argument with the standard base64 alphabet, which has no single quote, and calls TskText on that literal. The prelude decodes to a .NET string. TskArgument's result is array data splatted to the call operator, not interpolated into the script source. The double-quoted ${Name} and $($Found[0].Path) sites are in the refusal message: PowerShell expands them once while parsing that literal, and the inserted characters are not parsed again. The program string is the profile command after template substitution, which is the user's program, not an env value.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-launch",
+        "reviewed_paths": [
+          "src/agents.rs",
+          "src/dispatch.rs",
+          "tests/cli_dispatch.rs"
+        ],
+        "invariant": "A program that resolves only to cmd or bat files is refused before the call operator, so task text is not handed to cmd.exe.",
+        "method": "source",
+        "result": "TskProgram keeps Application and ExternalScript hits whose path does not match \\.(cmd|bat)$ under PowerShell's case-insensitive -match, and otherwise writes the refusal and exits 1 before & $TskCommand. batch_only_program applies the same cmd/bat rule before a worktree exists when the command template contains no '{'. The Windows launcher test uses a title containing a quote and & as the prompt argument and expects the batch file not to run. Profile env is applied as process environment through the base64 path; it is not concatenated into the script.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "sh_launch_line allows parentheses, and shell_script places that path inside double quotes for $SHELL -l -c. A fish login shell treats (...) in double quotes as command substitution, so a state directory such as a home path containing (Work) can run that word. The bytes come from the invoking user's state directory, not from task text or env values, and the same user can already run that command.",
+      "omp_config_root keeps '..' after stripping an absolute root, so PI_CONFIG_DIR=/../../etc normalizes outside HOME the same way path.join does. The variable is the invoking user's OMP setting, not a second principal.",
+      "Human setup paths escape C0 and C1. Unicode bidi and format characters in a path are still printed, which matches present_line's stated limit, and JSON setup output relies on serde_json for C0 rather than terminal_text."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fagents.rs%23shell_script::src%2Fagents.rs%23shell_quote::src%2Fagents.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/agents.rs#shell_script",
+      "boundary": "src/agents.rs#shell_quote",
+      "subsystem": "src/agents.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Unix agent launcher script",
+    "boundary": "single-quoted argv and env before exec",
+    "subsystem": "src/agents.rs",
+    "attack_class": "Shell injection from task text or profile env",
+    "starting_paths": [
+      "src/agents.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-launch",
+    "reviewed_paths": [
+      "src/agents.rs",
+      "src/dispatch.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-launch",
+        "reviewed_paths": [
+          "src/agents.rs"
+        ],
+        "invariant": "Task text, notes, steps, and profile env values reach the Unix launcher only inside shell_quote single quotes, so quotes, newlines, and shell metacharacters stay one POSIX word.",
+        "method": "source",
+        "result": "shell_quote drops NUL then replaces each ASCII single quote with the POSIX '\\'' sequence and wraps the value in single quotes. shell_script uses that for every env value and every argv element, including the rendered prompt. A newline stays inside the quotes, so it does not start a new command. Env keys are also quoted, and unix_env_refusal already requires a POSIX name before launch. The added TSK_AGENT value is the normalized assignee, and it is quoted as a value under the fixed key TSK_AGENT.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-launch",
+        "reviewed_paths": [
+          "src/agents.rs",
+          "src/dispatch.rs"
+        ],
+        "invariant": "The login re-exec may double-quote only the launcher path, and that path is accepted by sh_launch_line before the script is written. Task text and env values are not part of that string.",
+        "method": "source",
+        "result": "shell_script builds /bin/sh \"<launcher>\" login and shell_quotes that whole string for $SHELL -l -c. run_launch calls sh_launch_line on the same path first. sh_launch_line refuses control characters and $ ` \\ \" ! and the three curly quotes. launcher_stem keeps only ASCII alphanumerics, hyphen, and underscore from the workspace id, so task fields cannot enter the path. Parentheses are allowed and would be special to a fish login shell inside those double quotes; the payload would be the invoking user's state-directory path, not task text or env, so it is not this boundary.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "sh_launch_line allows parentheses, and shell_script places that path inside double quotes for $SHELL -l -c. A fish login shell treats (...) in double quotes as command substitution, so a state directory such as a home path containing (Work) can run that word. The bytes come from the invoking user's state directory, not from task text or env values, and the same user can already run that command.",
+      "omp_config_root keeps '..' after stripping an absolute root, so PI_CONFIG_DIR=/../../etc normalizes outside HOME the same way path.join does. The variable is the invoking user's OMP setting, not a second principal.",
+      "Human setup paths escape C0 and C1. Unicode bidi and format characters in a path are still printed, which matches present_line's stated limit, and JSON setup output relies on serde_json for C0 rather than terminal_text."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fannouncements%2Fcatalog.toml%23announcement::src%2Fui%2Fedit.rs%23wrap_text::src%2Fannouncements.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/announcements/catalog.toml#announcement",
+      "boundary": "src/ui/edit.rs#wrap_text",
+      "subsystem": "src/announcements.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "What's new catalog notes seeded onto the board",
+    "boundary": "wrap_text runs terminal_text on each notice character before paint",
+    "subsystem": "src/announcements.rs",
+    "attack_class": "Terminal control injection via What's new notes",
+    "starting_paths": [
+      "src/announcements/catalog.toml",
+      "src/announcements.rs",
+      "src/ui/edit.rs",
+      "src/ui/markdown.rs",
+      "src/ui/render.rs",
+      "src/cli/presenter.rs",
+      "src/domain/task.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "This path has no HTTP parser, cache, or session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector is on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC or broker identity is on this path."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "tsk has one local store and no tenant isolator."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk does not call a model or dispatch tool arguments."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "The changed notice path is safe Rust string handling with no unsafe block."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Catalog seeding is a fixed in-binary table, not attacker-sized work."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Notice text is painted by the terminal UI, not inserted into HTML."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+        "reason": "Seeding writes the same user's store. Windows ACL is a separate carried unit."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "The catalog is compile-time text, not an update artifact. Version handoff is a separate unit."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-ui",
+    "reviewed_paths": [
+      "src/announcements.rs",
+      "src/announcements/catalog.toml",
+      "src/cli/presenter.rs",
+      "src/ui/board/draw.rs",
+      "src/ui/edit.rs",
+      "src/ui/markdown.rs",
+      "src/ui/render.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-ui",
+        "reviewed_paths": [
+          "src/announcements.rs",
+          "src/announcements/catalog.toml",
+          "src/ui/edit.rs",
+          "src/ui/board/draw.rs",
+          "src/ui/render.rs",
+          "src/ui/markdown.rs",
+          "src/cli/presenter.rs"
+        ],
+        "invariant": "What's new notes, whether from the bundled catalog or a later store edit, are escaped before the board or tsk list paints them.",
+        "method": "source",
+        "result": "parse_catalog copies title and notes after trim and does not strip controls. seed writes combined_notes onto a notice task. The bundled catalog entries are ordinary text. View mode builds note rows with wrapped_draft_rows, which is wrap_text, and wrap_text runs terminal_text on every scalar. The page painter then calls paint_notes_line, whose bound_styled_line compares against present_line. Peek notes use the same wrap_text output. CLI notes go through append_wrapped and therefore wrap_text. A Cc scalar in a restored notice is escaped before the terminal.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "terminal_text leaves Unicode format and bidi controls, and U+2028 and U+2029, unchanged because char::is_control is only Cc. present_line documents that choice. Stored titles and paths can still display reordered, but selection, status verbs, and cleanup use task ids and stored paths, and the terminal user is the same OS user who owns the store.",
+      "SearchQueryDeleteWord and ListPickerQueryDeleteWord are not on the save-recovery allowlist, so those chords re-raise the banner. CommandQueryDeleteWord and HelpQueryDeleteWord are allowlisted and only edit their query strings."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fbackup.rs%23redacted::src%2Fbackup.rs%23without_credentials::src%2Fbackup.rs::ATTACK-CLASSES.md%23Cryptography%20and%20secrets",
+    "canonical_refs": {
+      "surface": "src/backup.rs#redacted",
+      "boundary": "src/backup.rs#without_credentials",
+      "subsystem": "src/backup.rs",
+      "attack_class": "ATTACK-CLASSES.md#Cryptography and secrets"
+    },
+    "surface": "Backup URL and config secrets",
+    "boundary": "userinfo strip before push and redacted display",
+    "subsystem": "src/backup.rs",
+    "attack_class": "Credential disclosure to the remote or the terminal",
+    "starting_paths": [
+      "src/backup.rs",
+      "src/cli/backup.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Cryptography and secrets",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "hunter-data",
+    "reviewed_paths": [
+      "site/src/content/docs/docs/storage.md",
+      "src/agents.rs",
+      "src/backup.rs",
+      "src/cli/backup.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-data",
+        "reviewed_paths": [
+          "src/backup.rs",
+          "src/cli/backup.rs"
+        ],
+        "invariant": "An http(s) backup URL userinfo, including a bare username token, is removed before the config is committed and is shown as *** .",
+        "method": "source",
+        "result": "For a URL whose bytes before :// are exactly http or https, credentials() finds the last @ before /, ?, or #. A bare http username and an http user:password are both dropped. ssh://user:password keeps only the user. Extra @ is split with rsplit_once, so the whole userinfo is dropped. IPv6 hosts such as https://user:token@[::1]:443/repo stay after the @ and the userinfo is dropped. scp-style git@host:path has no :// and is kept, matching the stated rule that it has no password. Those shapes do not survive push or shown_location.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-data",
+        "reviewed_paths": [
+          "src/backup.rs",
+          "src/cli/backup.rs",
+          "site/src/content/docs/docs/storage.md"
+        ],
+        "invariant": "A prefix, newline, or indent before https:// does not keep a bare username token in the pushed config or in tsk backup list.",
+        "method": "source",
+        "result": "credentials() sets the scheme to every byte before the first ://. A leading space, newline, or the indentation left by a multiline TOML string makes the scheme not http or https. A userinfo with no colon then hits return None, so without_credentials returns None and sanitized_config leaves the url in the document. run() puts that document in the payload and backup_to_git writes machines/<id>/config.toml before git push. shown_location uses the same parser, and tsk backup list prints it. redacted() walks back only over the scheme token and would mask the same string, but the push and list paths do not use it. user:token still loses the password, because a colon takes the non-http keep-user arm. A successful push of any other target in the same file commits the unstripped url.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-data",
+        "reviewed_paths": [
+          "src/backup.rs"
+        ],
+        "invariant": "A newline inside userinfo does not remain in the pushed config, and git error text does not keep a target userinfo that credentials() recognized.",
+        "method": "source",
+        "result": "credentials() does not end the authority at whitespace, so a newline inside userinfo still finds @ and http(s) stripping removes it before push. redacted() does end at whitespace. target_error redacts first, then replaces the exact userinfo from the target when credentials() returned Some. git_failure and the probe path turn newlines into ' / ' before that replace, so a userinfo that itself contains a newline no longer matches and can remain in the local error. That error is stored in backup-status.json and printed to the same user. It is not one of the three files the commit writes.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-data",
+        "reviewed_paths": [
+          "src/agents.rs",
+          "src/backup.rs"
+        ],
+        "invariant": "Every [agent.<name>.env] value the profile loader accepts is replaced before push, and a config that does not parse is not pushed.",
+        "method": "source",
+        "result": "sanitized_config walks document.agent and each profile env table, the same tables parse_profile reads, and replaces every value with the placeholder. A parse failure returns None. run() pushes config only when sanitized_config returned Some. Command and prompt strings are not env values and are copied through.",
+        "artifact": null
+      },
+      {
+        "agent_id": "verifier-backup2",
+        "reviewed_paths": [
+          "src/backup.rs",
+          "src/cli/backup.rs",
+          "site/src/content/docs/docs/storage.md"
+        ],
+        "invariant": "A bare https token whose URL does not start at the scheme is removed before push and masked when shown.",
+        "method": "source",
+        "result": "Re-read credentials, without_credentials, sanitized_config, shown_location, redacted, backup_add, and backup_to_git. A leading space or newline makes credentials return None for a colon-free userinfo, so the token stays in the pushed document and in shown_location. The clean URL is stripped. Independent rerun of the scratch binary matched that split.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "backup.https-bare-userinfo.scheme-prefix"
+    ],
+    "unresolved": [],
+    "hardening": [
+      "git_failure and run_probe turn newlines into ' / ' before target_error replaces the target userinfo, and redacted() stops at whitespace. A password that itself contains a newline can remain in the local error and in backup-status.json. The push path still strips it, and that status file is not one of the committed files.",
+      "Query strings and fragments are outside the authority slice, so a token written only as ?token= is pushed. Git http authentication uses userinfo, which is the control the code implements.",
+      "scp-style user:token@host:path has no :// and is kept. Git's scp form has no password field; the colon is part of the username. ssh://user without a colon is kept on purpose.",
+      "Agent command and prompt strings are pushed verbatim. Only [agent.<name>.env] values are replaced. A token pasted into command is a second copy in the backup.",
+      "config.toml is created mode 0600 but is not in is_private_state_name, so a hand-written 0644 file is not repaired. The state directory is still mode 0700. Launchers are created mode 0600 by dispatch and are not walked by tighten_state_files.",
+      "git clone, fetch, and push receive the live URL, token included, as an argument. Another local account can read that argv from the process list while the command runs. The docs already prefer ssh or a credential helper."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fbackup.rs%23restore::src%2Fstore.rs%23restore_document::src%2Fbackup.rs::ATTACK-CLASSES.md%23Feature%20abuse%20and%20data%20leakage",
+    "canonical_refs": {
+      "surface": "src/cli/backup.rs#restore",
+      "boundary": "src/store.rs#restore_document",
+      "subsystem": "src/backup.rs",
+      "attack_class": "ATTACK-CLASSES.md#Feature abuse and data leakage"
+    },
+    "surface": "tsk restore of a backup document",
+    "boundary": "format check and board lock before replace",
+    "subsystem": "src/backup.rs",
+    "attack_class": "Restore installing a dispatch record or secret the user did not accept",
+    "starting_paths": [
+      "src/cli/backup.rs",
+      "src/backup.rs",
+      "src/store.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-data",
+    "reviewed_paths": [
+      "src/app.rs",
+      "src/cli/backup.rs",
+      "src/domain/task.rs",
+      "src/store.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-data",
+        "reviewed_paths": [
+          "src/cli/backup.rs",
+          "src/store.rs",
+          "src/domain/task.rs"
+        ],
+        "invariant": "tsk restore writes only a document this binary can open, and does not install config.toml or launch a dispatch record.",
+        "method": "source",
+        "result": "restore_version reads the blob and calls restore_document. check_document requires UTF-8 JSON, a supported format_version, and a parse after migration for an older file; a newer format is RestoreError::Unsupported before any write. DomainState and Task use deny_unknown_fields. The bytes written are the backup plus a next_task_number raise when numbering would go backwards. restore_document does not call after_save and does not write config.toml. The CLI prints the git show command for the backed-up config and says config.toml was not changed. A dispatch record inside the document is stored data; restore does not spawn a launcher.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-data",
+        "reviewed_paths": [
+          "src/app.rs",
+          "src/store.rs"
+        ],
+        "invariant": "Restore refuses while a board or quick capture holds the shared board lock.",
+        "method": "source",
+        "result": "run_board and run_capture call hold_board_presence, which takes a shared lock on board.lock for the session. restore_document opens that file, tightens it, and try_lock exclusive; WouldBlock returns RestoreError::BoardOpen before the copy or the swap. The exclusive guard is held until the swap finishes. A board that cannot acquire the lock still opens, because hold_board_presence ignores the error. That is a same-user degraded path, not a second principal writing a secret.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "git_failure and run_probe turn newlines into ' / ' before target_error replaces the target userinfo, and redacted() stops at whitespace. A password that itself contains a newline can remain in the local error and in backup-status.json. The push path still strips it, and that status file is not one of the committed files.",
+      "Query strings and fragments are outside the authority slice, so a token written only as ?token= is pushed. Git http authentication uses userinfo, which is the control the code implements.",
+      "scp-style user:token@host:path has no :// and is kept. Git's scp form has no password field; the colon is part of the username. ssh://user without a colon is kept on purpose.",
+      "Agent command and prompt strings are pushed verbatim. Only [agent.<name>.env] values are replaced. A token pasted into command is a second copy in the backup.",
+      "config.toml is created mode 0600 but is not in is_private_state_name, so a hand-written 0644 file is not repaired. The state directory is still mode 0700. Launchers are created mode 0600 by dispatch and are not walked by tighten_state_files.",
+      "git clone, fetch, and push receive the live URL, token included, as an argument. Another local account can read that argv from the process list while the command runs. The docs already prefer ssh or a credential helper."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fpresenter.rs%23setup_agent_batch::src%2Fui%2Fmod.rs%23terminal_text::src%2Fsetup_agent.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/cli/presenter.rs#setup_agent_batch",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/setup_agent.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Setup batch and listing stdout for skill and plugin paths",
+    "boundary": "terminal_text rewrites C0/C1 before human setup output",
+    "subsystem": "src/setup_agent.rs and src/setup.rs",
+    "attack_class": "Terminal control injection via setup path output",
+    "starting_paths": [
+      "src/cli/presenter.rs",
+      "src/setup.rs",
+      "src/setup_agent.rs",
+      "src/ui/mod.rs",
+      "src/setup/tests.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Deep-link, callback, and navigation attack classes",
+        "reason": "Setup does not register a URI scheme or deep link."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "No webview in the setup path."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "Setup talks to the herdr CLI, not a socket this unit owns."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Setup output is a terminal, not a browser DOM."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-launch",
+    "reviewed_paths": [
+      "src/cli/mod.rs",
+      "src/cli/presenter.rs",
+      "src/setup.rs",
+      "src/setup/tests.rs",
+      "src/setup_agent.rs",
+      "src/ui/mod.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-launch",
+        "reviewed_paths": [
+          "src/cli/presenter.rs",
+          "src/ui/mod.rs",
+          "src/setup_agent.rs",
+          "src/cli/mod.rs"
+        ],
+        "invariant": "Human setup batch and listing output rewrites C0 and C1 in skill paths before they are written to the terminal.",
+        "method": "source",
+        "result": "terminal_text replaces every char::is_control character, including C0, DEL, and C1, with \\u{XXXX}. setup_agent_batch human rows, setup_agent_written, list_text, omp_skill_display_path on success, and the interactive skills-root line all pass the displayed path through it. Agent ids are fixed target names. Printed versions are three numeric dot-separated fields from normalize_version. Invalid OMP profile text is formatted with Debug before setup_error applies terminal_text. JSON batch and detection paths go through serde_json string encoding, which escapes C0. The fixed USAGE string is the only setup_error reason left unescaped, and it is a constant.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-launch",
+        "reviewed_paths": [
+          "src/setup.rs",
+          "src/setup/tests.rs",
+          "src/cli/presenter.rs"
+        ],
+        "invariant": "Herdr setup notices and failures escape control characters in paths and in Herdr's own output before display.",
+        "method": "source",
+        "result": "The gone-registration notice passes the plugin root through terminal_text, and the setup test expects ESC to appear as \\u{001b}. confirm escapes each detail line and the key. Failed herdr output is terminal_text'd per line before it becomes an error, and setup_herdr_error applies terminal_text to each line again. Successful herdr stdout is parsed as JSON or a version check, not printed raw.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "sh_launch_line allows parentheses, and shell_script places that path inside double quotes for $SHELL -l -c. A fish login shell treats (...) in double quotes as command substitution, so a state directory such as a home path containing (Work) can run that word. The bytes come from the invoking user's state directory, not from task text or env values, and the same user can already run that command.",
+      "omp_config_root keeps '..' after stripping an absolute root, so PI_CONFIG_DIR=/../../etc normalizes outside HOME the same way path.join does. The variable is the invoking user's OMP setting, not a second principal.",
+      "Human setup paths escape C0 and C1. Unicode bidi and format characters in a path are still printed, which matches present_line's stated limit, and JSON setup output relies on serde_json for C0 rather than terminal_text."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fcli%2Freply.rs%23send::src%2Fdispatch.rs%23agent%20prompt::src%2Fcli%2Freply.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/cli/reply.rs#send",
+      "boundary": "src/dispatch.rs#agent prompt",
+      "subsystem": "src/cli/reply.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "tsk reply --send",
+    "boundary": "herdr agent prompt argument array",
+    "subsystem": "src/cli/reply.rs",
+    "attack_class": "Reply text reaching a shell",
+    "starting_paths": [
+      "src/cli/reply.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-dispatch",
+    "reviewed_paths": [
+      "src/cli/reply.rs",
+      "src/dispatch.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-dispatch",
+        "reviewed_paths": [
+          "src/cli/reply.rs",
+          "src/dispatch.rs"
+        ],
+        "invariant": "tsk reply --send delivers the reply text to herdr agent prompt as one argument and does not interpolate it into a shell.",
+        "method": "source",
+        "result": "send stores through the reply path, then deliver_reply prompts only when the live pane agent name equals agent_name for that task. prompt_agent runs Command::new(\"herdr\") with args agent, prompt, pane id, and .arg(text). The reply body never reaches run_in_pane or sh_launch_line.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "sh_launch_line accepts parentheses in the state-directory path, and its test treats \"/Users/Some One (work)/...\" as literal for fish. Fish expands (command) inside double quotes. The path is the OS user's own state directory, and the pane runs as that user, so this stays inside the same account.",
+      "merge_args does not reject a branch or head that starts with '-'. Branches tsk creates are tsk/t<n>-<slug>, and the method flag comes from a closed enum, so the argv does not include --admin. Only a same-user edit of the stored branch would make gh see a flag word."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fupdate.rs%23run_for::src%2Fcli%2Fupdate.rs%23hardened_curl::src%2Fcli%2Fupdate.rs::SUPPLY-CHAIN-AND-RELEASE.md%23Release%20and%20update%20attack%20classes",
+    "canonical_refs": {
+      "surface": "src/cli/update.rs#run_for",
+      "boundary": "src/cli/update.rs#hardened_curl",
+      "subsystem": "src/cli/update.rs",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes"
+    },
+    "surface": "Release installer download and shell handoff",
+    "boundary": "0700 download dir and fd-to-shell",
+    "subsystem": "src/cli/update.rs",
+    "attack_class": "Installer script substitution",
+    "starting_paths": [
+      "src/cli/update.rs",
+      "site/public/install.sh"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-supply",
+    "reviewed_paths": [
+      "site/public/install.sh",
+      "src/cli/update.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          "src/cli/update.rs"
+        ],
+        "invariant": "The Unix updater downloads the fixed HTTPS installer into a private directory and passes the shell an open descriptor only after a successful nonempty regular file owned by this user.",
+        "method": "source",
+        "result": "run_for calls run_installer with /bin/sh and the temp dir. hardened_curl sets --proto =https, --proto-redir =https, --tlsv1.2, -fsSL, and --max-time, then writes https://gettsk.sh/install.sh with -o. InstallerFile creates the directory at mode 0700. open_downloaded uses O_NOFOLLOW, requires a regular file, requires the file uid to equal getuid, and rejects an empty body. Command::new(shell) takes that file as stdin and no path argument. A failed curl status returns before the shell starts.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          "site/public/install.sh",
+          "src/cli/update.rs"
+        ],
+        "invariant": "The script the updater executes is the TLS body from gettsk.sh; the release archive is then bound to SHA256SUMS for a semver tag.",
+        "method": "source",
+        "result": "The updater URL is a constant. install.sh resolves latest only from a github.com releases/tag redirect, accepts the tag only when it matches ^v[0-9]+\\.[0-9]+\\.[0-9]+$, and refuses a missing, duplicate, or mismatched checksum before tar extracts the single member tsk to stdout. Executing that HTTPS installer is the updater's designed handoff. No second digest of install.sh itself is in the updater.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "hardened_curl and the curls inside install.sh do not pass -q/--disable first, so a curlrc on the same account can add --insecure or a proxy. That file belongs to the invoking user, who is already the authority for tsk update.",
+      "The updater executes the gettsk.sh installer after TLS without a separate digest. install.sh then checks the release archive against SHA256SUMS from the same GitHub release. That HTTPS execution is the designed update path.",
+      "InstallerFile mode 0700 cannot be weakened by umask, and open_downloaded rejects a symlink or a different uid before the shell reads the descriptor. An in-place overwrite also needs a non-sticky attacker-writable TMPDIR and an other-writable download (umask 000). Default /tmp is sticky and the usual umask is 022.",
+      "vercel.yml installs vercel@58.11.0 with npm install -g and no integrity digest. The version is pinned, secrets.VERCEL_TOKEN is not in that step's environment, and the job does not run on pull_request."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fcontext.rs%23HERDR_PLUGIN_CONTEXT_JSON::src%2Fboard_pane.rs%23is_flag_safe_pane_id::src%2Fcontext.rs::DESKTOP-MOBILE-AND-LOCAL-IPC.md%23Local%20IPC%20and%20exported-component%20attack%20classes",
+    "canonical_refs": {
+      "surface": "src/context.rs#HERDR_PLUGIN_CONTEXT_JSON",
+      "boundary": "src/board_pane.rs#is_flag_safe_pane_id",
+      "subsystem": "src/context.rs",
+      "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes"
+    },
+    "surface": "Herdr pane lookup and plugin context JSON",
+    "boundary": "No peer authentication on HERDR_PLUGIN_CONTEXT_JSON",
+    "subsystem": "src/context.rs",
+    "attack_class": "Host-injected capture context",
+    "starting_paths": [
+      "src/context.rs",
+      "src/board_pane.rs",
+      "scripts/open-board.sh"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Not in the delta and not one of the four narrative prior leads."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "src/context.rs, src/board_pane.rs, and scripts/open-board.sh are unchanged since c6b8de10. Dispatch calls the herdr binary directly and does not read HERDR_PLUGIN_CONTEXT_JSON."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fdispatch%2Fpr.rs%23merge::src%2Fdispatch%2Fpr.rs%23merge_args::src%2Fdispatch%2Fpr.rs::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/dispatch/pr.rs#merge",
+      "boundary": "src/dispatch/pr.rs#merge_args",
+      "subsystem": "src/dispatch/pr.rs",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "gh pull request merge",
+    "boundary": "merge flags and head commit match",
+    "subsystem": "src/dispatch/pr.rs",
+    "attack_class": "Merge bypass or gh argument injection",
+    "starting_paths": [
+      "src/dispatch/pr.rs",
+      "src/cli/clean.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "gh is spawned with an argument array. Branch and method strings are still checked for interpolation inside this business-logic unit."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-dispatch",
+    "reviewed_paths": [
+      "src/agents.rs",
+      "src/dispatch.rs",
+      "src/dispatch/pr.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-dispatch",
+        "reviewed_paths": [
+          "src/agents.rs",
+          "src/dispatch.rs",
+          "src/dispatch/pr.rs"
+        ],
+        "invariant": "gh pr merge is an argument array, does not pass --admin, --auto, or --delete-branch, and runs only when the open PR targets the recorded base and the local tip equals the PR head.",
+        "method": "source",
+        "result": "merge_args is pr, merge, branch, --merge|--squash|--rebase from the closed MergeMethod enum, --match-head-commit, and head. merge_row refuses unless mergeable reports an open PR whose base equals record_base_branch and branch_tip equals headRefOid, then re-reads the PR and accepts only MERGED. Dispatch branch names are tsk/t<n> plus an alphanumeric slug, so they are not flag words. A dash-leading head would be the value of --match-head-commit; GitHub head oids are not dash-leading.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "sh_launch_line accepts parentheses in the state-directory path, and its test treats \"/Users/Some One (work)/...\" as literal for fish. Fish expands (command) inside double quotes. The path is the OS user's own state directory, and the pane runs as that user, so this stays inside the same account.",
+      "merge_args does not reject a branch or head that starts with '-'. Branches tsk creates are tsk/t<n>-<slug>, and the method flag comes from a closed enum, so the argv does not include --admin. Only a same-user edit of the stored branch would make gh see a flag word."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fdispatch.rs%23branch%20delete::src%2Fdispatch.rs%23merged%20base::src%2Fdispatch.rs::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/dispatch.rs#branch delete",
+      "boundary": "src/dispatch.rs#merged base",
+      "subsystem": "src/dispatch.rs",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "Cleanup branch delete and merge",
+    "boundary": "dirty tree and unmerged-branch refusal",
+    "subsystem": "src/dispatch.rs",
+    "attack_class": "Deleting unmerged work or merging past a check",
+    "starting_paths": [
+      "src/dispatch.rs",
+      "src/dispatch/pr.rs",
+      "src/cli/clean.rs",
+      "src/git_base.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Deletion, revocation, and lifecycle attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-dispatch",
+    "reviewed_paths": [
+      "src/cli/clean.rs",
+      "src/dispatch.rs",
+      "src/dispatch/pr.rs",
+      "src/ui/board/model.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-dispatch",
+        "reviewed_paths": [
+          "src/cli/clean.rs",
+          "src/dispatch.rs",
+          "src/dispatch/pr.rs",
+          "src/ui/board/model.rs"
+        ],
+        "invariant": "A dispatch branch is deleted only after a confirmed merge into the recorded base, or a GitHub merge of that exact tip into that base, and the delete matches the tip that was checked.",
+        "method": "source",
+        "result": "A missing base_ref, unfinished check, offline or failed fetch, or unavailable base keeps the branch. delete_merged_branch rechecks merge-base --is-ancestor on the current tip and deletes with update-ref --no-deref -d only while the ref still names that tip. pr_merged_deletion requires a merged PR, the recorded base, and head_oid equal to the local tip. Dirty status is a non-empty git status --porcelain --untracked-files=all and refuses before removal. The board sets CleanupRefs from the completed check and does not use Cached when the check is unfinished or the remote was unreachable.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "sh_launch_line accepts parentheses in the state-directory path, and its test treats \"/Users/Some One (work)/...\" as literal for fish. Fish expands (command) inside double quotes. The path is the OS user's own state directory, and the pane runs as that user, so this stays inside the same account.",
+      "merge_args does not reject a branch or head that starts with '-'. Branches tsk creates are tsk/t<n>-<slug>, and the method flag comes from a closed enum, so the argv does not include --admin. Only a same-user edit of the stored branch would make gh see a flag word."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fdispatch.rs%23cleanup::src%2Fdispatch.rs%23target_matches::src%2Fdispatch.rs::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "src/dispatch.rs#cleanup",
+      "boundary": "src/dispatch.rs#target_matches",
+      "subsystem": "src/dispatch.rs",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "Worktree cleanup removal",
+    "boundary": "registered worktree path and project-root refusal",
+    "subsystem": "src/dispatch.rs",
+    "attack_class": "Removal of a path outside the recorded worktree",
+    "starting_paths": [
+      "src/dispatch.rs",
+      "src/git_base.rs",
+      "src/cli/clean.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Deletion, revocation, and lifecycle attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-dispatch",
+    "reviewed_paths": [
+      "src/cli/clean.rs",
+      "src/dispatch.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-dispatch",
+        "reviewed_paths": [
+          "src/cli/clean.rs",
+          "src/dispatch.rs"
+        ],
+        "invariant": "Cleanup removes a worktree only when the recorded path is absolute, its canonical path is not the project root, and git worktree list contains that same canonical path.",
+        "method": "source",
+        "result": "system_inspect_cleanup canonicalizes the project and the recorded worktree, leaves target_matches false when the path is the project root, is not absolute, or is absent from git worktree list, and clean_planned_with_host returns WorktreeMismatch before any removal. CLI clean calls that same host path. git worktree remove is an argument array with the recorded path and no --force. A same-user registered worktree is the intended target.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "sh_launch_line accepts parentheses in the state-directory path, and its test treats \"/Users/Some One (work)/...\" as literal for fish. Fish expands (command) inside double quotes. The path is the OS user's own state directory, and the pane runs as that user, so this stays inside the same account.",
+      "merge_args does not reject a branch or head that starts with '-'. Branches tsk creates are tsk/t<n>-<slug>, and the method flag comes from a closed enum, so the argv does not include --admin. Only a same-user edit of the stored branch would make gh see a flag word."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fdispatch.rs%23herdr::src%2Fdispatch.rs%23sh_launch_line::src%2Fdispatch.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/dispatch.rs#herdr",
+      "boundary": "src/dispatch.rs#sh_launch_line",
+      "subsystem": "src/dispatch.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Dispatch herdr and pane launch line",
+    "boundary": "fixed sh or powershell launch line and herdr argv",
+    "subsystem": "src/dispatch.rs",
+    "attack_class": "Task title, branch, or state path reaching a shell",
+    "starting_paths": [
+      "src/dispatch.rs",
+      "src/agents.rs",
+      "src/board_pane.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-dispatch",
+    "reviewed_paths": [
+      "src/agents.rs",
+      "src/dispatch.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-dispatch",
+        "reviewed_paths": [
+          "src/agents.rs",
+          "src/dispatch.rs"
+        ],
+        "invariant": "The Herdr pane is given only a fixed /bin/sh or PowerShell launcher line, and task title, branch, notes, and env values are not typed into that shell.",
+        "method": "source",
+        "result": "run_launch writes the launcher script and types only sh_launch_line or powershell_launch_line. sh_launch_line requires an absolute path and refuses control characters and $ ` \\ \" ! plus the curly quotes. Herdr worktree, pane, agent, and workspace calls use Command argument arrays. Branch and label arguments are separate argv elements; generated branches are tsk/t<n>-<slug>. Workspace ids used in launcher filenames are reduced to alphanumerics, hyphen, and underscore.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "sh_launch_line accepts parentheses in the state-directory path, and its test treats \"/Users/Some One (work)/...\" as literal for fish. Fish expands (command) inside double quotes. The path is the OS user's own state directory, and the pane runs as that user, so this stays inside the same account.",
+      "merge_args does not reject a branch or head that starts with '-'. Branches tsk creates are tsk/t<n>-<slug>, and the method flag comes from a closed enum, so the argv does not include --admin. Only a same-user edit of the stored branch would make gh see a flag word."
+    ]
+  },
+  {
+    "coverage_id": "src%2Ffsperm.rs%23ensure_private_dir::src%2Ffsperm.rs%23tighten_file::src%2Fstore.rs::DESKTOP-MOBILE-AND-LOCAL-IPC.md%23Privileged-helper%20and%20local-file%20attack%20classes",
+    "canonical_refs": {
+      "surface": "src/fsperm.rs#ensure_private_dir",
+      "boundary": "src/fsperm.rs#tighten_file",
+      "subsystem": "src/store.rs",
+      "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes"
+    },
+    "surface": "State directory creation on Windows",
+    "boundary": "ensure_private_dir claims no ACL hardening off Unix",
+    "subsystem": "src/store.rs",
+    "attack_class": "Windows state directory readable by another OS principal",
+    "starting_paths": [
+      "src/fsperm.rs",
+      "src/store.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "State files are not exposed through a webview."
+      }
+    ],
+    "prior_status": "prior_needs_validation",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "verifier-windows",
+    "reviewed_paths": [
+      "src/fsperm.rs",
+      "src/store.rs",
+      "site/src/content/docs/docs/storage.md"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-windows",
+        "reviewed_paths": [
+          "src/fsperm.rs",
+          "src/store.rs",
+          "site/src/content/docs/docs/storage.md"
+        ],
+        "invariant": "Windows state creation sets no security descriptor, and this host cannot observe the inherited DACL.",
+        "method": "source",
+        "result": "ensure_private_dir, create_private_file, and tighten_file apply 0700 and 0600 only under cfg(unix). The Windows path creates the directory and opens tsk.json with no DACL API. The inherited ACL is not in source.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "windows-state-dir-acl"
+    ],
+    "unresolved": [],
+    "note": "Carried needs_validation windows-state-dir-acl. Phase 3 verifier is the first owner. Do not hunt.",
+    "carried_fingerprint": "windows-state-dir-acl"
+  },
+  {
+    "coverage_id": "src%2Fgit_base.rs%23git::src%2Fgit_base.rs%23process%20group::src%2Fgit_base.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/git_base.rs#git",
+      "boundary": "src/git_base.rs#process group",
+      "subsystem": "src/git_base.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "git subprocess for base and fetch",
+    "boundary": "argument array and process-group kill",
+    "subsystem": "src/git_base.rs",
+    "attack_class": "Ref or path injection into git, or killing an unrelated process",
+    "starting_paths": [
+      "src/git_base.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+      "MEMORY-SAFETY-AND-BINARY.md#Kernel and privileged-interface attack classes",
+      "MEMORY-SAFETY-AND-BINARY.md#Universal moves",
+      "MEMORY-SAFETY-AND-BINARY.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-dispatch",
+    "reviewed_paths": [
+      "src/dispatch.rs",
+      "src/git_base.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-dispatch",
+        "reviewed_paths": [
+          "src/dispatch.rs",
+          "src/git_base.rs"
+        ],
+        "invariant": "Git and bounded helper processes are spawned from argument arrays, and a timeout SIGKILL names only the spawned child's process group.",
+        "method": "source",
+        "result": "run_git builds Command::new(\"git\") with separate -C, project, and caller args. Fetch rejects an empty remote, a remote of \".\", or a remote that starts with \"-\". On Unix, process_group(0) runs before spawn, so the child is its own group leader. stop_tree signals -(child pid) and only then waits, so the unreaped child still holds that pid and an unrelated process cannot have reused it. A spawned child cannot be pid 1, so the signal is not kill(-1).",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "sh_launch_line accepts parentheses in the state-directory path, and its test treats \"/Users/Some One (work)/...\" as literal for fish. Fish expands (command) inside double quotes. The path is the OS user's own state directory, and the pane runs as that user, so this stays inside the same account.",
+      "merge_args does not reject a branch or head that starts with '-'. Branches tsk creates are tsk/t<n>-<slug>, and the method flag comes from a closed enum, so the argv does not include --admin. Only a same-user edit of the stored branch would make gh see a flag word."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fsetup_agent.rs%23omp_config_root::src%2Fsetup_agent.rs%23normalize_absolute_path::src%2Fsetup_agent.rs::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "src/setup_agent.rs#omp_config_root",
+      "boundary": "src/setup_agent.rs#normalize_absolute_path",
+      "subsystem": "src/setup_agent.rs",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "OMP skill root from PI_CONFIG_DIR",
+    "boundary": "Lexical normalization under HOME after stripping the absolute root",
+    "subsystem": "src/setup_agent.rs",
+    "attack_class": "Path components in PI_CONFIG_DIR leaving the home directory",
+    "starting_paths": [
+      "src/setup_agent.rs",
+      "tests/cli_setup_agent.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Deep-link, callback, and navigation attack classes",
+        "reason": "No deep link selects the skill directory."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "The input is an environment variable, not an IPC peer."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-launch",
+    "reviewed_paths": [
+      "src/setup_agent.rs",
+      "tests/cli_setup_agent.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-launch",
+        "reviewed_paths": [
+          "src/setup_agent.rs",
+          "tests/cli_setup_agent.rs"
+        ],
+        "invariant": "PI_CONFIG_DIR is stripped of its absolute prefix and root, joined to HOME, and normalized lexically so a rooted path is not used as the skill destination itself.",
+        "method": "source",
+        "result": "omp_config_root drops Prefix and RootDir, drops CurDir, keeps ParentDir as '..', joins the remainder to HOME, and normalize_absolute_path resolves '.' and '..' by pop without following symlinks. The setup test requires an absolute PI_CONFIG_DIR without '..' to land under HOME and not at the original absolute path. Enough '..' components can still normalize outside HOME; the component filter and the test copy of it keep '..' to match OMP path.join. That value is the invoking user's PI_CONFIG_DIR, the same authority OMP already uses, not another OS principal. valid_omp_profile rejects profile names that contain separators or '..', and install refuses a symlink at the skills root, folder, and destination.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "sh_launch_line allows parentheses, and shell_script places that path inside double quotes for $SHELL -l -c. A fish login shell treats (...) in double quotes as command substitution, so a state directory such as a home path containing (Work) can run that word. The bytes come from the invoking user's state directory, not from task text or env values, and the same user can already run that command.",
+      "omp_config_root keeps '..' after stripping an absolute root, so PI_CONFIG_DIR=/../../etc normalizes outside HOME the same way path.join does. The variable is the invoking user's OMP setting, not a second principal.",
+      "Human setup paths escape C0 and C1. Unicode bidi and format characters in a path are still printed, which matches present_line's stated limit, and JSON setup output relies on serde_json for C0 rather than terminal_text."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fsetup_agent.rs%23skill_states_text::src%2Fcli%2Fpresenter.rs%23setup_probe::src%2Fsetup_agent.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/setup_agent.rs#skill_states_text",
+      "boundary": "src/cli/presenter.rs#setup_probe",
+      "subsystem": "src/setup_agent.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Installer skill-state probe tsk setup --skill-states",
+    "boundary": "Control characters in the TSV path field are replaced before stdout",
+    "subsystem": "src/setup_agent.rs",
+    "attack_class": "Tab-separated probe row forgery",
+    "starting_paths": [
+      "src/setup_agent.rs",
+      "src/cli/presenter.rs",
+      "src/cli/mod.rs",
+      "tests/cli_setup_agent.rs",
+      "site/public/install.sh"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Dependency and build-input attack classes",
+        "reason": "This unit is the probe producer, not crate resolution."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "CI workflows did not change in the delta."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-supply",
+    "reviewed_paths": [
+      "site/public/install.ps1",
+      "site/public/install.sh",
+      "src/cli/mod.rs",
+      "src/cli/presenter.rs",
+      "src/setup_agent.rs",
+      "tests/cli_setup_agent.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          "src/cli/mod.rs",
+          "src/cli/presenter.rs",
+          "src/setup_agent.rs"
+        ],
+        "invariant": "A skill path cannot add a TSV field or row, and the other columns cannot carry separators.",
+        "method": "source",
+        "result": "skill_states_text replaces every char::is_control in the path, including tab, CR, and LF, with ?. Agent ids come from the fixed Target::name set. state_word returns one of missing, current, outdated, or blocked-symlink. installed_version is normalize_version, which accepts only three dot-separated digit fields, or the literal -. embedded_skill_version is that same normalizer and is 1.6.0. setup_probe writes that string to stdout with no further formatting.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          "site/public/install.ps1",
+          "site/public/install.sh",
+          "tests/cli_setup_agent.rs"
+        ],
+        "invariant": "The installer treats the probe as data: the path is not executed, and the id is passed as one setup argument.",
+        "method": "source",
+        "result": "install.sh splits on tab. The path is used only in an awk printf for a blocked-symlink message. Outdated ids are passed to tsk setup as a quoted argument. install.ps1 splits each line on tab and invokes setup with the id as an argument array element. The Unix probe test expects four fields when a symlink target contains a tab; the emitted path is the logical skill path, and the writer still strips controls if a path component contains one.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "hardened_curl and the curls inside install.sh do not pass -q/--disable first, so a curlrc on the same account can add --insecure or a proxy. That file belongs to the invoking user, who is already the authority for tsk update.",
+      "The updater executes the gettsk.sh installer after TLS without a separate digest. install.sh then checks the release archive against SHA256SUMS from the same GitHub release. That HTTPS execution is the designed update path.",
+      "InstallerFile mode 0700 cannot be weakened by umask, and open_downloaded rejects a symlink or a different uid before the shell reads the descriptor. An in-place overwrite also needs a non-sticky attacker-writable TMPDIR and an other-writable download (umask 000). Default /tmp is sticky and the usual umask is 022.",
+      "vercel.yml installs vercel@58.11.0 with npm install -g and no integrity digest. The version is pinned, secrets.VERCEL_TOKEN is not in that step's environment, and the job does not run on pull_request."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fstore.rs%23Dispatch::src%2Fdispatch.rs%23worktree%20remove::src%2Fstore.rs::ATTACK-CLASSES.md%23Chained%20vulnerabilities%20and%20trust%20boundaries",
+    "canonical_refs": {
+      "surface": "src/store.rs#Dispatch",
+      "boundary": "src/dispatch.rs#worktree remove",
+      "subsystem": "src/store.rs",
+      "attack_class": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries"
+    },
+    "surface": "Stored dispatch record",
+    "boundary": "cleanup trusts worktree, branch, and base from tsk.json",
+    "subsystem": "src/store.rs",
+    "attack_class": "A tampered dispatch record deleting or merging a different path",
+    "starting_paths": [
+      "src/store.rs",
+      "src/domain/task.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-dispatch",
+    "reviewed_paths": [
+      "src/dispatch.rs",
+      "src/domain/task.rs",
+      "src/fsperm.rs",
+      "src/store.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-dispatch",
+        "reviewed_paths": [
+          "src/dispatch.rs",
+          "src/domain/task.rs",
+          "src/fsperm.rs",
+          "src/store.rs"
+        ],
+        "invariant": "A stored Dispatch worktree, branch, and base are not trusted as a removal or merge target unless cleanup's registration, root, and merge checks pass, and another OS user is not the writer of tsk.json.",
+        "method": "source",
+        "result": "Dispatch is deny_unknown_fields and is copied into cleanup by cleanup_plan. Removal still requires the canonical path to be a non-root git-registered worktree. Branch delete still requires the live merge or exact-tip PR check. Unix state files are created mode 0600 and directories 0700, so another local account cannot write the record. A same-user edit can name another of that user's registered worktrees; that is the user's own worktree. The Windows ACL question is the carried verifier unit and is not re-reported.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "sh_launch_line accepts parentheses in the state-directory path, and its test treats \"/Users/Some One (work)/...\" as literal for fish. Fish expands (command) inside double quotes. The path is the OS user's own state directory, and the pane runs as that user, so this stays inside the same account.",
+      "merge_args does not reject a branch or head that starts with '-'. Branches tsk creates are tsk/t<n>-<slug>, and the method flag comes from a closed enum, so the argv does not include --admin. Only a same-user edit of the stored branch would make gh see a flag word."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fstore.rs%23TaskStore::src%2Ffsperm.rs%23tighten_private_dir::src%2Fstore.rs::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "src/store.rs#TaskStore",
+      "boundary": "src/fsperm.rs#tighten_private_dir",
+      "subsystem": "src/store.rs",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "Unix state file modes and trash lifecycle",
+    "boundary": "0700/0600 and flock on tsk.json",
+    "subsystem": "src/store.rs",
+    "attack_class": "Another OS user reading the store on Unix",
+    "starting_paths": [
+      "src/store.rs",
+      "src/fsperm.rs"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Unix permission hardening did not change in this delta. Windows ACLs are a separate in-scope unit."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-data",
+    "reviewed_paths": [
+      "src/agents.rs",
+      "src/dispatch.rs",
+      "src/fsperm.rs",
+      "src/store.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-data",
+        "reviewed_paths": [
+          "src/fsperm.rs",
+          "src/store.rs"
+        ],
+        "invariant": "On Unix the state directory is mode 0700, store files are mode 0600, and another OS user cannot read tsk.json or trash.jsonl.",
+        "method": "source",
+        "result": "ensure_private_dir rejects a symlink and chmod's the directory to mode & 0700 through an inode-checked handle. create_private_file and open_lock_file use mode 0600. tighten_file strips to mode & 0600 and skips symlinks. load and save call both. tsk.json, tsk.json.1, tsk.json.lock, trash.jsonl, board.lock, the restore token, pre-restore copies, and version backups are in is_private_state_name. Saves and trash rewrites use create_private_file. retain_last_good hard-links then tightens. retain_version_backup and restore copy then tighten. The exclusive lock is on tsk.json.lock. The 0700 directory is what stops another account; flock is same-user mutual exclusion.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-data",
+        "reviewed_paths": [
+          "src/agents.rs",
+          "src/dispatch.rs",
+          "src/store.rs"
+        ],
+        "invariant": "config.toml and launcher scripts are owner-only, including when store.rs is the component that tightens existing files.",
+        "method": "source",
+        "result": "write_config creates config.toml through create_private_temp with mode 0600. store.rs does not list config.toml in is_private_state_name, so a hand-created 0644 file is not repaired on load. The state directory is still tightened to 0700, which blocks traversal. Launchers are not top-level names, so tighten_state_files does not walk them. dispatch write_launcher calls ensure_private_dir on the launchers directory and create_private_file with mode 0600. Neither gap gives another OS user a path through a 0700 parent.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "git_failure and run_probe turn newlines into ' / ' before target_error replaces the target userinfo, and redacted() stops at whitespace. A password that itself contains a newline can remain in the local error and in backup-status.json. The push path still strips it, and that status file is not one of the committed files.",
+      "Query strings and fragments are outside the authority slice, so a token written only as ?token= is pushed. Git http authentication uses userinfo, which is the control the code implements.",
+      "scp-style user:token@host:path has no :// and is kept. Git's scp form has no password field; the colon is part of the username. ssh://user without a colon is kept on purpose.",
+      "Agent command and prompt strings are pushed verbatim. Only [agent.<name>.env] values are replaced. A token pasted into command is a second copy in the backup.",
+      "config.toml is created mode 0600 but is not in is_private_state_name, so a hand-written 0644 file is not repaired. The state directory is still mode 0700. Launchers are created mode 0600 by dispatch and are not walked by tighten_state_files.",
+      "git clone, fetch, and push receive the live URL, token included, as an argument. Another local account can read that argv from the process list while the command runs. The docs already prefer ssh or a credential helper."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Fedit.rs%23delete_word_left::src%2Fui%2Fboard%2Fapply.rs%23apply::src%2Fui::ATTACK-CLASSES.md%23Wildcard",
+    "canonical_refs": {
+      "surface": "src/ui/edit.rs#delete_word_left",
+      "boundary": "src/ui/board/apply.rs#apply",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Wildcard"
+    },
+    "surface": "Text-editing delta outside the named injection and chord gates",
+    "boundary": "Same-user editor invariants in src/ui/edit.rs",
+    "subsystem": "src/ui",
+    "attack_class": "Uncategorized defects in the editing change",
+    "starting_paths": [
+      "src/ui/edit.rs",
+      "src/ui/board/apply.rs",
+      "src/ui/board/model.rs",
+      "tests/queue_board_edit.rs",
+      "tests/queue_board_verbs.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Wildcard",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Obvious things",
+        "reason": "Obvious exposures are a separate unit."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Same-user text editing has no trust boundary beyond the injection, chord, and bidi units, which are in scope for this delta."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Fedit.rs%23escaped_draft_rows::src%2Fui%2Fmod.rs%23terminal_text::src%2Fui::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/ui/edit.rs#escaped_draft_rows",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Editor draft and verb-bar paint after the word-key change",
+    "boundary": "terminal_text and present_line on draft bytes before the terminal",
+    "subsystem": "src/ui",
+    "attack_class": "Terminal control injection via edited task text",
+    "starting_paths": [
+      "src/ui/edit.rs",
+      "src/ui/render.rs",
+      "src/ui/input.rs",
+      "src/ui/board/apply.rs",
+      "src/app.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+        "reason": "This unit is terminal paint of drafts, not a privileged file helper."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-ui",
+    "reviewed_paths": [
+      "src/ui/board/draw.rs",
+      "src/ui/edit.rs",
+      "src/ui/markdown.rs",
+      "src/ui/mod.rs",
+      "src/ui/render.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-ui",
+        "reviewed_paths": [
+          "src/ui/mod.rs",
+          "src/ui/edit.rs",
+          "src/ui/render.rs",
+          "src/ui/board/draw.rs"
+        ],
+        "invariant": "Draft and verb-bar bytes reach the terminal only after terminal_text rewrites every Unicode Cc scalar, so a restored or hand-edited task cannot emit C0 or C1 controls from the editor window.",
+        "method": "source",
+        "result": "terminal_text maps char::is_control to a visible backslash-u hex form. escaped_line_window and the cursor row of escaped_draft_rows escape before field_viewport; other draft rows use present_line, which escapes first. wrap_text and wrapped_edit_rows escape each scalar before the row text is stored. Quick-add, search, title, and notes windows are built from those helpers, and paint_bottom_input_slot, paint_edit_title_overlay, and paint_edit_notes_overlay call present_line again. Carriage return and newline are either split by split_line_breaks before paint or escaped by terminal_text, so they are not raw CR/LF. A second pass is idempotent on the visible escape. OSC 52 clipboard framing is base64 and is outside this paint boundary.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-ui",
+        "reviewed_paths": [
+          "src/ui/markdown.rs",
+          "src/ui/mod.rs"
+        ],
+        "invariant": "Markdown styling of an already wrapped note cannot put a Cc control into a span that present_line would have escaped.",
+        "method": "source",
+        "result": "bound_styled_line runs present_line on the flattened spans. If the string contained a Cc scalar, terminal_text changes it and the inequality paints the escaped string instead of the raw spans.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "terminal_text leaves Unicode format and bidi controls, and U+2028 and U+2029, unchanged because char::is_control is only Cc. present_line documents that choice. Stored titles and paths can still display reordered, but selection, status verbs, and cleanup use task ids and stored paths, and the terminal user is the same OS user who owns the store.",
+      "SearchQueryDeleteWord and ListPickerQueryDeleteWord are not on the save-recovery allowlist, so those chords re-raise the banner. CommandQueryDeleteWord and HelpQueryDeleteWord are allowlisted and only edit their query strings."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Finput.rs%23word_chord::src%2Fapp.rs%23save%20recovery%20allowlist::src%2Fui::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/ui/input.rs#word_chord",
+      "boundary": "src/app.rs#save recovery allowlist",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "New word, line, and Enter chords on the task page and quick-add",
+    "boundary": "Keyboard boundary and save-recovery allowlist in src/app.rs",
+    "subsystem": "src/ui",
+    "attack_class": "Editing chords changing status or skipping save recovery",
+    "starting_paths": [
+      "src/ui/input.rs",
+      "src/app.rs",
+      "src/ui/board/apply.rs",
+      "src/ui/mouse.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "There is no permission check to bypass; the only gate is the same-user save-recovery allowlist."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-ui",
+    "reviewed_paths": [
+      "src/app.rs",
+      "src/ui/board/apply.rs",
+      "src/ui/board/commands.rs",
+      "src/ui/board/model.rs",
+      "src/ui/input.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-ui",
+        "reviewed_paths": [
+          "src/ui/input.rs",
+          "src/ui/board/apply.rs"
+        ],
+        "invariant": "New word, line, and Enter chords in text fields and quick-add edit the draft only and do not map to a status verb.",
+        "method": "source",
+        "result": "word_chord and line_delete run only inside map_form_edit_key, map_quick_add_key, and the query maps. verb_mod_held is Ctrl without Alt, so alt+d, alt+b, and alt+f do not select the Ctrl status entries in map_normal or map_task_page. In EditStep, ctrl+d, ctrl+o, and ctrl+x are matched before the word table; alt+d falls through to delete-word-right. Edit delete and move intents return IntentOutcome::None after mutating the draft buffer. Reply ctrl+s and ctrl+d are only_ctrl and are matched before the word table.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-ui",
+        "reviewed_paths": [
+          "src/app.rs",
+          "src/ui/board/model.rs",
+          "src/ui/input.rs",
+          "src/ui/board/commands.rs"
+        ],
+        "invariant": "While a save is pending, word, line, and task-page Enter chords cannot persist a status change or resolve the failure except through Retry or Cancel.",
+        "method": "source",
+        "result": "begin_save_recovery sets BoardPopup::SaveRecovery, and input_mode_local returns SaveRecovery before the stored field mode. map_save_recovery rejects Ctrl, Alt, and Super, so word and line chords produce no intent; bare Enter is RetrySave. Task-page Enter handlers in board_keyboard_intent require TaskPage, which that popup replaces. The form mapper is an allowlist of field modes and does not include SaveRecovery. apply_board_intent_with_save_recovery drops every non-allowlisted intent, including ConfirmEdit, ToggleStep, CycleCheck, ReplyWithOption, PageReplyUnblock, QuickAddSave, and the edit word and line intents, and does not call apply_intent. Allowlisted CommandQueryDeleteWord and HelpQueryDeleteWord only edit the query string and return IntentOutcome::None. A palette ConfirmCommand is resolved to its underlying intent before the gate; a status intent is still not allowlisted, so the pending save stays pending.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "terminal_text leaves Unicode format and bidi controls, and U+2028 and U+2029, unchanged because char::is_control is only Cc. present_line documents that choice. Stored titles and paths can still display reordered, but selection, status verbs, and cleanup use task ids and stored paths, and the terminal user is the same OS user who owns the store.",
+      "SearchQueryDeleteWord and ListPickerQueryDeleteWord are not on the save-recovery allowlist, so those chords re-raise the banner. CommandQueryDeleteWord and HelpQueryDeleteWord are allowlisted and only edit their query strings."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Fmod.rs%23present_line::src%2Fui%2Fmod.rs%23terminal_text::src%2Fui::ATTACK-CLASSES.md%23Feature%20abuse%20and%20data%20leakage",
+    "canonical_refs": {
+      "surface": "src/ui/mod.rs#present_line",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Feature abuse and data leakage"
+    },
+    "surface": "present_line and terminal_text of stored titles and paths",
+    "boundary": "Documented non-handling of Unicode bidi and format controls",
+    "subsystem": "src/ui",
+    "attack_class": "Bidirectional control characters in terminal presentation",
+    "starting_paths": [
+      "src/ui/mod.rs",
+      "src/ui/render.rs",
+      "src/cli/presenter.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server; Herdr socket peer identity is outside this delta."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk copies a static skill file and does not dispatch model tool calls."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "Changed UI modules contain no unsafe and no binary loader."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Editing and setup run in the invoking process; no shared service quota."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-ui",
+    "reviewed_paths": [
+      "src/ui/board/draw.rs",
+      "src/ui/mod.rs",
+      "src/ui/render.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-ui",
+        "reviewed_paths": [
+          "src/ui/mod.rs",
+          "src/ui/render.rs",
+          "src/ui/board/draw.rs"
+        ],
+        "invariant": "Bidirectional and format characters in stored titles or paths produce a concrete cross-boundary effect only if presentation selects a different task, path, or verb than the stored record.",
+        "method": "source",
+        "result": "present_line documents that it does not reinterpret bidi or format controls. terminal_text uses char::is_control, which is Unicode Cc, so format controls and U+2028 and U+2029 pass through on titles, worktree paths, and branch strings after the Cc escape. Row hits, task numbers, and status verbs bind to task ids and QueueHitTarget values, not to displayed glyph order. The prefix and identifier are painted before the title, and cleanup and dispatch act on the stored path and branch. No source path treats the reordered display as the resource selector. The writer and the terminal user are the same OS user; a restored document is shown only after that user restores it. That is not a cross-user effect.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "terminal_text leaves Unicode format and bidi controls, and U+2028 and U+2029, unchanged because char::is_control is only Cc. present_line documents that choice. Stored titles and paths can still display reordered, but selection, status verbs, and cleanup use task ids and stored paths, and the terminal user is the same OS user who owns the store.",
+      "SearchQueryDeleteWord and ListPickerQueryDeleteWord are not on the save-recovery allowlist, so those chords re-raise the banner. CommandQueryDeleteWord and HelpQueryDeleteWord are allowlisted and only edit their query strings."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fupdate.rs%23spawn_fetch::src%2Fcli%2Fupdate.rs%23curl_path::src%2Fupdate.rs::SUPPLY-CHAIN-AND-RELEASE.md%23Release%20and%20update%20attack%20classes",
+    "canonical_refs": {
+      "surface": "src/update.rs#spawn_fetch",
+      "boundary": "src/cli/update.rs#curl_path",
+      "subsystem": "src/update.rs",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes"
+    },
+    "surface": "Background release check on board open",
+    "boundary": "Absolute TSK_UPDATE_CURL plus hardened_curl argv",
+    "subsystem": "src/update.rs",
+    "attack_class": "Update client executes an env-selected curl",
+    "starting_paths": [
+      "src/update.rs",
+      "src/cli/update.rs",
+      "src/app.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-supply",
+    "reviewed_paths": [
+      "src/app.rs",
+      "src/cli/update.rs",
+      "src/update.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          "src/cli/update.rs",
+          "src/update.rs"
+        ],
+        "invariant": "The background release check does not search PATH for curl and does not take the request URL from the environment.",
+        "method": "source",
+        "result": "curl_path uses TSK_UPDATE_CURL only when the value is absolute and otherwise uses /usr/bin/curl. A relative value is an error. fetch_latest_with passes that path to hardened_curl and appends the constant https://api.github.com/repos/smarzban/tsk/releases/latest. spawn_fetch calls that path. The parsed tag_name is stored for a notice and is not executed.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-supply",
+        "reviewed_paths": [
+          "src/app.rs",
+          "src/update.rs"
+        ],
+        "invariant": "Board open does not let task text or config choose the curl binary.",
+        "method": "source",
+        "result": "Full board open calls update::startup with the state directory and the compile-time CARGO_PKG_VERSION. startup reads only the process environment for TSK_NO_UPDATE_CHECK and, through curl_path, TSK_UPDATE_CURL. No task field or config.toml value is passed into the curl argv. An absolute TSK_UPDATE_CURL is the invoking user's documented override.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "hardened_curl and the curls inside install.sh do not pass -q/--disable first, so a curlrc on the same account can add --insecure or a proxy. That file belongs to the invoking user, who is already the authority for tsk update.",
+      "The updater executes the gettsk.sh installer after TLS without a separate digest. install.sh then checks the release archive against SHA256SUMS from the same GitHub release. That HTTPS execution is the designed update path.",
+      "InstallerFile mode 0700 cannot be weakened by umask, and open_downloaded rejects a symlink or a different uid before the shell reads the descriptor. An in-place overwrite also needs a non-sticky attacker-writable TMPDIR and an other-writable download (umask 000). Default /tmp is sticky and the usual umask is 022.",
+      "vercel.yml installs vercel@58.11.0 with npm install -g and no integrity digest. The version is pinned, secrets.VERCEL_TOKEN is not in that step's environment, and the job does not run on pull_request."
+    ]
+  }
+]

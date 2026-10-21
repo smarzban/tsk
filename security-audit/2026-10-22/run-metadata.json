@@ -1,0 +1,83 @@
+{
+  "run_id": "run-2",
+  "repo": "smarzban/tsk",
+  "target": "/workspace",
+  "source_ref": {
+    "commit": "b5b92d60f2a70f29798354e6096b52ae30871a04",
+    "delta_from": "c6b8de10c28c7aa530b18655e46b3d45440040ea",
+    "worktree_dirty": false,
+    "commits_in_delta": 316
+  },
+  "profile": "standard",
+  "scope": "scoped-delta",
+  "scope_paths": [
+    "src/agents.rs",
+    "src/backup.rs",
+    "src/cli/backup.rs",
+    "src/cli/reply.rs",
+    "src/cli/dispatch.rs",
+    "src/cli/clean.rs",
+    "src/dispatch.rs",
+    "src/dispatch/pr.rs",
+    "src/git_base.rs",
+    "src/activity.rs",
+    "src/store.rs",
+    "src/fsperm.rs",
+    "src/cli/update.rs",
+    "src/setup.rs",
+    "src/setup_agent.rs",
+    "src/app.rs",
+    "src/main.rs",
+    "src/domain/",
+    "src/ui/",
+    "skills/tsk-cli/SKILL.md",
+    "skills/tsk-coordinator/SKILL.md",
+    ".github/workflows/",
+    "site/public/board-demo.js",
+    "site/public/github-stars.js",
+    "site/public/landing.js",
+    "site/src/lib/github-stars.mjs",
+    "scripts/release.py",
+    "packaging/"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md",
+    "DATA-ISOLATION-AND-LIFECYCLE.md",
+    "CLIENT-SIDE.md",
+    "SUPPLY-CHAIN-AND-RELEASE.md",
+    "MEMORY-SAFETY-AND-BINARY.md"
+  ],
+  "prior_run_paths": [
+    "/home/ubuntu/security-audit-skill/smarzban-tsk/prior-2026-10-21/coverage-ledger.json",
+    "/home/ubuntu/security-audit-skill/smarzban-tsk/prior-2026-10-21/findings.json",
+    "/home/ubuntu/security-audit-skill/smarzban-tsk/prior-2026-10-21/architecture.md"
+  ],
+  "prior_ledger_status": "compatible ledger and findings from origin/security-audit/2026-10-21 at c6b8de10; one needs_validation (windows-state-dir-acl); no confirmed findings",
+  "shared_file_owners": {
+    "parent": "run-2"
+  },
+  "run_status": "complete",
+  "notes": "Standard scoped delta from c6b8de10 to b5b92d60. One confirmed finding: backup.https-bare-userinfo.scheme-prefix. Carried windows-state-dir-acl remains needs_validation. Both critics stopped clean. Phase 5 verified both records.",
+  "sandbox": "Hunters were source-only. The backup credential harness ran under unshare --user --map-root-user --net --fork --pid --mount-proc, env -i, prlimit, and timeout. rustc was the pinned 1.96.0 toolchain. No external network. The copied functions matched src/backup.rs.",
+  "agents_spent": {
+    "reconnaissance": 4,
+    "hunters_wave_1": 6,
+    "post_wave_critic": 1,
+    "final_clean_critic": 1,
+    "phase3_verifier": 3,
+    "phase5_verifier": 2
+  },
+  "final_critic": "stop true, no missing units, no reassign ids",
+  "phase5": {
+    "backup.https-bare-userinfo.scheme-prefix": "verified",
+    "windows-state-dir-acl": "verified"
+  },
+  "carried_needs_validation": [
+    "windows-state-dir-acl"
+  ],
+  "confirmed": [
+    "backup.https-bare-userinfo.scheme-prefix"
+  ]
+}
