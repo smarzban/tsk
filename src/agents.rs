@@ -206,7 +206,7 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 
 # --- Backups ------------------------------------------------------------------
 
-# Each save copies tsk.json and this file (without `env` values) to a git
+# Backups copy tsk.json and this file (without `env` values) to a git
 # repository, using your own `git` and its credentials. `tsk backup setup`
 # makes a private GitHub repository with `gh`; `tsk backup add <git-url>` adds
 # any other. Both write an entry like the one below. `tsk backup list` shows
@@ -214,7 +214,8 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # notes: keep the repository private.
 #   kind   optional; "git" is the only kind
 #   url    the repository to push to (required)
-#   every  "save" (the default) or "daily"
+#   every  "save" (the default): after every save; "daily": on the first
+#          save or full board open 24 hours after the last backup
 # [[backup]]
 # kind = "git"
 # url = "git@github.com:you/tsk-backup.git"
