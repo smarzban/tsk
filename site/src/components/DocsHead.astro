@@ -32,5 +32,6 @@ const techArticle =
 
 <Head />
 <SharedHead />
+<script is:inline src="/github-stars.js" defer></script>
 {isDocsPage && <link rel="alternate" type="text/markdown" href={href} />}
 {techArticle && <script type="application/ld+json" set:html={serializeJsonLd(techArticle)} />}

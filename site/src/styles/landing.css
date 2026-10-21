@@ -2416,6 +2416,11 @@ html[data-theme="light"] .pane {
   color: var(--accent);
 }
 
+.foot-links a.foot-gh {
+  width: auto;
+  font-size: 0.82rem;
+}
+
 .foot-links svg {
   width: 1.1rem;
   height: 1.1rem;

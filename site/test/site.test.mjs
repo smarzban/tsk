@@ -413,3 +413,15 @@ test("quickstarts use the installer, Herdr setup, and task capture", async () =>
     assert.ok(!text.includes("-o install-tsk.sh"), file);
   }
 });
+
+test("every GitHub link carries the star count, refreshed by one script", async () => {
+  const page = await read("../src/pages/index.astro");
+  assert.equal(page.match(/<GitHubStars \/>/g)?.length, 2);
+  assert.match(page, /src="\/github-stars.js"/);
+  assert.match(await read("../src/components/DocsLinks.astro"), /<GitHubStars \/>/);
+  assert.match(await read("../src/components/DocsHead.astro"), /src="\/github-stars.js"/);
+  const { formatStars } = await import("../src/lib/github-stars.mjs");
+  assert.deepEqual([0, 223, 999, 1000, 1290, 9999, 12345].map(formatStars), [
+    "0", "223", "999", "1k", "1.2k", "9.9k", "12k",
+  ]);
+});

@@ -1,0 +1,27 @@
+---
+/**
+ * The star count beside a GitHub link. Built in at deploy time and refreshed in
+ * the browser by public/github-stars.js; hidden while no count is known.
+ */
+import { formatStars, repoStars } from '../lib/github-stars.mjs';
+
+const stars = await repoStars();
+const label = stars == null ? '' : `${stars} GitHub stars`;
+---
+
+<span class="gh-stars" data-gh-stars aria-label={label} hidden={stars == null}>
+  <span aria-hidden="true">★ <span data-gh-stars-count>{stars == null ? '' : formatStars(stars)}</span></span>
+</span>
+
+<style>
+  .gh-stars {
+    margin-left: 0.4em;
+    opacity: 0.7;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .gh-stars[hidden] {
+    display: none;
+  }
+</style>

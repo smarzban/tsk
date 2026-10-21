@@ -3,14 +3,16 @@
  * Replaces Starlight's social icon row with the landing page's text nav:
  * lowercase links with the amber underline on hover.
  */
+import GitHubStars from './GitHubStars.astro';
+
 const links = [
   { label: 'home', href: '/' },
-  { label: 'github', href: 'https://github.com/smarzban/tsk' },
+  { label: 'github', href: 'https://github.com/smarzban/tsk', stars: true },
 ];
 ---
 
 <nav class="docs-links" aria-label="Site">
-  {links.map(({ label, href }) => <a href={href}>{label}</a>)}
+  {links.map(({ label, href, stars }) => <a href={href}>{label}{stars && <GitHubStars />}</a>)}
 </nav>
 
 <style>
