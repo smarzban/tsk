@@ -80,15 +80,16 @@ In Herdr, press `prefix+a` after [setup](/docs/install/#add-to-herdr). A popup o
 - `Esc` discards it, after first closing an open step editor or picker.
 - A failed save keeps the draft open to retry or cancel.
 
-To open the popup from a script:
+To open the popup from a script, invoke the plugin action for your platform:
 
-```sh
-herdr plugin action invoke quick-capture --plugin herdr-tsk
-```
+| Platform | Command |
+| --- | --- |
+| macOS, Linux | `herdr plugin action invoke quick-capture --plugin herdr-tsk` |
+| Windows | `herdr plugin action invoke quick-capture-windows --plugin herdr-tsk` |
 
 ## In the terminal
 
-`tsk capture` opens the same capture flow in your terminal, as does `TSK_MODE=capture tsk`. It exits after a save or a discard.
+`tsk capture` opens the same capture flow in your terminal, as does `TSK_MODE=capture tsk`. It exits after a save or a discard. `--state-dir <dir>` saves into another store ([`tsk capture`](/docs/cli/#commands)).
 
 ## From an agent or script
 

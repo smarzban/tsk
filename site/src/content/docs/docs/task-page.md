@@ -17,17 +17,17 @@ From the top: the title and status, a BLOCKED or REVIEW section while the task h
 
 Click the task's `T` number to copy it.
 
-The footer reads `@assignee · ⎇ <base> · after T202 · before T203 · #thread · project`:
+The footer reads `@assignee · ⎇ <base> · after T202 · before T205 · #thread · project`:
 
 | Slot | Shows |
 | --- | --- |
 | `@assignee` | The [assignee](/docs/dispatch/#assign): an agent profile, you, or a person. An unassigned task shows `+ assign` when at least one [agent profile](/docs/storage/#configuration) exists. Click to pick |
-| `⎇ <base>` | The base branch. Unset, it shows the repository default, such as `⎇ main (default)`. Click to pick |
-| `after T202, T205` | The tasks this one [runs after](/docs/board/#after). Shown only when set. Click to pick |
-| `before T203` | The tasks that run after this one. Read-only: it changes when you edit theirs. Click a number to open that task |
+| `⎇ <base>` | The base branch. Unset, it shows the repository default, such as `⎇ main (default)`, or `⎇ default` on the desk. Click to pick |
+| `after T202` | The tasks this one [runs after](/docs/board/#after). Shown only when set, or during an edit. Click to pick |
+| `before T205` | The tasks that run after this one. Read-only: it changes when you edit theirs. Click a number to open that task |
 | `#thread · project` | The thread and the project, or desk |
 
-Below it, the action bar lists the page's keys. In view mode it reads `ctrl+e edit`, the task's status actions, `esc close`, and `: commands`. Each one is clickable; `: commands` opens the command palette.
+Below it, the action bar lists the page's keys. In view mode it reads `ctrl+e edit`, the task's status actions, `esc close`, and `: commands`. During an edit it reads `shift+enter save`, `ctrl+a add step`, `esc cancel`, and `: commands`. Each one is clickable; `: commands` opens the command palette.
 
 ## Edit
 

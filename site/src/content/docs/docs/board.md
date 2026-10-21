@@ -142,8 +142,8 @@ A row addressed to you carries a dim **live line** under it, starting `└─`, 
 
 | Row | Live line |
 | --- | --- |
-| Blocked on you | Their newest reply, else the block's needs or why: `@claude: the client id from the provider · 2h` |
-| In review on you | Their newest reply, else what was done: `@claude: Built the widget; empty input now handled. · 40m` |
+| Blocked on you | Their newest reply after yours, else the block's needs or why: `@claude: the client id from the provider · 2h` |
+| In review on you | Their newest reply after yours, else what was done: `@claude: Built the widget; empty input now handled. · 40m` |
 | Blocked on a task that is now done or deleted | `T202 is done · unblock it · 1h` |
 
 The age is how old the message is, and the asker is left out when it is you. A block or review with nothing said has no live line. Neither do rows waiting elsewhere, started and done rows, or notices. When a blocking task is done, the blocked task returns to NEEDS YOU, but its status does not change.
@@ -154,13 +154,13 @@ Press `z` to hide every live line, so each task takes one row. A row whose line 
 
 Below 110 columns, a click or `→` opens a **peek** under the row. A wider pane opens the details beside the board instead ([Wide layout](#wide-layout)). The peek shows up to five wrapped note lines, then a footer: `@assignee · ⎇ <base> · #thread · project`, without what is unset or already said.
 
-A blocked task's peek shows the block instead of notes: who it waits on, the why, then the options or needs. A review's peek shows what was done and every check: `○` open, `✓` passed, `✗` failed. A task with prerequisites lists them with their status, such as `after T202 · started`. The [task page](/docs/task-page/) shows everything.
+A blocked task's peek shows the block instead of notes: who it waits on, the why, then the options or needs. A review's peek shows what was done and every check: `○` open, `✓` passed, `✗` failed. A task with prerequisites lists them with their status, such as `after T202 · started`, then the tasks waiting on it, such as `before T205`. The [task page](/docs/task-page/) shows everything.
 
 ## Multi-select
 
 `shift+M` turns on multi-select. Mark tasks with `Space`, `shift+↑`/`shift+↓`, or a click; marked rows show `▪`.
 
-With tasks marked, these act on the whole set as one save and one undo step: status changes, delete, archive, assignee, base, and after. `Enter`, editing, task-page actions, and relaunch stay on the cursor.
+With tasks marked, these act on the whole set as one save and one undo step: status changes, delete, archive, assignee, base, after, and waiting on. `Enter`, editing, task-page actions, and relaunch stay on the cursor.
 
 - Starting a set that would launch agents opens [one card first](/docs/dispatch/#start-a-marked-set).
 - Starting moves only open and ready tasks. It skips marked done tasks, and the status row counts them.
@@ -220,9 +220,9 @@ When the last prerequisite is done, each waiting **ready** task starts in the sa
 
 ### Task picker
 
-The task picker is a search box titled `T5 runs after`. The tasks it runs after sit pinned at the top, a done one marked `· done`.
+The task picker is a search box titled `T12 runs after`, or `3 tasks run after` for a marked set. The tasks it runs after sit pinned at the top, marked `✓`, a done one also `· done`.
 
-1. Type a task number (`202` or `T202`) or words from its title, such as `login timeout`. Matches list below the pinned tasks, this project's first. Others show their project.
+1. Type a task number (`202` or `T202`) or words from its title, such as `login timeout`. Matches list below the pinned tasks, this project's first. Others show their project. Done and archived tasks are not offered.
 2. `Enter` or a click on a match pins it and clears the search. `Enter` or a click on a pinned task unpins it. `ctrl+x` unpins every task.
 3. `shift+Enter` saves exactly the pinned tasks. With none pinned, the task runs after nothing.
 

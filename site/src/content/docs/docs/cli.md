@@ -579,7 +579,7 @@ tsk project archive atlas
 
 ## trash
 
-Restores a deleted task with its number.
+Restores a deleted task with its number, or the next free one.
 
 ```text
 tsk trash restore <task> [--state-dir <dir>]
@@ -597,7 +597,7 @@ tsk trash restore T12
 
 ## backup
 
-Backs the task store and `config.toml` up to git repositories. Targets, frequency, and what is pushed: [git backups](/docs/storage/#git-backups).
+Backs the task store and `config.toml` up to git repositories. Targets, frequency, and what is pushed: [git backups](/docs/storage/#git-backups). `backup` and `restore` print a URL's credentials as `***` ([credentials](/docs/storage/#credentials)).
 
 ```text
 tsk backup setup [--repo <name>] [--state-dir <dir>]
@@ -634,11 +634,10 @@ tsk restore [<version>] [--all] [--state-dir <dir>]
 | `<version>` | Restore this version without asking, including one only `--all` lists |
 | `--all` | List every version, not the newest 20 per machine |
 
-- The list shows each version's id, time, host, task count, and target, newest first. In a terminal it then asks which to restore; Enter cancels.
+- The list shows each version's id, time, machine, task count, and target, newest first. In a terminal it then asks which to restore; Enter cancels.
 - A restore keeps the replaced store beside it and prints its path. It never changes `config.toml`.
 - It refuses and replaces nothing when there are no targets or the id is unknown. It also refuses while a board or quick capture is open, and for a version from a newer tsk.
 - `tsk restore T12` is not a version: it points at `tsk trash restore T12`. A bare number, such as a `#` from the list, refuses and asks for the id.
-- A backup URL's credentials print as `***` ([credentials](/docs/storage/#credentials)).
 
 **Refusals:** a message with no code, exit 1 ([exit contract](#exit-contract)). A failure while replacing the store exits 3.
 

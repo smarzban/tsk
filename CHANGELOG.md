@@ -27,9 +27,10 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - `m` on the cleanup card merges the task's pull request with `gh`, then completes the task and cleans up. `[merge] method` in `config.toml` picks the method; CLI: `--merge`.
 - Block with a reason: `ctrl+b` asks why and what you need. Answer on the task page, under the row (`r`), or with `tsk reply`. Unblocking sends replies to the agent.
 - Review with checks: `ctrl+r` asks what was done and what to check. Mark checks, give feedback (`r`, `tsk reply`), then approve (`ctrl+d`) or send back (`ctrl+s`).
-- Change who a block or review waits on, keeping its replies: `Enter` on its top line, palette **set waiting on…**, or `tsk edit --on`.
+- Change who a block or review waits on, keeping its replies: `w` on its task page, palette **set waiting on…**, or `tsk edit --on`.
+- A blocked or review row addressed to you shows the asker's words on a dim line under it. `z` hides these lines, leaving `✉`; `[board] messages` sets the default.
 - Paper trail: the task page lists who did what, newest first, below the steps, and drops created and updated dates from its footer. `tsk list T12` shows it as `activity`.
-- After: a task can wait for other tasks in any project (`!w T202`, the After field, `tsk edit --after`). When the last one is done, a waiting ready task starts.
+- After: a task can wait for other tasks in any project (`!w T202`, the After field's search picker, `tsk edit --after`). When the last one is done, a waiting ready task starts.
 - Agents block and hand back for review with `tsk status`, and use `tsk dispatch`, `tsk clean`, and `tsk reply`. Agent skill 1.6.0 covers them; `tsk update` refreshes installed copies.
 - `ctrl+u` undoes status changes, step changes, and archiving; a marked set is one step. Undoing a start that launched an agent leaves the agent running. Thanks @LukasGold (#173).
 - Group and sort by assignee with `g` and `s` or `tsk list --group assignee` and `--sort assignee`. The `t` filter gains an `@assignees` tab.
@@ -60,7 +61,6 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - `Esc` on a selected Thread on the task page cancels only the thread, not the whole edit.
 - `ctrl+x` in a new step's row discards that row, instead of removing the step above it or deleting a task.
 - `tsk steps` takes `--` before step text that starts with `-`, as `tsk reply` does.
-- `tsk restore` of an older version keeps task numbering going, so new tasks never reuse a number a deleted task still holds.
 - `tsk trash restore` gives a task the next free number when another task holds its old one, so no two tasks share a number.
 - `tsk capture --state-dir <dir>` saves into that store instead of the default one; any other argument is refused.
 

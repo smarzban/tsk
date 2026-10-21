@@ -72,8 +72,9 @@ herdr server reload-config
 
 ### Give your agent the skill
 
-The skill teaches your agent to read the board, add tasks, and update their status
-and steps:
+Two skills: `tsk-cli` teaches your agent to read the board, add tasks, and update
+their status and steps. `tsk-coordinator` lets it brief builder agents, review their
+pull requests, and report back on the board:
 
 ```sh
 tsk setup

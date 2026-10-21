@@ -76,6 +76,8 @@ task's running agent, add `--send`: it sends only that reply and prints `sent to
     for your own bookkeeping ([steps](https://gettsk.sh/docs/cli.md#steps)).
 11. **Many tasks at once:** `cat plan.json | tsk add`; on exit 1, retry only the `failed` items
     ([JSON plans](https://gettsk.sh/docs/cli.md#json-plans)).
+12. **A restored task may change number.** `tsk trash restore T12` prints the number it got; use that
+    one from then on ([trash](https://gettsk.sh/docs/cli.md#trash)).
 
 ## Reading the board
 

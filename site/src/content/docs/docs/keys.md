@@ -32,7 +32,7 @@ Status, edit, delete, and archive keys take `ctrl`. Bare letters move, open, and
 | Sort by recent, project, thread, title, or assignee | `s` |
 | Fold / unfold the cursor's group | `f` |
 | Fold / unfold every group in view | `shift+F` |
-| Hide / show the [live lines](/docs/board/#rows) under rows | `z` |
+| Hide / show agent messages, the [live lines](/docs/board/#rows) under rows | `z` |
 | Open the desk / last project / Projects view | `1` / `2` / `3` |
 | Pick a project | `p` |
 | Filter by thread, project, or assignee | `t` |
@@ -209,11 +209,11 @@ In the Herdr popup, `shift+Enter` saves and closes it. `Esc` or `ctrl+c` discard
 | Project picker, archive | `ctrl+f` archives the selected project · on the archived tab, `ctrl+f` or `ctrl+u` restores |
 | Archived project's board | `ctrl+u` restores · `Esc`, `p`, or `1`–`3` leaves |
 | Filter and view pickers (`t`, `v`) | type to filter · `↑` / `↓` select · `Tab` or `←` / `→` switch tabs, `shift+Tab` back · `Enter` chooses · `Esc` closes |
-| Group, sort, assignee, and base pickers | type to filter · `↑` / `↓` or `Tab` select · `Enter` applies · `Esc` closes with no change |
+| Group, sort, assignee, and base pickers | type to filter · `↑` / `↓` or `Tab` / `shift+Tab` select · `Enter` applies · `Esc` closes with no change |
 | Assignee and waiting-on pickers, **type a name…** | the row shows what you typed, such as `@dana` · `Enter` applies it |
 | Assignee picker, a person selected | `ctrl+x` [removes the name](/docs/dispatch/#remove-a-name-from-the-list) from the list · `ctrl+u` puts it back |
 | Waiting-on picker | as the assignee picker, and `←` / `→` also move |
-| After picker | type a number or words · `↑` / `↓` select · `Enter` pins a match or unpins a pinned task · `ctrl+x` unpins every task · `shift+Enter` saves the pinned tasks · `Esc` closes with no change |
+| [After picker](/docs/board/#task-picker) | type a number or words · `↑` / `↓` select · `Enter` pins a match or unpins a pinned task · `ctrl+x` unpins every task · `shift+Enter` saves the pinned tasks · `Esc` closes with no change |
 | Board search (`/`) | type or paste · `Backspace` · `Enter` pins the query · `Esc` clears and closes |
 | Palette (`:`) | type to filter · `↑` / `↓` or `Tab` / `shift+Tab` select · `Enter` runs · `Esc` closes |
 | Help (`?`) | type to filter by key or action · `↑` / `↓`, page keys, or the wheel scroll · `Esc` clears the search, then closes |

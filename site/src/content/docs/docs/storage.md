@@ -34,7 +34,8 @@ Where tsk keeps your tasks and settings, how to configure it, and how to back it
 | `backup-repos/` | Local clones of backup targets |
 | `update.json` | The cached [update check](#update-check) |
 | `fetch-stamps.json` | When each repository's remote was last fetched. Dispatch, the base picker, and cleanup reuse a fetch from the last 60 seconds. Safe to delete |
-| `launchers\`, `cleanups\` | Windows only: dispatch launchers and cleanup progress |
+| `launchers/` | Dispatch launchers. Each one deletes itself once its agent starts |
+| `cleanups/` | Marks of worktree removals under way, so an interrupted cleanup resumes |
 
 ## Configuration
 
