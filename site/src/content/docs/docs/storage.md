@@ -41,7 +41,7 @@ Where tsk keeps your tasks and settings, how to configure it, and how to back it
 
 `config.toml` in the state directory holds agent profiles, project settings, the merge method, board defaults, and [backup targets](#settings).
 
-- The first full board open writes a starter file when none exists. It explains each setting and holds commented examples that take effect only when you uncomment them.
+- The first full board open writes a starter file when none exists. It lists every setting of that version with its options and default, and holds commented examples that take effect only when you uncomment them.
 - Quick capture, the CLI, and setup never create the file. tsk never replaces an existing file, even an empty one.
 - tsk never edits profiles or other settings: edit the file yourself. Only the [backup verbs](#git-backups) write to it, adding and removing `[[backup]]` entries.
 

@@ -25,6 +25,17 @@ static CONFIG_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// the quoted default prompt must stay equal to [`DEFAULT_PROMPT`] (pinned by a test).
 pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #
+# tsk writes this file once and never updates it. Every setting, including
+# ones added in later versions, is listed at
+# https://gettsk.sh/docs/storage/#configuration
+#
+# Every setting below is commented out: remove the leading # to use one.
+# An unknown key or a bad value makes that table an error: tsk does not use
+# it and says why, on the board's status row or where the setting is used.
+# tsk ignores top-level keys and tables it does not know.
+
+# --- Agent profiles ---------------------------------------------------------
+
 # Agent profiles let you assign a task to an agent (`@` or `!a name`).
 # In Herdr, starting an assigned project task (ctrl+s) dispatches it: tsk
 # creates a git worktree for the task, opens a Herdr workspace there, and runs
@@ -34,16 +45,20 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # Any agent that runs in a terminal works, including ones not listed here.
 # A profile needs only:
 #
-#   [agent.<name>]                     name: lowercase letters, digits, - and .
+#   [agent.<name>]                     the profile's name
 #   command = ["program", "arg", ...]  the program and its arguments
+#
+# A name is lowercase letters, digits, - and ., up to 32 characters, and
+# starts with a letter or digit. Quote a name with dots: [agent."a.b"].
 #
 # tsk adds the prompt as the LAST argument, so the agent must accept its first
 # message as a trailing argument (`claude "…"`, `pi "…"`, `codex "…"`).
 #
 # Optional:
-#   prompt = "…"                       replaces the default prompt below
-#   prompt_append = "…"                added after the default prompt instead
-#   [agent.<name>.env]                 extra environment variables
+#   prompt = "…"         replaces the default prompt below
+#   prompt_append = "…"  adds to the end of the default prompt; setting it
+#                        together with `prompt` is a config error
+#   [agent.<name>.env]   extra environment variables, as strings
 #   KEY = "value"
 #
 # Placeholders, usable in `command`, `prompt`, and `prompt_append`:
@@ -54,8 +69,8 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #   {worktree}  path of the task's worktree
 #   {branch}    the task's branch
 #   {base}      the branch the work starts from, e.g. main
-#   {on}        who the agent hands review to: the project's `review_on`,
-#               or `you`
+#   {on}        who the agent hands reviews and blocks to: the project's
+#               `review_on`, or `you`
 #
 # The default prompt, used when a profile has no `prompt`:
 #
@@ -83,11 +98,11 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #      failed checks: address it, then set review again.
 #   8. Never set the task to done; the person who reviews it does.
 #
-# Remove the leading # from a block below to use it.
+# `tsk dispatch T12 --show-prompt` shows exactly what an agent gets.
 
 # --- Examples using the default prompt -------------------------------------
 
-# Flags follow the program, for example a model: ["codex", "--model", "<model>"].
+# Flags follow the program, e.g. a model: ["codex", "--model", "<model>"].
 
 # [agent.claude]
 # command = ["claude"]
@@ -111,7 +126,7 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # {steps}
 #
 # Keep the change small, commit on {branch}, open a pull request into {base},
-# then set the task to review.
+# then set the task to review with `tsk status {number} review --on {on}`.
 # """
 
 # Any other terminal agent: its program and flags go in `command`. `env` sets
@@ -130,10 +145,16 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # command = ["claude"]
 # prompt_append = "Before review, run the review checklist in CONTRIBUTING.md."
 
+# --- Project settings -------------------------------------------------------
+
 # Settings for one project, keyed by its repository path (`~` is your home
-# folder). They live only in this file, never in the repository.
-#   review_on      who agents hand review to: `you` (the default), an agent
-#                  profile's name, or anyone else's name
+# folder). They live only in this file, never in the repository. Desk tasks
+# never use them.
+#   review_on      who agents hand reviews and blocks to, the {on} value:
+#                  `you` (the default), an agent profile's name, or any
+#                  other name. A task handed to anyone but you stays out of
+#                  NEEDS YOU until someone hands it on, e.g.
+#                  `tsk edit T12 --on you`.
 #   prompt_append  added after the prompt, before the profile's own
 #                  `prompt_append`
 # [project."~/code/my-app"]
@@ -152,7 +173,8 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 
 # `m` on the cleanup card (or `tsk status T12 done --merge`) merges the task's
 # open pull request with the GitHub CLI (`gh`), then marks the task done and
-# cleans up. `method` is "merge" (the default), "squash", or "rebase".
+# cleans up.
+#   method  "merge" (the default), "squash", or "rebase"
 # [merge]
 # method = "squash"
 
@@ -160,16 +182,20 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 
 # The group and sort a fresh board starts from (`g` and `s` change them for
 # the session only). `group` and `sort` set the desk; `project_group` and
-# `project_sort` set every project board. `messages` hides the agent message
-# lines under board rows (`z` toggles them for the session). `me` is the name
-# the board shows for you, such as `@sam` on a task assigned to you, instead
-# of `you`.
-#   group          "none", "project", "thread", or "assignee"
-#   sort           "recent", "project", "thread", "title", or "assignee"
-#   project_group  "none", "thread", or "assignee"
-#   project_sort   "recent", "thread", "title", or "assignee"
-#   messages       "shown" or "hidden"
-#   me             lowercase letters, digits, - and .; not an agent's name
+# `project_sort` set every project board. `messages` shows or hides the agent
+# message lines under board rows (`z` toggles them for the session). `me` is
+# the name the board shows for you, such as `@sam` on a task assigned to you.
+#   group          "none" (the default), "project", "thread", or "assignee"
+#   sort           "recent" (the default), "project", "thread", "title", or
+#                  "assignee"
+#   project_group  "none" (the default), "thread", or "assignee"
+#   project_sort   "recent" (the default), "thread", "title", or "assignee"
+#   messages       "shown" (the default) or "hidden"
+#   me             `you` by default; a name of lowercase letters, digits, -
+#                  and ., up to 32 characters, starting with a letter or
+#                  digit, and not an agent profile's name
+# The values below are examples, not the defaults: uncommenting the whole
+# block changes group, project_group, project_sort, messages, and me.
 # [board]
 # group = "project"
 # sort = "recent"
@@ -180,14 +206,17 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 
 # --- Backups ------------------------------------------------------------------
 
-# Saves copy tsk.json and this file (without `env` values) to a git
+# Each save copies tsk.json and this file (without `env` values) to a git
 # repository, using your own `git` and its credentials. `tsk backup setup`
 # makes a private GitHub repository with `gh`; `tsk backup add <git-url>` adds
 # any other. Both write an entry like the one below. `tsk backup list` shows
 # how each went, and `tsk restore` puts a version back. Backups hold your task
 # notes: keep the repository private.
+#   kind   optional; "git" is the only kind
+#   url    the repository to push to (required)
 #   every  "save" (the default) or "daily"
 # [[backup]]
+# kind = "git"
 # url = "git@github.com:you/tsk-backup.git"
 # every = "save"
 "##;
@@ -2144,7 +2173,7 @@ then set review again.
             .lines()
             .skip_while(|line| !line.starts_with("# The default prompt, used when"))
             .skip(2)
-            .take_while(|line| !line.starts_with("# Remove the leading #"))
+            .take_while(|line| !line.starts_with("# `tsk dispatch"))
             .collect::<Vec<_>>();
         let mut prompt = String::new();
         for line in lines {
@@ -2167,6 +2196,32 @@ then set review again.
             }
         }
         prompt.trim_end().to_string()
+    }
+
+    #[test]
+    fn starter_file_defines_every_setting_the_parsers_accept() {
+        for key in [
+            "command = ",
+            "prompt = ",
+            "prompt_append = ",
+            "[agent.<name>.env]",
+            "review_on ",
+            "method ",
+            "group ",
+            "sort ",
+            "project_group ",
+            "project_sort ",
+            "messages ",
+            "me ",
+            "kind ",
+            "url ",
+            "every ",
+        ] {
+            assert!(
+                STARTER_CONFIG.contains(&format!("#   {key}")),
+                "the starter defines {key:?}"
+            );
+        }
     }
 
     #[test]
