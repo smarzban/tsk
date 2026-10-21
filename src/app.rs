@@ -17339,48 +17339,55 @@ mod quick_assign_tests {
 
     #[test]
     fn undoing_a_dispatched_start_out_of_blocked_reopens_the_block() {
-        let temp = Temp::new("start-undo-blocked", &["builder"]);
-        let (mut domain, mut model, ids) = board(&temp, &["blocked then started"]);
-        domain
-            .assign(ids[0], Some("builder".into()))
-            .expect("assign");
-        temp.store.reload_merge_save(&mut domain).expect("save");
-        domain
-            .block(
-                ids[0],
-                crate::domain::BlockDraft::from_input(
-                    Some("which db?"),
-                    None,
-                    &[],
-                    Default::default(),
+        // `ctrl+s` and the palette's set status: started take the same route out of blocked.
+        for (name, intent) in [
+            (
+                "start-undo-blocked",
+                BoardIntent::SetStatus(HumanStatus::Started),
+            ),
+            ("ctrl-s-undo-blocked", BoardIntent::PrimaryVerb),
+        ] {
+            let temp = Temp::new(name, &["builder"]);
+            let (mut domain, mut model, ids) = board(&temp, &["blocked then started"]);
+            domain
+                .assign(ids[0], Some("builder".into()))
+                .expect("assign");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            domain
+                .block(
+                    ids[0],
+                    crate::domain::BlockDraft::from_input(
+                        Some("which db?"),
+                        None,
+                        &[],
+                        Default::default(),
+                    )
+                    .expect("draft"),
+                    crate::domain::OWNER,
                 )
-                .expect("draft"),
-                crate::domain::OWNER,
-            )
-            .expect("block");
-        temp.store.reload_merge_save(&mut domain).expect("save");
-        model.sync_from_domain(&domain);
-        select(&mut domain, &mut model, ids[0]);
-        let mut host = fake_host(&temp);
-        handle(
-            &temp,
-            &mut domain,
-            &mut model,
-            BoardIntent::SetStatus(HumanStatus::Started),
-            &mut host,
-        );
-        assert_eq!(
-            domain.get(ids[0]).expect("task").status,
-            HumanStatus::Started
-        );
-        assert!(domain.get(ids[0]).expect("task").block.is_none());
-        handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
-        let task = domain.get(ids[0]).expect("task");
-        assert_eq!(task.status, HumanStatus::Blocked);
-        assert_eq!(
-            task.block.as_ref().and_then(|block| block.why.as_deref()),
-            Some("which db?")
-        );
+                .expect("block");
+            temp.store.reload_merge_save(&mut domain).expect("save");
+            model.sync_from_domain(&domain);
+            select(&mut domain, &mut model, ids[0]);
+            let mut host = fake_host(&temp);
+            handle(&temp, &mut domain, &mut model, intent, &mut host);
+            assert_eq!(
+                domain.get(ids[0]).expect("task").status,
+                HumanStatus::Started
+            );
+            assert!(domain.get(ids[0]).expect("task").block.is_none());
+            assert!(
+                domain.get(ids[0]).expect("task").dispatch.is_some(),
+                "{name}: a never-dispatched assigned task dispatches"
+            );
+            handle(&temp, &mut domain, &mut model, BoardIntent::Undo, &mut host);
+            let task = domain.get(ids[0]).expect("task");
+            assert_eq!(task.status, HumanStatus::Blocked);
+            assert_eq!(
+                task.block.as_ref().and_then(|block| block.why.as_deref()),
+                Some("which db?")
+            );
+        }
     }
 
     #[test]

@@ -3015,6 +3015,10 @@ fn apply_board_intent(
                     if task.status == HumanStatus::Done {
                         skipped_done += 1;
                     }
+                    // A notice's review or started status is its own; no hint applies.
+                    if task.is_notice() {
+                        continue;
+                    }
                     let label = task
                         .board_identifier()
                         .unwrap_or_else(|| "this task".to_string());

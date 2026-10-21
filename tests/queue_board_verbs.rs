@@ -9098,3 +9098,25 @@ fn a_refused_delete_names_the_deleted_task_when_an_unlinked_one_changed() {
         "delete of T1 not undone: T2 changed since its after change"
     );
 }
+
+#[test]
+fn ctrl_s_on_a_notice_in_review_stays_silent() {
+    let mut domain = DomainState::new();
+    let id = domain
+        .create_notice(
+            "guide.review",
+            "A notice in review",
+            None,
+            HumanStatus::Review,
+            TaskScope::Global,
+            Vec::new(),
+        )
+        .expect("seed notice");
+    let mut model = BoardModel::from_domain(&domain, None);
+    assert_eq!(model.selected_id(), Some(id));
+    let outcome =
+        apply_intent(&mut domain, &mut model, BoardIntent::PrimaryVerb, None).expect("primary");
+    assert_eq!(outcome, IntentOutcome::None);
+    assert_eq!(model.message(), None, "no task hint for a notice");
+    assert_eq!(domain.get(id).expect("notice").status, HumanStatus::Review);
+}
