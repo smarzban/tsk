@@ -12,6 +12,10 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Fixed
+
+- A bare token in an https backup URL is removed and masked even when the URL does not start at the scheme.
+
 ## v0.13.0
 
 ### Breaking
