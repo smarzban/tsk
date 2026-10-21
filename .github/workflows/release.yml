@@ -19,6 +19,7 @@ concurrency:
 jobs:
   resolve:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     outputs:
       commit: ${{ steps.pin.outputs.commit }}
     env:
@@ -38,6 +39,7 @@ jobs:
     needs: resolve
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -106,6 +108,7 @@ jobs:
   draft:
     needs: [resolve, build]
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: write
     env:
