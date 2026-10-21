@@ -34,7 +34,9 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # it and says why, on the board's status row or where the setting is used.
 # tsk ignores top-level keys and tables it does not know.
 
-# --- Agent profiles ---------------------------------------------------------
+# =============================================================================
+# Agent profiles
+# =============================================================================
 
 # Agent profiles let you assign a task to an agent (`@` or `!a name`).
 # In Herdr, starting an assigned project task (ctrl+s) dispatches it: tsk
@@ -71,7 +73,8 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #   {base}      the branch the work starts from, e.g. main
 #   {on}        who the agent hands reviews and blocks to: the project's
 #               `review_on`, or `you`
-#
+
+# =============================================================================
 # The default prompt, used when a profile has no `prompt`:
 #
 #   You were dispatched to T{number} ({title}) in worktree {worktree} on
@@ -97,23 +100,33 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #   7. A message `[tsk T{number} sent back] …` is review feedback, with any
 #      failed checks: address it, then set review again.
 #   8. Never set the task to done; the person who reviews it does.
-#
+# =============================================================================
+
 # `tsk dispatch T12 --show-prompt` shows exactly what an agent gets.
 
-# --- Examples using the default prompt -------------------------------------
+# =============================================================================
+# Examples using the default prompt
+# =============================================================================
 
 # Flags follow the program, e.g. a model: ["codex", "--model", "<model>"].
 
-# [agent.claude]
-# command = ["claude"]
+# [agent.opus]
+# command = ["claude", "--model", "claude-opus-5-5"]
 
 # [agent.codex]
 # command = ["codex"]
 
-# [agent.pi]
-# command = ["pi"]
+# `env` sets variables for that agent only, here to mark its commits as the
+# agent's. Do not put API keys here: this file is plain text.
+# [agent.builder]
+# command = ["pi", "--model", "xai/grok-4.7", "--thinking", "high"]
+# [agent.builder.env]
+# GIT_AUTHOR_NAME = "builder (via tsk)"
+# GIT_COMMITTER_NAME = "builder (via tsk)"
 
-# --- Examples with their own prompt -----------------------------------------
+# =============================================================================
+# Examples with their own prompt
+# =============================================================================
 
 # A quick fixer for small tasks, with the task text inlined.
 # [agent.grok]
@@ -129,23 +142,28 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # then set the task to review with `tsk status {number} review --on {on}`.
 # """
 
-# Any other terminal agent: its program and flags go in `command`. `env` sets
-# variables for that agent only, here to mark its commits as the agent's.
-# Do not put API keys here: this file is plain text.
-# [agent.my-agent]
-# command = ["my-agent", "--some-flag"]
-# [agent.my-agent.env]
-# GIT_AUTHOR_NAME = "my-agent (via tsk)"
-# GIT_COMMITTER_NAME = "my-agent (via tsk)"
-
-# --- Adding to the default prompt -----------------------------------------
+# =============================================================================
+# Adding to the default prompt
+# =============================================================================
 
 # `prompt_append` keeps the default prompt and adds your own lines after it.
 # [agent.claude-reviewed]
 # command = ["claude"]
 # prompt_append = "Before review, run the review checklist in CONTRIBUTING.md."
 
-# --- Project settings -------------------------------------------------------
+# =============================================================================
+# On Windows (preview)
+# =============================================================================
+
+# tsk starts the agent through Windows PowerShell, so `command` may name an
+# .exe or the .ps1 shim npm installs (pi, codex). Write Windows paths as
+# literal strings ('...') so their backslashes stay as typed.
+# [agent.claude-win]
+# command = ['C:\Users\you\.local\bin\claude.exe']
+
+# =============================================================================
+# Project settings
+# =============================================================================
 
 # Settings for one project, keyed by its repository path (`~` is your home
 # folder). They live only in this file, never in the repository. Desk tasks
@@ -161,24 +179,16 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # review_on = "coordinator"
 # prompt_append = "Run `make check` before review."
 
-# --- On Windows (preview) ---------------------------------------------------
-
-# tsk starts the agent through Windows PowerShell, so `command` may name an
-# .exe or the .ps1 shim npm installs (pi, codex). Write Windows paths as
-# literal strings ('...') so their backslashes stay as typed.
-# [agent.claude-win]
-# command = ['C:\Users\you\.local\bin\claude.exe']
-
-# --- Merging a task's pull request ------------------------------------------
+# =============================================================================
+# Global config
+# =============================================================================
 
 # `m` on the cleanup card (or `tsk status T12 done --merge`) merges the task's
 # open pull request with the GitHub CLI (`gh`), then marks the task done and
 # cleans up.
 #   method  "merge" (the default), "squash", or "rebase"
 # [merge]
-# method = "squash"
-
-# --- How the board opens ----------------------------------------------------
+# method = "merge"
 
 # The group and sort a fresh board starts from (`g` and `s` change them for
 # the session only). `group` and `sort` set the desk; `project_group` and
@@ -194,17 +204,19 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #   me             `you` by default; a name of lowercase letters, digits, -
 #                  and ., up to 32 characters, starting with a letter or
 #                  digit, and not an agent profile's name
-# The values below are examples, not the defaults: uncommenting the whole
-# block changes group, project_group, project_sort, messages, and me.
+# The values below are the defaults, except `me`: uncommenting the block
+# changes only the name the board shows for you.
 # [board]
-# group = "project"
+# group = "none"
 # sort = "recent"
-# project_group = "thread"
-# project_sort = "title"
-# messages = "hidden"
+# project_group = "none"
+# project_sort = "recent"
+# messages = "shown"
 # me = "sam"
 
-# --- Backups ------------------------------------------------------------------
+# =============================================================================
+# Backups
+# =============================================================================
 
 # Backups copy tsk.json and this file (without `env` values) to a git
 # repository, using your own `git` and its credentials. `tsk backup setup`
@@ -1530,6 +1542,18 @@ command = ["pi"]
     }
 
     #[test]
+    fn starter_merge_example_holds_the_default_once_uncommented() {
+        let uncommented = STARTER_CONFIG
+            .replace("# [merge]\n", "[merge]\n")
+            .replace("# method = ", "method = ");
+        assert!(uncommented.contains("[merge]\nmethod = "));
+        assert_eq!(
+            MergeMethod::parse(&uncommented).expect("example parses"),
+            MergeMethod::default()
+        );
+    }
+
+    #[test]
     fn starter_board_example_parses_once_uncommented() {
         assert_eq!(
             BoardDefaults::parse(STARTER_CONFIG).expect("starter parses"),
@@ -1550,13 +1574,8 @@ command = ["pi"]
             .join("\n");
         assert_eq!(
             BoardDefaults::parse(&uncommented).expect("uncommented example parses"),
-            BoardDefaults {
-                group: GroupBy::Project,
-                sort: SortBy::Recent,
-                project_group: GroupBy::Thread,
-                project_sort: SortBy::Title,
-                messages_hidden: true,
-            }
+            BoardDefaults::default(),
+            "the example holds the defaults"
         );
         assert_eq!(
             OwnerName::parse(&uncommented, &AgentProfiles::default()).name,
@@ -2174,7 +2193,7 @@ then set review again.
             .lines()
             .skip_while(|line| !line.starts_with("# The default prompt, used when"))
             .skip(2)
-            .take_while(|line| !line.starts_with("# `tsk dispatch"))
+            .take_while(|line| !line.starts_with("# ==="))
             .collect::<Vec<_>>();
         let mut prompt = String::new();
         for line in lines {
@@ -2258,13 +2277,12 @@ then set review again.
         assert_eq!(
             profiles.names().collect::<Vec<_>>(),
             [
-                "claude",
+                "builder",
                 "claude-reviewed",
                 "claude-win",
                 "codex",
                 "grok",
-                "my-agent",
-                "pi"
+                "opus"
             ]
         );
         assert!(profiles
@@ -2287,8 +2305,8 @@ then set review again.
             .expect("grok prompt")
             .starts_with("Fix T{number}: {title}\n\n{notes}"));
         assert_eq!(
-            profiles.get("my-agent").expect("generic example").env["GIT_AUTHOR_NAME"],
-            "my-agent (via tsk)"
+            profiles.get("builder").expect("env example").env["GIT_AUTHOR_NAME"],
+            "builder (via tsk)"
         );
         assert!(profiles.get("codex").expect("codex").prompt.is_none());
     }
