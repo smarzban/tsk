@@ -3427,24 +3427,6 @@ pub struct TaskPageLayout {
     pub meta_y: Option<u16>,
 }
 
-/// The window of steps steps the section's step rows show.
-///
-/// `avail` is the row count the section has for steps (its block minus the label). When
-/// steps remain hidden below, the last row becomes the dim `+N more ↓` affordance —
-/// unless that would leave no step row at all, the one degenerate window (a single step
-/// row beside a long list) where the step wins and the affordance is dropped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StepsWindow {
-    /// First painted step's absolute index.
-    pub first: usize,
-    /// Step rows painted.
-    pub count: usize,
-    /// Steps hidden below the window.
-    pub hidden_after: usize,
-    /// Whether the last section row paints the affordance instead of an step.
-    pub affordance: bool,
-}
-
 /// A shared page-content flow: steps follow the notes with two blank rows between
 /// them, and the whole resulting stream scrolls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3483,30 +3465,6 @@ pub fn page_content_layout(
         trail_start,
         total_rows,
         max_scroll: total_rows.saturating_sub(viewport),
-    }
-}
-
-pub fn steps_window(total: usize, scroll: usize, avail: u16) -> StepsWindow {
-    let avail = avail as usize;
-    if total == 0 || avail == 0 {
-        return StepsWindow {
-            first: 0,
-            count: 0,
-            hidden_after: 0,
-            affordance: false,
-        };
-    }
-    // Never start past the last step, whatever a stale scroll offset claims.
-    let first = scroll.min(total - 1);
-    let fitting = avail.min(total - first);
-    let hidden_after = total - first - fitting;
-    let affordance = hidden_after > 0 && fitting >= 2;
-    let count = if affordance { fitting - 1 } else { fitting };
-    StepsWindow {
-        first,
-        count,
-        hidden_after,
-        affordance,
     }
 }
 

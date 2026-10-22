@@ -697,14 +697,6 @@ fn move_draft(model: &mut CaptureModel, operation: impl FnOnce(&mut EditBuffer))
     }
 }
 
-/// Human-readable scope for the form line.
-pub fn format_scope(scope: &TaskScope) -> String {
-    match scope {
-        TaskScope::Global => "desk".into(),
-        TaskScope::Project { path } => format!("project:{path}"),
-    }
-}
-
 fn field_style(focused: bool) -> Style {
     if focused {
         render::style_reverse_bold()

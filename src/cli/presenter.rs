@@ -2695,14 +2695,6 @@ pub fn setup_agent_listed(json: bool) -> CliOutput {
     }
 }
 
-pub fn setup_agent_detected_json(text: String) -> CliOutput {
-    CliOutput {
-        stdout: text,
-        stderr: String::new(),
-        code: 0,
-    }
-}
-
 /// Plain probe output for installers (`--skill-states`, `herdr --check`).
 pub fn setup_probe(text: String) -> CliOutput {
     CliOutput {

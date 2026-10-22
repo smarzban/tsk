@@ -140,14 +140,13 @@ pub use board::{
     IntentOutcome, BOARD_TITLE,
 };
 pub use capture::{
-    apply_capture_intent, draw_capture, format_scope, CaptureField, CaptureModel, CaptureOutcome,
+    apply_capture_intent, draw_capture, CaptureField, CaptureModel, CaptureOutcome,
     CaptureScopeChoice, CAPTURE_SCOPE_CONTROLS, CAPTURE_TITLE,
 };
 pub use input::{
-    intent_primary_action, intent_primary_capture_action, map_capture_key, map_capture_paste_state,
-    map_edit_paste, map_key, primary_action_sample_key, primary_capture_action_sample_focus,
-    primary_capture_action_sample_key, BoardIntent, CaptureIntent, PrimaryBoardAction,
-    PrimaryCaptureAction, CAPTURE_HELP_LINE, PRIMARY_BOARD_ACTIONS, PRIMARY_CAPTURE_ACTIONS,
+    intent_primary_capture_action, map_capture_key, map_capture_paste_state, map_edit_paste,
+    map_key, primary_capture_action_sample_focus, primary_capture_action_sample_key, BoardIntent,
+    CaptureIntent, PrimaryCaptureAction, CAPTURE_HELP_LINE, PRIMARY_CAPTURE_ACTIONS,
 };
 pub use mouse::{
     capture_layout, capture_layout_for_model, capture_layout_state, left_click, map_board_mouse,

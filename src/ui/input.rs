@@ -10,20 +10,6 @@ use super::board::{BoardInputMode, PickerTab};
 use super::capture::{CaptureField, CaptureScopeChoice};
 use super::tier::{ResponsivePresentation, WideStage};
 
-/// Board primary actions reachable by keyboard inside the board.
-///
-/// Excludes host-level open-board and capture save/cancel (those are capture-mode).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PrimaryBoardAction {
-    SelectTask,
-    OpenCapture,
-    EditTitle,
-    Complete,
-    Reopen,
-    SoftDelete,
-    Undo,
-}
-
 /// Capture-mode primary actions reachable by keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrimaryCaptureAction {
@@ -95,17 +81,6 @@ pub const CAPTURE_NOTES_HELP_LINE: &str =
     "tab fields · ctrl+enter / alt+enter save · enter newline · esc cancel";
 /// Compact legend shown while a Capture save is unresolved.
 pub const CAPTURE_SAVE_RECOVERY_HELP_LINE: &str = "r retry · c cancel";
-
-/// Board primary actions reachable by an the normal-mode key (table coverage).
-pub const PRIMARY_BOARD_ACTIONS: &[PrimaryBoardAction] = &[
-    PrimaryBoardAction::SelectTask,
-    PrimaryBoardAction::OpenCapture,
-    PrimaryBoardAction::EditTitle,
-    PrimaryBoardAction::Complete,
-    PrimaryBoardAction::Reopen,
-    PrimaryBoardAction::SoftDelete,
-    PrimaryBoardAction::Undo,
-];
 
 /// Direction in which a mark-extension gesture moves the task cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -857,23 +832,6 @@ const NORMAL_KEYMAP: &[NormalKeyEntry] = &[
     },
 ];
 
-/// Look up a normal-mode key's help label by its literal key code text (e.g. `"d"`,
-/// `"b"`, `":"`, `"?"`), i.e. the same word [`NORMAL_KEYMAP`] uses to describe it on the
-/// help card. Min-5: the verb bar's static entries (the ones that are not context-dependent
-/// per row) borrow their word from here instead of duplicating a literal that can drift out
-/// of sync with the keymap, the way `: more` drifted from the palette's real name (`:` opens
-/// the command palette, not a "more" menu -- that word belonged to a retired classic surface).
-///
-/// `space` and `enter` are deliberately not looked up here: `PrimaryVerb` and `OpenTaskPage`
-/// are context-dependent per selected row, so the verb bar computes their word from
-/// task state rather than the keymap's one generic word (`primary` / `detail`) for them.
-pub fn keymap_help_label(chord: &str) -> Option<&'static str> {
-    NORMAL_KEYMAP
-        .iter()
-        .find(|entry| entry.help_chord == chord)
-        .map(|entry| entry.help_label)
-}
-
 /// Every active-tier help binding (chord, label), derived from the key map.
 /// The complete unmodified normal-mode table, for documentation and regression guards.
 pub fn normal_mode_keymap() -> Vec<(KeyCode, BoardIntent)> {
@@ -892,14 +850,6 @@ pub fn normal_help_bindings() -> Vec<(&'static str, &'static str)> {
         }
     }
     bindings
-}
-
-/// Whether a bare character is unbound in normal mode, and so types into destination
-/// search lines (the projects index). Bound keys — nav, verbs, pickers — stay routes.
-pub fn is_unbound_normal_char(character: char) -> bool {
-    !NORMAL_KEYMAP
-        .iter()
-        .any(|entry| entry.code == KeyCode::Char(character))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2277,236 +2227,7 @@ pub fn map_edit_paste(mode: BoardInputMode, text: &str) -> Option<BoardIntent> {
     }
 }
 
-/// Which primary board action an intent advances, if any.
-pub fn intent_primary_action(intent: &BoardIntent) -> Option<PrimaryBoardAction> {
-    match intent {
-        BoardIntent::SelectNext
-        | BoardIntent::SelectPrev
-        | BoardIntent::SelectIndex(_)
-        | BoardIntent::FocusBoardAndSelectIndex(_) => Some(PrimaryBoardAction::SelectTask),
-        BoardIntent::Complete => Some(PrimaryBoardAction::Complete),
-        BoardIntent::Reopen => Some(PrimaryBoardAction::Reopen),
-        BoardIntent::SoftDelete => Some(PrimaryBoardAction::SoftDelete),
-        BoardIntent::Undo => Some(PrimaryBoardAction::Undo),
-        BoardIntent::BeginEditTitle => Some(PrimaryBoardAction::EditTitle),
-        BoardIntent::OpenCapture => Some(PrimaryBoardAction::OpenCapture),
-        BoardIntent::SetStatus(_)
-        | BoardIntent::ToggleMarkMode
-        | BoardIntent::MarkToggle
-        | BoardIntent::MarkToggleAt(_)
-        | BoardIntent::MarkExtend(_)
-        | BoardIntent::MarkClear
-        | BoardIntent::BeginEditNotes
-        | BoardIntent::BeginEditScope
-        | BoardIntent::OpenBasePicker
-        | BoardIntent::OpenAfterPicker
-        | BoardIntent::OpenBeforeTask(_)
-        | BoardIntent::OpenOnPicker
-        | BoardIntent::ChainAfter
-        | BoardIntent::BeginAddStep
-        | BoardIntent::BeginAppendStep
-        | BoardIntent::Quit
-        | BoardIntent::EditInsert(_)
-        | BoardIntent::EditInsertText(_)
-        | BoardIntent::EditInsertLineBreak
-        | BoardIntent::EditBackspace
-        | BoardIntent::EditDeleteForward
-        | BoardIntent::EditMoveLeft
-        | BoardIntent::EditMoveRight
-        | BoardIntent::EditMoveUp
-        | BoardIntent::EditMoveDown
-        | BoardIntent::EditMoveLineStart
-        | BoardIntent::EditMoveLineEnd
-        | BoardIntent::EditMoveWordLeft
-        | BoardIntent::EditMoveWordRight
-        | BoardIntent::EditDeleteWordLeft
-        | BoardIntent::EditDeleteWordRight
-        | BoardIntent::EditDeleteToLineStart
-        | BoardIntent::EditDeleteToLineEnd
-        | BoardIntent::ConfirmEdit
-        | BoardIntent::ConfirmEditNext
-        | BoardIntent::CancelEdit
-        | BoardIntent::ShiftEnterAsCtrlJ
-        | BoardIntent::QuickAddInsert(_)
-        | BoardIntent::QuickAddInsertText(_)
-        | BoardIntent::QuickAddBackspace
-        | BoardIntent::QuickAddDeleteForward
-        | BoardIntent::QuickAddMoveLeft
-        | BoardIntent::QuickAddMoveRight
-        | BoardIntent::QuickAddMoveLineStart
-        | BoardIntent::QuickAddMoveLineEnd
-        | BoardIntent::QuickAddMoveWordLeft
-        | BoardIntent::QuickAddMoveWordRight
-        | BoardIntent::QuickAddDeleteWordLeft
-        | BoardIntent::QuickAddDeleteWordRight
-        | BoardIntent::QuickAddDeleteToLineStart
-        | BoardIntent::QuickAddDeleteToLineEnd
-        | BoardIntent::QuickAddSave
-        | BoardIntent::QuickAddSaveNext
-        | BoardIntent::ExpandQuickAdd
-        | BoardIntent::CancelQuickAdd
-        | BoardIntent::QuickAddSelectIndex(_)
-        | BoardIntent::CopyTaskNumber(_)
-        | BoardIntent::FormFocusNext
-        | BoardIntent::FormFocusPrev
-        | BoardIntent::FocusFormField(_)
-        | BoardIntent::FocusFormCursor(_, _, _)
-        | BoardIntent::ToggleThreadEditing
-        | BoardIntent::FormCycleScope
-        | BoardIntent::FormAssigneeNext
-        | BoardIntent::FormAssigneePrev
-        | BoardIntent::OpenFormDropdown(_)
-        | BoardIntent::FormDropdownNext
-        | BoardIntent::FormDropdownPrev
-        | BoardIntent::ConfirmFormDropdown
-        | BoardIntent::CancelFormDropdown
-        | BoardIntent::SelectFormDropdownOption(_)
-        | BoardIntent::OpenProjectSelector
-        | BoardIntent::ProjectPickerNext
-        | BoardIntent::ProjectPickerPrev
-        | BoardIntent::ConfirmProjectChoice
-        | BoardIntent::CancelProjectPicker
-        | BoardIntent::SelectProjectOption(_)
-        | BoardIntent::SelectNavTab(_)
-        | BoardIntent::OpenThreadFilterPicker
-        | BoardIntent::OpenProjectsViewPicker
-        | BoardIntent::OpenAssigneePicker
-        | BoardIntent::RemoveAssigneeName
-        | BoardIntent::ListPickerUndo
-        | BoardIntent::ListPickerNext
-        | BoardIntent::ListPickerPrev
-        | BoardIntent::ListPickerTabNext
-        | BoardIntent::ListPickerTabPrev
-        | BoardIntent::SelectListPickerTab(_)
-        | BoardIntent::ConfirmListPicker
-        | BoardIntent::CancelListPicker
-        | BoardIntent::SelectListOption(_)
-        | BoardIntent::ListPickerQueryInsert(_)
-        | BoardIntent::ListPickerQueryInsertText(_)
-        | BoardIntent::ListPickerQueryBackspace
-        | BoardIntent::ListPickerQueryDeleteWord
-        | BoardIntent::AfterPickerPin
-        | BoardIntent::AfterPickerClear
-        | BoardIntent::SearchQueryInsert(_)
-        | BoardIntent::SearchQueryInsertText(_)
-        | BoardIntent::SearchQueryBackspace
-        | BoardIntent::SearchQueryDeleteWord
-        | BoardIntent::FocusSearch
-        | BoardIntent::PinSearch
-        | BoardIntent::SelectProjectRow(_)
-        | BoardIntent::SelectStep(_)
-        | BoardIntent::RetrySave
-        | BoardIntent::CancelSave
-        | BoardIntent::OpenCommandPalette
-        | BoardIntent::CommandNext
-        | BoardIntent::CommandPrev
-        | BoardIntent::ConfirmCommand
-        | BoardIntent::SelectCommand(_)
-        | BoardIntent::CloseCommandSurface
-        | BoardIntent::CommandQueryInsert(_)
-        | BoardIntent::CommandQueryInsertText(_)
-        | BoardIntent::CommandQueryBackspace
-        | BoardIntent::CommandQueryDeleteWord
-        | BoardIntent::PrimaryVerb
-        | BoardIntent::DispatchAgain
-        | BoardIntent::ConfirmCleanup
-        | BoardIntent::KeepCleanup
-        | BoardIntent::CancelCleanup
-        | BoardIntent::MergeCleanup
-        | BoardIntent::ConfirmDispatch
-        | BoardIntent::CancelDispatch
-        | BoardIntent::StartWithoutRelaunch
-        | BoardIntent::CleanupScrollUp
-        | BoardIntent::CleanupScrollDown
-        | BoardIntent::CleanupSelectUp
-        | BoardIntent::CleanupSelectDown
-        | BoardIntent::CleanupRunSelected
-        | BoardIntent::CleanupClickOption(_)
-        | BoardIntent::ToggleBlock
-        | BoardIntent::BlockCardConfirm
-        | BoardIntent::BlockCardCancel
-        | BoardIntent::BlockCardNextField
-        | BoardIntent::BlockCardPrevField
-        | BoardIntent::BlockCardLeft
-        | BoardIntent::BlockCardRight
-        | BoardIntent::BlockCardNewline
-        | BoardIntent::CycleCheck
-        | BoardIntent::TogglePassedChecks
-        | BoardIntent::ClickCheck(_)
-        | BoardIntent::ClickPassedFold
-        | BoardIntent::ToggleTrail
-        | BoardIntent::PickOption(_)
-        | BoardIntent::PageReplyUnblock
-        | BoardIntent::ToggleTrailRecord(_)
-        | BoardIntent::BeginReply
-        | BoardIntent::ReplyWithOption
-        | BoardIntent::ReplySave
-        | BoardIntent::ReplySaveUnblock
-        | BoardIntent::ReplySaveStart
-        | BoardIntent::ReplySaveBeforeLaunch
-        | BoardIntent::ReplyApprove
-        | BoardIntent::ApproveReview(_)
-        | BoardIntent::ToggleReview
-        | BoardIntent::HelpQueryInsert(_)
-        | BoardIntent::HelpQueryInsertText(_)
-        | BoardIntent::HelpQueryBackspace
-        | BoardIntent::HelpQueryDeleteWord
-        | BoardIntent::HelpScrollUp
-        | BoardIntent::HelpScrollDown
-        | BoardIntent::CloseHelp
-        | BoardIntent::ToggleStep
-        | BoardIntent::MoveStepUp
-        | BoardIntent::MoveStepDown
-        | BoardIntent::OpenTaskPage
-        | BoardIntent::StageRight
-        | BoardIntent::StageLeft
-        | BoardIntent::PeekDetail
-        | BoardIntent::CollapseDetail
-        | BoardIntent::PageScrollUp
-        | BoardIntent::PageScrollDown
-        | BoardIntent::PageWheelScrollUp
-        | BoardIntent::PageWheelScrollDown
-        | BoardIntent::PageScrollTo(_)
-        | BoardIntent::ListScrollTo(_)
-        | BoardIntent::ToggleDoneDrawer
-        | BoardIntent::ToggleArchivedGroup
-        | BoardIntent::ToggleInboxGroup
-        | BoardIntent::ProjectPickerSwitchTab
-        | BoardIntent::ProjectPickerCycleSort
-        | BoardIntent::SelectPickerTab(_)
-        | BoardIntent::LaunchUnarchive
-        | BoardIntent::LaunchKeepArchived
-        | BoardIntent::File
-        | BoardIntent::OpenHelp
-        | BoardIntent::CloseLayer
-        | BoardIntent::OpenGroupPicker
-        | BoardIntent::OpenSortPicker
-        | BoardIntent::FoldGroup
-        | BoardIntent::FoldAllGroups
-        | BoardIntent::ToggleMessages
-        | BoardIntent::ClickHeader(_)
-        | BoardIntent::FoldHeader
-        | BoardIntent::UnfoldHeader
-        | BoardIntent::OpenGroupTarget(_)
-        | BoardIntent::SwitchListPickerTab(_) => None,
-    }
-}
-
-/// Representative normal-mode binding for each the primary board action (table test source).
-pub fn primary_action_sample_key(action: PrimaryBoardAction) -> KeyEvent {
-    let (code, mods) = match action {
-        PrimaryBoardAction::SelectTask => (KeyCode::Char('j'), KeyModifiers::NONE),
-        PrimaryBoardAction::OpenCapture => (KeyCode::Char('+'), KeyModifiers::NONE),
-        PrimaryBoardAction::EditTitle => (KeyCode::Char('e'), KeyModifiers::CONTROL),
-        PrimaryBoardAction::Complete => (KeyCode::Char('d'), KeyModifiers::CONTROL),
-        PrimaryBoardAction::Reopen => (KeyCode::Char('o'), KeyModifiers::CONTROL),
-        PrimaryBoardAction::SoftDelete => (KeyCode::Char('x'), KeyModifiers::CONTROL),
-        PrimaryBoardAction::Undo => (KeyCode::Char('u'), KeyModifiers::CONTROL),
-    };
-    KeyEvent::new(code, mods)
-}
-
-/// the normal-mode map. Walks [`NORMAL_KEYMAP`], the same table help uses.
+/// True when Ctrl is held without Alt (mutating verb chords).
 fn verb_mod_held(mods: KeyModifiers) -> bool {
     mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::ALT)
 }
