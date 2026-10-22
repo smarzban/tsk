@@ -19,10 +19,10 @@ test("demo capture still lowercases Site-Docs to site-docs", () => {
 
 test("demo capture lifts assignee, base, and after tokens", () => {
   assert.deepEqual(
-    parseCapture("Ship it !a Reviewer !b main !w T12 !w 12", null),
+    parseCapture("Ship it !a Reviewer !b main !w T12 !w 12", "atlas"),
     {
       title: "Ship it",
-      project: null,
+      project: "atlas",
       thread: undefined,
       assignee: "reviewer",
       base: "main",
@@ -53,4 +53,16 @@ test("demo capture refuses a bad assignee and a non-number !w", () => {
     parseCapture("Ship it !w abc", null).refuse,
     "!w needs a task number like T12",
   );
+});
+
+test("demo capture refuses a base on a desk task, like the board", () => {
+  assert.equal(
+    parseCapture("Buy coffee !p !b main", "atlas").refuse,
+    "base requires a project task",
+  );
+  assert.equal(
+    parseCapture("Buy coffee !b main", null).refuse,
+    "base requires a project task",
+  );
+  assert.equal(parseCapture("Buy coffee !b main !p atlas", null).refuse, "");
 });

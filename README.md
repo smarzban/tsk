@@ -31,9 +31,10 @@ run `tsk` in any terminal.
 Define your agents once in `config.toml`, press `@` to assign a task, and press
 `ctrl+s` to start it. Starting an assigned task dispatches it: tsk creates a Git
 worktree and a Herdr workspace for the task and launches the agent there.
-`ctrl+d` marks the task done; on a live dispatch it offers the cleanup card, and
-removal only happens on confirm when the branch is merged. Dispatch runs in Herdr;
-on Windows it is a preview.
+`ctrl+d` marks the task done; on a live dispatch it offers the cleanup card. Cleanup
+closes the workspace and removes the worktree, and deletes the branch only when it is
+merged. It never touches uncommitted changes. Dispatch runs in Herdr; on Windows it
+is a preview.
 
 ## Quickstart
 

@@ -117,6 +117,10 @@ export function parseCapture(raw, fallbackProject) {
     title.push(part);
   }
 
+  if (!refuse && base && !project) {
+    refuse = "base requires a project task";
+  }
+
   return {
     title: title.join(" "),
     project,
