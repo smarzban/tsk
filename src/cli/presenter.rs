@@ -2581,15 +2581,15 @@ pub fn setup_help() -> CliOutput {
                     ("herdr", "register the plugin and its shortcuts with Herdr"),
                     (
                         "agents",
-                        "install or update the skill for every detected agent",
+                        "install or update both skills for every detected agent",
                     ),
                     (
                         "<agent>",
-                        "install the skill for claude, pi, omp, cursor, grok, codex, or opencode",
+                        "install both skills for claude, pi, omp, cursor, grok, codex, or opencode",
                     ),
                     (
                         "--skill-dir <path>",
-                        "install the skill as <path>/tsk-cli/SKILL.md",
+                        "install both skills under <path>: tsk-cli and tsk-coordinator",
                     ),
                 ],
             ),
