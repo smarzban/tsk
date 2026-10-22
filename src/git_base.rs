@@ -1047,12 +1047,30 @@ mod tests {
         );
     }
 
+    /// A Git alias whose shell starts a long-lived `sleep` grandchild and writes its Windows
+    /// pid to `pid_file`. Git for Windows' shell starts a native `sleep` in milliseconds;
+    /// PowerShell's start-up can stall past any deadline on a loaded runner. The pid is
+    /// recorded only once the background child has exec'd `sleep`; before that it is a
+    /// short-lived fork stub, so a child that never shows as `sleep` publishes nothing.
+    #[cfg(windows)]
+    fn sleeper_alias(pid_file: &Path) -> String {
+        let pid_path = pid_file.to_string_lossy().replace('\\', "/");
+        format!(
+            "alias.hang=!sleep 120 & p=$!; i=0; \
+             until grep -q sleep /proc/$p/exename 2>/dev/null || [ $i -ge 400 ]; \
+             do i=$((i+1)); sleep 0.05; done; \
+             grep -q sleep /proc/$p/exename 2>/dev/null || {{ kill $p; exit 3; }}; \
+             cat /proc/$p/winpid > \"{pid_path}.tmp\" && mv \"{pid_path}.tmp\" \"{pid_path}\"; \
+             wait"
+        )
+    }
+
     /// A board quit that outlives its bound ends tsk while a Windows worktree removal runs.
     /// Ordinary Git dies with tsk; a removal's Git must finish, never stop mid-delete.
     #[cfg(windows)]
     #[test]
     fn a_git_meant_to_outlive_tsk_survives_tsk_exiting_and_others_do_not() {
-        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
         use windows_sys::Win32::System::Threading::{
             OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
             PROCESS_TERMINATE,
@@ -1065,11 +1083,7 @@ mod tests {
             ));
             std::fs::create_dir_all(&dir).expect("mkdir");
             let pid_file = dir.join("pid.txt");
-            let alias = format!(
-                "alias.hang=!powershell -NoProfile -Command '$PID | Out-File -Encoding ascii \
-                 \"{}\"; Start-Sleep 60'",
-                pid_file.to_string_lossy().replace('\\', "/")
-            );
+            let alias = sleeper_alias(&pid_file);
             let mut helper = std::process::Command::new(std::env::current_exe().expect("exe"))
                 .args([
                     "--exact",
@@ -1098,21 +1112,27 @@ mod tests {
                 );
                 std::thread::sleep(std::time::Duration::from_millis(100));
             };
+            // Opened while tsk still runs, so the pid must name the live sleeper: a wrong pid
+            // fails here instead of reading as "exited" below. The handle also pins the pid.
+            // SAFETY: plain Win32 calls; the handle is closed once below.
+            let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+            assert!(
+                !handle.is_null(),
+                "recorded pid {pid} is not a running process"
+            );
+            // SAFETY: a zero-timeout wait on the handle opened above.
+            let alive = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
             // tsk exits mid-Git, as when a board quit outlives its bound.
             helper.kill().expect("kill helper");
             helper.wait().expect("reap helper");
-            // SAFETY: plain Win32 calls on a handle opened and closed here.
+            // SAFETY: as above; the handle is closed exactly once here.
             let exited = unsafe {
-                let handle = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid);
-                if handle.is_null() {
-                    true
-                } else {
-                    let exited = WaitForSingleObject(handle, 5_000) == WAIT_OBJECT_0;
-                    TerminateProcess(handle, 1);
-                    CloseHandle(handle);
-                    exited
-                }
+                let exited = WaitForSingleObject(handle, 5_000) == WAIT_OBJECT_0;
+                TerminateProcess(handle, 1);
+                CloseHandle(handle);
+                exited
             };
+            assert!(alive, "recorded pid {pid} exited before tsk did");
             assert_eq!(exited, !outlive, "outlive {outlive}: grandchild {pid}");
             let _ = std::fs::remove_dir_all(dir);
         }
@@ -1134,19 +1154,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let pid_file = dir.join("pid.txt");
-        let pid_path = pid_file.to_string_lossy().replace('\\', "/");
-        // Git for Windows' shell starts a native `sleep` in milliseconds (PowerShell's start-up
-        // could outlast the deadline on a slow runner). Its Windows pid is recorded only once
-        // the background child has exec'd `sleep`; before that it is a short-lived fork stub,
-        // so a child that never shows as `sleep` publishes nothing and the test fails.
-        let alias = format!(
-            "alias.hang=!sleep 120 & p=$!; i=0; \
-             until grep -q sleep /proc/$p/exename 2>/dev/null || [ $i -ge 400 ]; \
-             do i=$((i+1)); sleep 0.05; done; \
-             grep -q sleep /proc/$p/exename 2>/dev/null || {{ kill $p; exit 3; }}; \
-             cat /proc/$p/winpid > \"{pid_path}.tmp\" && mv \"{pid_path}.tmp\" \"{pid_path}\"; \
-             wait"
-        );
+        let alias = sleeper_alias(&pid_file);
         let deadline = std::time::Duration::from_secs(30);
         let git = {
             let dir = dir.clone();
