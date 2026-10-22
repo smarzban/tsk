@@ -3026,20 +3026,40 @@ import { parseCapture } from "./capture.js";
 
   function captureDirectives(raw) {
     const parts = String(raw).trim().split(/\s+/).filter(Boolean);
+    const tokens = new Set(["!p", "!t", "!a", "!b", "!w"]);
     const directives = [];
     for (let i = 0; i < parts.length; i += 1) {
-      if (parts[i] !== "!p" && parts[i] !== "!t") continue;
+      if (!tokens.has(parts[i])) continue;
       directives.push(parts[i]);
-      if (parts[i + 1] && !parts[i + 1].startsWith("!")) {
-        directives.push(parts[i + 1]);
+      const next = parts[i + 1];
+      if (next && !tokens.has(next) && !next.startsWith("#")) {
+        directives.push(next);
         i += 1;
       }
     }
     return directives;
   }
 
+  function refuseAfter(after) {
+    for (const number of after || []) {
+      const task = state.tasks.find((entry) => entry.number === number);
+      if (!task) return `T${number} is not on the board`;
+      if (task.status === "done") return `T${number} is already done`;
+    }
+    return "";
+  }
+
   function expandQuickAdd() {
     const parsed = parseCapture(state.draft, fallbackProject());
+    if (parsed.refuse) {
+      state.refuse = parsed.refuse;
+      return false;
+    }
+    const afterRefuse = refuseAfter(parsed.after);
+    if (afterRefuse) {
+      state.refuse = afterRefuse;
+      return false;
+    }
     const now = clock();
     state.capture = {
       id: "capture-draft",
@@ -3049,6 +3069,9 @@ import { parseCapture } from "./capture.js";
       steps: [],
       thread: parsed.thread === undefined ? null : parsed.thread,
       project: parsed.project,
+      assignee: parsed.assignee === undefined ? null : parsed.assignee,
+      base: parsed.base === undefined ? null : parsed.base,
+      after: [...(parsed.after || [])],
       status: "open",
       createdAt: now,
       updatedAt: now,
@@ -3068,6 +3091,7 @@ import { parseCapture } from "./capture.js";
       state.editDraft = "";
       steps.bind(state.capture);
     }
+    return true;
   }
 
   function collapseQuickAdd() {
@@ -3107,6 +3131,11 @@ import { parseCapture } from "./capture.js";
       state.refuse = "title needed";
       return false;
     }
+    const afterRefuse = refuseAfter(capture.after);
+    if (afterRefuse) {
+      state.refuse = afterRefuse;
+      return false;
+    }
     const owner = state.quickOwner;
     const id = `n${state.nextId++}`;
     const now = clock();
@@ -3115,6 +3144,9 @@ import { parseCapture } from "./capture.js";
       id,
       number: state.nextNumber++,
       title,
+      assignee: capture.assignee ?? null,
+      base: capture.base ?? null,
+      after: [...(capture.after || [])],
       steps: structuredClone(capture.steps),
       createdAt: now,
       updatedAt: now,
@@ -3183,6 +3215,15 @@ import { parseCapture } from "./capture.js";
   function saveDraft(stay) {
     const owner = state.quickOwner === "preview" ? "preview" : "outer";
     const parsed = parseCapture(state.draft, fallbackProject());
+    if (parsed.refuse) {
+      state.refuse = parsed.refuse;
+      return false;
+    }
+    const afterRefuse = refuseAfter(parsed.after);
+    if (afterRefuse) {
+      state.refuse = afterRefuse;
+      return false;
+    }
     if (!parsed.title) {
       state.refuse = "title needed";
       return false;
@@ -3197,6 +3238,9 @@ import { parseCapture } from "./capture.js";
       status: "open",
       project: parsed.project,
       thread: parsed.thread === undefined ? null : parsed.thread,
+      assignee: parsed.assignee === undefined ? null : parsed.assignee,
+      base: parsed.base === undefined ? null : parsed.base,
+      after: [...(parsed.after || [])],
       createdAt: now,
       updatedAt: now,
     };
@@ -4348,7 +4392,7 @@ import { parseCapture } from "./capture.js";
           );
     const footer =
       state.overlay === "quick" && !state.quickExpanded
-        ? `<div class="tsk-input-row"><span class="tsk-prompt">+</span><input class="tsk-field" id="tsk-add" value="${esc(state.draft)}" placeholder="title  ·  !p project  ·  !t thread" autocomplete="off" /><span class="cursor">█</span></div>
+        ? `<div class="tsk-input-row"><span class="tsk-prompt">+</span><input class="tsk-field" id="tsk-add" value="${esc(state.draft)}" placeholder="title…   !p project · !t thread · !a assignee · !b base" autocomplete="off" /><span class="cursor">█</span></div>
            <div class="foot dim tsk-verbs">${
              state.refuse
                ? esc(state.refuse)

@@ -65,6 +65,10 @@ test("demo capture keeps an absolute project path verbatim", () => {
     title: "Ship it",
     project: "/workspace/herdr-tsk",
     thread: "site-docs",
+    assignee: undefined,
+    base: undefined,
+    after: [],
+    refuse: "",
   });
 });
 
