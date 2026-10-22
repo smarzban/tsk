@@ -2729,12 +2729,19 @@ pub fn setup_agent_written(
     outcome: &crate::setup_agent::InstallOutcome,
     json: bool,
 ) -> CliOutput {
-    let path = outcome.path();
     if json {
-        return setup_agent_json(outcome.kind(), Some(target.name()), Some(path), 0);
+        let mut payload =
+            setup_agent_payload(outcome.kind(), Some(target.name()), Some(outcome.path()));
+        payload["skills_root"] = outcome.skills_root().display().to_string().into();
+        payload["skills"] = skill_paths_json(outcome);
+        return CliOutput {
+            stdout: format!("{payload}\n"),
+            stderr: String::new(),
+            code: 0,
+        };
     }
     CliOutput {
-        stdout: format!("{}\n", terminal_text(&path.display().to_string())),
+        stdout: format!("{}\n", installed_skills_text(outcome)),
         stderr: String::new(),
         code: 0,
     }
@@ -2771,6 +2778,8 @@ pub fn setup_agent_batch(result: crate::setup_agent::BatchResult, json: bool) ->
                 "id": id,
                 "kind": outcome.kind(),
                 "path": outcome.path().display().to_string(),
+                "skills_root": outcome.skills_root().display().to_string(),
+                "skills": skill_paths_json(outcome),
             })).collect::<Vec<_>>(),
             "skipped_current": result.skipped_current,
             "blocked": result.blocked,
@@ -2788,10 +2797,7 @@ pub fn setup_agent_batch(result: crate::setup_agent::BatchResult, json: bool) ->
     for (id, outcome) in &result.applied {
         // Skill roots follow HOME and agent-directory overrides, so a control
         // character in the path must not reach the terminal.
-        stdout.push_str(&format!(
-            "    {id:<8} {}\n",
-            terminal_text(&outcome.path().display().to_string())
-        ));
+        stdout.push_str(&format!("    {id:<8} {}\n", installed_skills_text(outcome)));
     }
     for id in &result.skipped_current {
         stdout.push_str(&format!("    {id:<8} current\n"));
@@ -2820,6 +2826,36 @@ fn batch_blocked_error(blocked: &[String]) -> String {
     }
 }
 
+/// `<skills root>  (tsk-cli, tsk-coordinator)`: the folder and every skill written there.
+fn installed_skills_text(outcome: &crate::setup_agent::InstallOutcome) -> String {
+    format!(
+        "{}  ({})",
+        terminal_text(&outcome.skills_root().display().to_string()),
+        crate::setup_agent::skill_names()
+    )
+}
+
+fn skill_paths_json(outcome: &crate::setup_agent::InstallOutcome) -> serde_json::Value {
+    outcome
+        .skill_paths()
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .into()
+}
+
+fn setup_agent_payload(
+    outcome: &str,
+    target: Option<&str>,
+    path: Option<&std::path::Path>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "outcome": outcome,
+        "target": target,
+        "path": path.map(|value| value.display().to_string()),
+    })
+}
+
 fn setup_agent_json(
     outcome: &str,
     target: Option<&str>,
@@ -2827,14 +2863,7 @@ fn setup_agent_json(
     code: u8,
 ) -> CliOutput {
     CliOutput {
-        stdout: format!(
-            "{}\n",
-            serde_json::json!({
-                "outcome": outcome,
-                "target": target,
-                "path": path.map(|value| value.display().to_string()),
-            })
-        ),
+        stdout: format!("{}\n", setup_agent_payload(outcome, target, path)),
         stderr: String::new(),
         code,
     }
@@ -3180,12 +3209,14 @@ mod tests {
     #[test]
     fn setup_agent_written_escapes_the_printed_path() {
         let outcome = crate::setup_agent::InstallOutcome::Written(PathBuf::from(
-            "/home/box/.claude/skills/tsk-cli\u{001b}]0;x\u{0007}/SKILL.md",
+            "/home/box/.claude/skills\u{001b}]0;x\u{0007}/tsk-cli/SKILL.md",
         ));
         let output = setup_agent_written(&crate::setup_agent::Target::Claude, &outcome, false);
         assert!(!output.stdout.contains('\u{001b}'), "{:?}", output.stdout);
         assert!(!output.stdout.contains('\u{0007}'), "{:?}", output.stdout);
-        assert!(output.stdout.ends_with("/SKILL.md\n"));
+        assert!(output
+            .stdout
+            .ends_with("/skills\\u{001b}]0;x\\u{0007}  (tsk-cli, tsk-coordinator)\n"));
     }
 
     #[test]
@@ -3205,7 +3236,7 @@ mod tests {
         let output = setup_agent_batch(result, false);
         assert_eq!(
             output.stdout,
-            "    pi       /home/box/.pi/agent/skills/tsk-cli/SKILL.md\n    cursor   current\n    grok     blocked (symlink)\n"
+            "    pi       /home/box/.pi/agent/skills  (tsk-cli, tsk-coordinator)\n    cursor   current\n    grok     blocked (symlink)\n"
         );
     }
 
@@ -3215,7 +3246,7 @@ mod tests {
             applied: vec![(
                 "cursor".into(),
                 crate::setup_agent::InstallOutcome::Written(PathBuf::from(
-                    "/home/box/.cursor/skills/tsk-cli\u{1b}]0;x\u{7}/SKILL.md",
+                    "/home/box/.cursor/skills\u{1b}]0;x\u{7}/tsk-cli/SKILL.md",
                 )),
             )],
             skipped_current: Vec::new(),
