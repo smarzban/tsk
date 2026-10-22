@@ -1244,6 +1244,8 @@ pub struct BoardModel {
     pub(super) message: Option<String>,
     /// Dim status-row notice when a cached release tag is newer than this binary.
     pub(super) update_notice: Option<String>,
+    /// The full board's release check; quick capture and the right seat carry none.
+    pub(super) update_check: Option<crate::update::UpdateCheck>,
     /// Title of the task the last soft-delete removed, captured at delete time.
     ///
     /// Transient presentation only: it is never persisted, and it is the whole of the delete
@@ -2370,6 +2372,7 @@ impl BoardModel {
             hold_task_edit_save: false,
             message: None,
             update_notice: None,
+            update_check: None,
             delete_notice: None,
             delete_notice_count: None,
             delete_notice_label: None,
@@ -7446,7 +7449,31 @@ impl BoardModel {
     }
 
     pub fn set_update_notice(&mut self, notice: Option<String>) {
+        if let Some(right) = self.right_seat.as_deref_mut() {
+            right.set_update_notice(notice.clone());
+        }
         self.update_notice = notice;
+    }
+
+    pub fn set_update_check(&mut self, check: Option<crate::update::UpdateCheck>) {
+        self.update_check = check;
+    }
+
+    /// Show what a finished release check found, and start the next one once a day has
+    /// passed. Returns whether the notice changed.
+    pub fn poll_update_check(&mut self) -> bool {
+        let Some(notice) = self
+            .update_check
+            .as_ref()
+            .and_then(|check| check.poll(crate::update::unix_now()))
+        else {
+            return false;
+        };
+        if notice == self.update_notice {
+            return false;
+        }
+        self.set_update_notice(notice);
+        true
     }
 
     pub fn set_message(&mut self, msg: impl Into<String>) {
@@ -9081,6 +9108,24 @@ mod tests {
         assert_eq!(
             model.right_seat().and_then(BoardModel::active_project),
             Some(Path::new(REPO_B))
+        );
+    }
+
+    #[test]
+    fn an_update_notice_that_lands_with_a_preview_open_reaches_the_right_seat() {
+        let mut domain = DomainState::new();
+        create(&mut domain, "alpha task", project(REPO_A));
+
+        let mut model = BoardModel::from_domain(&domain, None);
+        model.board_location = BoardLocation::Projects;
+        model.wide_stage = WideStage::Split;
+        assert!(model.bind_project_preview());
+        assert_eq!(model.right_seat().and_then(BoardModel::update_notice), None);
+
+        model.set_update_notice(Some("v99.0.0 available, run tsk update".into()));
+        assert_eq!(
+            model.right_seat().and_then(BoardModel::update_notice),
+            Some("v99.0.0 available, run tsk update")
         );
     }
 
