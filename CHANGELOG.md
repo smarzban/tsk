@@ -12,6 +12,10 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Changed
+
+- `tsk setup` names both installed skills, `tsk-cli` and `tsk-coordinator`, beside each agent's skills directory instead of printing only the `tsk-cli` file.
+
 ### Fixed
 
 - An open board shows the update notice as soon as the release check finishes, and a board left open checks again once a day.
