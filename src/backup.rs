@@ -3576,15 +3576,27 @@ every = "daily"
             let config = vec![format!(
                 "{helper}=!f() {{ echo username=mine; echo password=kept; }}; f"
             )];
-            let (plain, tokened) = (
+            let (plain, tokened, user_only) = (
+                std::cell::RefCell::new(String::new()),
                 std::cell::RefCell::new(String::new()),
                 std::cell::RefCell::new(String::new()),
             );
             recording_git(config, || {
                 *plain.borrow_mut() = fill("https://example.com/b.git");
                 *tokened.borrow_mut() = fill("https://me:s3cret@example.com/b.git");
+                *user_only.borrow_mut() = fill("https://alice@example.com/b.git");
             });
-            let (plain, tokened) = (plain.into_inner(), tokened.into_inner());
+            let (plain, tokened, user_only) = (
+                plain.into_inner(),
+                tokened.into_inner(),
+                user_only.into_inner(),
+            );
+            // A user name alone is a login too (often a token): the user's helpers are never
+            // asked for its password.
+            assert!(
+                user_only.contains("username=alice\npassword=\n") && !user_only.contains("mine"),
+                "{helper}: {user_only}"
+            );
             assert!(
                 plain.contains("username=mine\npassword=kept\n"),
                 "{helper}: {plain}"
