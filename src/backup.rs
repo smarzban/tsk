@@ -1101,13 +1101,9 @@ pub fn redacted(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find("://") {
-        // The scheme's characters are ASCII, so `start` is always a char boundary.
-        let start = rest[..at]
-            .char_indices()
-            .rev()
-            .take_while(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-            .last()
-            .map_or(at, |(index, _)| index);
+        // The scheme token is an ASCII suffix, so `start` is a char boundary.
+        let prefix = &rest[..at];
+        let start = prefix.len() - scheme_token(prefix).len();
         let authority = at + 3;
         let end = rest[authority..]
             .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
@@ -1143,13 +1139,31 @@ fn credentials(url: &str) -> Option<(&str, Option<&str>, &str)> {
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (userinfo, _) = rest[..authority_end].rsplit_once('@')?;
     let host = &rest[userinfo.len() + 1..];
-    let http = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+    // `scheme` is every byte before `://`, including a leading space. http(s) is
+    // the trailing scheme token, the same scan `redacted` uses, so that prefix
+    // cannot leave a bare token in place. The raw prefix is what we return: a
+    // leading space stays, and `é://` still reconstructs.
+    let token = scheme_token(scheme);
+    let http = token.eq_ignore_ascii_case("http") || token.eq_ignore_ascii_case("https");
     let kept = match userinfo.split_once(':') {
         None if !http => return None,
         Some((user, _)) if !http && !user.is_empty() => Some(user),
         _ => None,
     };
     Some((scheme, kept, host))
+}
+
+/// Trailing ASCII scheme run in `prefix` (`https` in ` https`, empty in `é`).
+/// Shared by [`credentials`] and [`redacted`] so the two cannot disagree on
+/// where a scheme starts.
+fn scheme_token(prefix: &str) -> &str {
+    let start = prefix
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        .last()
+        .map_or(prefix.len(), |(index, _)| index);
+    &prefix[start..]
 }
 
 /// Pushes a backup tries before recording the rejection as the target's error. Each retry
@@ -1543,6 +1557,8 @@ impl Remote {
             });
         };
         let login = location.split_once("://").and_then(|(scheme, rest)| {
+            // The same scheme token [`credentials`] reads, so a URL it strips keeps its login.
+            let scheme = scheme_token(scheme);
             let http = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
             let authority = rest.split(['/', '?', '#']).next()?;
             let (userinfo, host) = authority.rsplit_once('@')?;
@@ -2882,6 +2898,52 @@ every = "daily"
     }
 
     #[test]
+    fn a_prefixed_bare_https_token_is_not_pushed() {
+        let cases = [
+            (
+                " https://dummy-token@example.test/repo.git",
+                " https://example.test/repo.git",
+                " https://***@example.test/repo.git",
+            ),
+            (
+                "\nhttps://dummy-token@example.test/repo.git",
+                "\nhttps://example.test/repo.git",
+                "\nhttps://***@example.test/repo.git",
+            ),
+            (
+                " https://me:pw@example.test/repo.git",
+                " https://example.test/repo.git",
+                " https://***@example.test/repo.git",
+            ),
+        ];
+        for (url, stripped, shown) in cases {
+            assert_eq!(
+                without_credentials(url).as_deref(),
+                Some(stripped),
+                "{url:?}"
+            );
+            assert_eq!(shown_location(url), shown, "{url:?}");
+            assert!(
+                !shown.contains("dummy-token") && !shown.contains("pw@"),
+                "{shown}"
+            );
+        }
+        assert_eq!(without_credentials(" ssh://git@host/a.git"), None);
+        assert_eq!(
+            shown_location(" ssh://git@host/a.git"),
+            " ssh://git@host/a.git"
+        );
+        let pushed = sanitized_config(
+            "[[backup]]\nurl = \" https://dummy-token@example.test/repo.git\"\n\n[[backup]]\nurl = \"\\nhttps://dummy-token@example.test/repo.git\"\n",
+        )
+        .expect("parses");
+        assert!(!pushed.contains("dummy-token"), "{pushed}");
+        let targets = parse_targets(&pushed).expect("targets");
+        assert_eq!(targets[0].location, " https://example.test/repo.git");
+        assert_eq!(targets[1].location, "\nhttps://example.test/repo.git");
+    }
+
+    #[test]
     fn credentials_in_an_inline_backup_list_are_never_pushed() {
         let config = "backup = [{ url = \"https://me:ghp_s3cret@github.com/me/b.git\" }, { url = \"ssh://git:pw@host/x.git\", every = \"daily\" }]\n";
         assert_eq!(parse_targets(config).expect("parses").len(), 2);
@@ -3400,6 +3462,13 @@ every = "daily"
             Remote::of("https://ghp_TOKEN@github.com/me/b.git").expect("login"),
             Remote {
                 url: "https://github.com/me/b.git".into(),
+                login: login("github.com", "ghp_TOKEN", ""),
+            }
+        );
+        assert_eq!(
+            Remote::of(" https://ghp_TOKEN@github.com/me/b.git").expect("login"),
+            Remote {
+                url: " https://github.com/me/b.git".into(),
                 login: login("github.com", "ghp_TOKEN", ""),
             }
         );
