@@ -136,6 +136,28 @@ impl InstallOutcome {
             Self::Updated { .. } => "updated",
         }
     }
+
+    /// The skills directory holding every installed skill: `path()` is always
+    /// `<root>/tsk-cli/SKILL.md`.
+    pub fn skills_root(&self) -> &Path {
+        self.path()
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or_else(|| self.path())
+    }
+
+    /// Each installed skill file, tsk-cli first.
+    pub fn skill_paths(&self) -> Vec<PathBuf> {
+        SKILLS
+            .iter()
+            .map(|(name, _)| self.skills_root().join(name).join(SKILL_FILE))
+            .collect()
+    }
+}
+
+/// The installed skills by name, for human output: `tsk-cli, tsk-coordinator`.
+pub fn skill_names() -> String {
+    SKILLS.map(|(name, _)| name).join(", ")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -667,7 +689,11 @@ fn run_interactive_batch_with_search(
     }
 
     let list = needs_work.join(", ");
-    let _ = write!(writer, "Install or update the tsk skill for {list}? [y/N] ");
+    let _ = write!(
+        writer,
+        "Install or update the tsk skills ({}) for {list}? [y/N] ",
+        skill_names()
+    );
     let _ = writer.flush();
     let mut line = String::new();
     if reader.read_line(&mut line).map_err(io_error)? == 0 {
@@ -705,7 +731,7 @@ pub fn list_text() -> String {
     let display = |suffix: &str| match &home {
         Some(home) => {
             let mut path = home.clone();
-            for component in suffix.split('/').chain(["tsk-cli", "SKILL.md"]) {
+            for component in suffix.split('/') {
                 path.push(component);
             }
             crate::ui::terminal_text(&path.display().to_string())
@@ -715,12 +741,13 @@ pub fn list_text() -> String {
             let root = "%USERPROFILE%";
             #[cfg(not(windows))]
             let root = "$HOME";
-            format!("{root}/{suffix}/tsk-cli/SKILL.md")
+            format!("{root}/{suffix}")
         }
     };
     format!(
         "{USAGE}\n\n\
          On a TTY, bare `tsk setup` detects agents and asks once to install or update.\n\
+         Each agent gets the {} skills in its skills folder.\n\
          herdr     register the plugin and shortcuts for this installed binary\n\
          agents    detect agents; --yes installs/updates without asking\n\
          claude    {}\n\
@@ -732,9 +759,10 @@ pub fn list_text() -> String {
          opencode  {}\n\
          --skill-dir <path>  write <path>/tsk-cli/SKILL.md and <path>/tsk-coordinator/SKILL.md\n\
          --detected-ids      print detected agent ids (for installers)\n",
+        skill_names(),
         display(".claude/skills"),
         display(".pi/agent/skills"),
-        omp_skill_display_path(),
+        omp_skills_display_path(),
         display(".cursor/skills"),
         display(".grok/skills"),
         display(".agents/skills"),
@@ -1082,17 +1110,10 @@ fn normalize_absolute_path(path: &Path) -> PathBuf {
     normalized
 }
 
-fn omp_skill_display_path() -> String {
+fn omp_skills_display_path() -> String {
     match omp_agent_dir() {
-        Ok(path) => crate::ui::terminal_text(
-            &path
-                .join("skills")
-                .join(SKILL_FOLDER)
-                .join(SKILL_FILE)
-                .display()
-                .to_string(),
-        ),
-        Err(Error::Home) => "$HOME/.omp/agent/skills/tsk-cli/SKILL.md".to_owned(),
+        Ok(path) => crate::ui::terminal_text(&path.join("skills").display().to_string()),
+        Err(Error::Home) => "$HOME/.omp/agent/skills".to_owned(),
         Err(error) => format!("<{}>", error),
     }
 }
@@ -1456,7 +1477,9 @@ mod tests {
         );
         let transcript = String::from_utf8_lossy(&writer);
         assert!(
-            transcript.contains("Install or update the tsk skill for cursor?"),
+            transcript.contains(
+                "Install or update the tsk skills (tsk-cli, tsk-coordinator) for cursor?"
+            ),
             "{transcript}"
         );
         let _ = fs::remove_dir_all(root);

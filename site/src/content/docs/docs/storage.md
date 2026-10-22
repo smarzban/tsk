@@ -273,6 +273,9 @@ Prefer ssh or a credential helper to a token in a backup URL. A URL such as `htt
 
 - `config.toml` keeps the URL as you wrote it, token included.
 - Backups never push the token: the pushed `config.toml` has it removed.
+- git gets the token privately, never on its command line or in the backup's local clone. Other local users cannot see it in the process list.
+- Any user name or token in the URL is the only login git tries for that target: your credential helper is not asked and stores nothing.
+- For Azure DevOps or Bitbucket URLs that start with a user name, such as `https://org@dev.azure.com/org/p/_git/tsk-backup`, leave the `org@` part out of the backup URL. Your credential manager (Git Credential Manager, osxkeychain) then logs you in.
 - Every command prints the URL with its credentials as `***`, such as `https://***@github.com/me/tsk-backup.git`. `tsk backup remove` takes that form too, unless two targets share it: then give the number or the full URL.
 
 ## Restore
@@ -324,7 +327,9 @@ After an upgrade, the first board open adds one `What's new in tsk` task to your
 
 ## Update check
 
-When the board opens, tsk asks GitHub for the latest release if its last check is more than 24 hours old. A newer version shows on the status row as `vX.Y.Z available, run tsk update`. The check sends no task data, and a failed check stays silent.
+When the board opens, tsk asks GitHub for the latest release if its last check is more than 24 hours old. A board left open checks again once a day. A newer version shows on the status row as `vX.Y.Z available, run tsk update` as soon as the check finishes.
+
+The check sends no task data, and a failed check stays silent. Quick capture and the CLI never check.
 
 | Setting | Effect |
 | --- | --- |

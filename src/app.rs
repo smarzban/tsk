@@ -166,11 +166,10 @@ fn load_board_inner(
     }
     if full_board_open {
         model.offer_launch_card(&state, &snapshot);
+        let check = crate::update::UpdateCheck::new(&state_dir, env!("CARGO_PKG_VERSION"));
+        model.set_update_notice(check.poll(crate::update::unix_now()).flatten());
+        model.set_update_check(Some(check));
     }
-    model.set_update_notice(crate::update::startup(
-        &state_dir,
-        env!("CARGO_PKG_VERSION"),
-    ));
     Ok((store, state, model))
 }
 
@@ -248,6 +247,7 @@ pub fn board_frame(
     model.poll_base_picker_results();
     model.poll_cleanup_check();
     model.poll_dispatch_checks();
+    model.poll_update_check();
     paint(model)?;
     if wait(board_poll_duration(active_animations))? {
         Ok(FramePoll::Event)

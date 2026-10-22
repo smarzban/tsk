@@ -12,6 +12,17 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Changed
+
+- `tsk setup` names both installed skills, `tsk-cli` and `tsk-coordinator`, beside each agent's skills directory instead of printing only the `tsk-cli` file.
+- A backup URL with a user name, such as `https://org@host/…`, no longer asks your credential manager. Drop `org@` from the URL ([credentials](https://gettsk.sh/docs/storage/#credentials)).
+
+### Fixed
+
+- A bare token in an https backup URL is removed and masked even when the URL does not start at the scheme.
+- An open board shows the update notice as soon as the release check finishes, and a board left open checks again once a day.
+- A token in a backup URL stays out of git's command line and the backup's local clone, so other local users cannot see it.
+
 ## v0.13.0
 
 ### Breaking
