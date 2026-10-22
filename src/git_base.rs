@@ -1069,9 +1069,12 @@ mod tests {
             ));
             std::fs::create_dir_all(&dir).expect("mkdir");
             let pid_file = dir.join("pid.txt");
+            let d = dir.to_string_lossy().replace('\\', "/");
             let alias = format!(
-                "alias.hang=!powershell -NoProfile -Command '$PID | Out-File -Encoding ascii \
-                 \"{}\"; Start-Sleep 60'",
+                "alias.hang=!echo \"sh $(uname -a) pw $(command -v powershell) PATH $PATH $(date +%T.%N)\" > \"{d}/sh.txt\"; \
+                 powershell -NoProfile -Command '$PID | Out-File -Encoding ascii \
+                 \"{}\"; Start-Sleep 60' > \"{d}/ps.out\" 2> \"{d}/ps.err\"; \
+                 echo \"ps exit $? $(date +%T.%N)\" >> \"{d}/sh.txt\"",
                 pid_file.to_string_lossy().replace('\\', "/")
             );
             let mut helper = std::process::Command::new(std::env::current_exe().expect("exe"))
@@ -1100,12 +1103,14 @@ mod tests {
                 if started.elapsed() >= std::time::Duration::from_secs(60) {
                     let _ = helper.kill();
                     let _ = helper.wait();
-                    panic!(
-                        "no grandchild\nhelper.out: {}\nhelper.err: {}\nexit: {:?}",
-                        std::fs::read_to_string(dir.join("helper.out")).unwrap_or_default(),
-                        std::fs::read_to_string(dir.join("helper.err")).unwrap_or_default(),
-                        helper.try_wait()
-                    );
+                    let mut dump = String::new();
+                    for name in ["sh.txt", "ps.out", "ps.err", "helper.out", "helper.err"] {
+                        dump += &format!(
+                            "\n--- {name}:\n{}",
+                            std::fs::read_to_string(dir.join(name)).unwrap_or_else(|e| e.to_string())
+                        );
+                    }
+                    panic!("no grandchild (outlive {outlive}){dump}");
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             };

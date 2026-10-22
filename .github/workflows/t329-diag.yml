@@ -32,5 +32,8 @@ jobs:
           set -euo pipefail
           echo "PATH=$PATH"; which git powershell pwsh sh || true; git --version
           python tests/packaging/test_install_windows.py
-          cargo test --locked --target "$TARGET" --lib git_base::tests::a_git_meant_to_outlive -- --nocapture
-          cargo test --locked --target "$TARGET" --lib git_base::tests -- --nocapture
+          if [ "${{ matrix.run }}" = 1 ]; then
+            cargo test --locked --target "$TARGET" --lib git_base::tests::a_git_meant_to_outlive -- --nocapture
+          else
+            cargo test --locked --target "$TARGET"
+          fi
