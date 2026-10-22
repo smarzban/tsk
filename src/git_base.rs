@@ -1070,7 +1070,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_git_meant_to_outlive_tsk_survives_tsk_exiting_and_others_do_not() {
-        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
         use windows_sys::Win32::System::Threading::{
             OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
             PROCESS_TERMINATE,
@@ -1112,21 +1112,27 @@ mod tests {
                 );
                 std::thread::sleep(std::time::Duration::from_millis(100));
             };
+            // Opened while tsk still runs, so the pid must name the live sleeper: a wrong pid
+            // fails here instead of reading as "exited" below. The handle also pins the pid.
+            // SAFETY: plain Win32 calls; the handle is closed once below.
+            let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+            assert!(
+                !handle.is_null(),
+                "recorded pid {pid} is not a running process"
+            );
+            // SAFETY: a zero-timeout wait on the handle opened above.
+            let alive = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
             // tsk exits mid-Git, as when a board quit outlives its bound.
             helper.kill().expect("kill helper");
             helper.wait().expect("reap helper");
-            // SAFETY: plain Win32 calls on a handle opened and closed here.
+            // SAFETY: as above; the handle is closed exactly once here.
             let exited = unsafe {
-                let handle = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid);
-                if handle.is_null() {
-                    true
-                } else {
-                    let exited = WaitForSingleObject(handle, 5_000) == WAIT_OBJECT_0;
-                    TerminateProcess(handle, 1);
-                    CloseHandle(handle);
-                    exited
-                }
+                let exited = WaitForSingleObject(handle, 5_000) == WAIT_OBJECT_0;
+                TerminateProcess(handle, 1);
+                CloseHandle(handle);
+                exited
             };
+            assert!(alive, "recorded pid {pid} exited before tsk did");
             assert_eq!(exited, !outlive, "outlive {outlive}: grandchild {pid}");
             let _ = std::fs::remove_dir_all(dir);
         }
