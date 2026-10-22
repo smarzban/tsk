@@ -1037,7 +1037,7 @@ mod tests {
         };
         let outlive = std::env::var("TSK_OUTLIVE").as_deref() == Ok("1");
         let mut started = || {};
-        let _ = run_git_env(
+        let result = run_git_env(
             Path::new(&dir),
             &["-c", &alias, "hang"],
             &[],
@@ -1045,6 +1045,10 @@ mod tests {
             true,
             outlive.then_some(&mut started as &mut dyn FnMut()),
         );
+        eprintln!("DIAG helper result: {result:?}");
+        if let Ok(output) = result {
+            eprintln!("DIAG git stderr: {}", String::from_utf8_lossy(&output.stderr));
+        }
     }
 
     /// A board quit that outlives its bound ends tsk while a Windows worktree removal runs.
@@ -1080,10 +1084,11 @@ mod tests {
                 .env("TSK_OUTLIVE_DIR", &dir)
                 .env("TSK_OUTLIVE_ALIAS", &alias)
                 .env("TSK_OUTLIVE", if outlive { "1" } else { "0" })
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
+                .stdout(std::fs::File::create(dir.join("helper.out")).expect("out"))
+                .stderr(std::fs::File::create(dir.join("helper.err")).expect("err"))
                 .spawn()
                 .expect("helper");
+            eprintln!("DIAG alias: {alias}");
             let started = std::time::Instant::now();
             let pid: u32 = loop {
                 if let Some(pid) = std::fs::read_to_string(&pid_file)
@@ -1092,10 +1097,16 @@ mod tests {
                 {
                     break pid;
                 }
-                assert!(
-                    started.elapsed() < std::time::Duration::from_secs(60),
-                    "no grandchild"
-                );
+                if started.elapsed() >= std::time::Duration::from_secs(60) {
+                    let _ = helper.kill();
+                    let _ = helper.wait();
+                    panic!(
+                        "no grandchild\nhelper.out: {}\nhelper.err: {}\nexit: {:?}",
+                        std::fs::read_to_string(dir.join("helper.out")).unwrap_or_default(),
+                        std::fs::read_to_string(dir.join("helper.err")).unwrap_or_default(),
+                        helper.try_wait()
+                    );
+                }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             };
             // tsk exits mid-Git, as when a board quit outlives its bound.
