@@ -12,6 +12,10 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Fixed
+
+- A token in a backup URL stays out of git's command line and the backup's local clone, so other local users cannot see it.
+
 ## v0.13.0
 
 ### Breaking

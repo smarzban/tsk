@@ -273,6 +273,8 @@ Prefer ssh or a credential helper to a token in a backup URL. A URL such as `htt
 
 - `config.toml` keeps the URL as you wrote it, token included.
 - Backups never push the token: the pushed `config.toml` has it removed.
+- git gets the token privately, never on its command line or in the backup's local clone. Other local users cannot see it in the process list.
+- A token in the URL is the only login git tries for that target: your credential helper is not asked and stores nothing.
 - Every command prints the URL with its credentials as `***`, such as `https://***@github.com/me/tsk-backup.git`. `tsk backup remove` takes that form too, unless two targets share it: then give the number or the full URL.
 
 ## Restore

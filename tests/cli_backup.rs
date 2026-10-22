@@ -333,8 +333,8 @@ fn a_row_number_is_not_sent_to_the_trash() {
     assert!(!message.contains("did you mean"), "{message}");
 }
 
-/// `tsk` with git told to fetch and push `url` from the local `repo`: a credential URL that
-/// reaches a real repository without a network.
+/// `tsk` with git told to fetch and push `url` from the local `repo`: a URL that reaches a
+/// real repository without a network. git only ever sees a URL without its credentials.
 fn tsk_reaching(state: &Path, url: &str, repo: &str, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_tsk"))
         .args(args)
@@ -358,7 +358,7 @@ fn credentials_in_a_target_url_are_never_printed() {
     let state = root.0.join("state");
     add(&state, "kept private");
     let run = |args: &[&str]| {
-        let output = tsk_reaching(&state, url, &repo, args);
+        let output = tsk_reaching(&state, "https://example.invalid/me/b.git", &repo, args);
         let text = format!("{}{}", stdout(&output), stderr(&output));
         assert!(
             !text.contains("S3CRET"),

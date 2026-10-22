@@ -770,9 +770,10 @@ pub fn run_probe(state_dir: &Path, spec: &str) -> Result<(), String> {
         .ok_or("no such target")?;
     let repos = repos_dir(state_dir);
     fsperm::ensure_private_dir(&repos).map_err(|error| error.to_string())?;
-    let mut command = git_command(&repos);
-    command.args(["ls-remote", "--heads", "--", &target.location]);
-    let found = match crate::git_base::bounded_process_output(command, "git", PROBE_WAIT) {
+    let remote = Remote::of(&target.location);
+    let mut command = remote_command(&repos, &remote);
+    command.args(["ls-remote", "--heads", "--", &remote.url]);
+    let found = match run_git(command, PROBE_WAIT) {
         Ok(output) if output.status.success() => "reached\n".to_string(),
         Ok(output) => format!(
             "error: {}\n",
@@ -1170,7 +1171,7 @@ fn backup_to_git(
     let mut last_error = String::new();
     for attempt in 0..PUSH_ATTEMPTS {
         if attempt > 0 {
-            git_ok(&clone.dir, &["fetch", "--quiet", "--prune", "origin"])?;
+            remote_git_ok(&clone, &["fetch", "--quiet", "--prune", "origin"])?;
         }
         let remote = format!("refs/remotes/origin/{}", clone.branch);
         let has_remote = git(&clone.dir, &["rev-parse", "--verify", "--quiet", &remote])?
@@ -1241,8 +1242,8 @@ fn backup_to_git(
         if !ahead {
             return Ok(RunOutcome::UpToDate);
         }
-        let push = git(
-            &clone.dir,
+        let push = remote_git(
+            &clone,
             &[
                 "push",
                 "--quiet",
@@ -1363,6 +1364,7 @@ fn write_in_clone(clone: &Path, relative: &str, bytes: &[u8]) -> Result<(), Stri
 struct GitClone {
     dir: PathBuf,
     branch: String,
+    remote: Remote,
 }
 
 /// Clone the target under `backup-repos/<id>` the first time, fetch it after. The branch is
@@ -1378,15 +1380,19 @@ fn sync_clone(state_dir: &Path, target: &Target) -> Result<GitClone, String> {
     let repos = repos_dir(state_dir);
     fsperm::ensure_private_dir(&repos).map_err(|error| error.to_string())?;
     let dir = repos.join(target.id());
+    let remote = Remote::of(&target.location);
     if dir.join(".git").is_dir() {
-        git_ok(
-            &dir,
-            &["remote", "set-url", "origin", "--", &target.location],
-        )?;
-        git_ok(&dir, &["fetch", "--quiet", "--prune", "origin"])?;
+        // Also rewrites a clone made before credentials stayed out of `.git/config`.
+        git_ok(&dir, &["remote", "set-url", "origin", "--", &remote.url])?;
+        let mut command = remote_command(&dir, &remote);
+        command.args(["fetch", "--quiet", "--prune", "origin"]);
+        let output = run_git(command, GIT_TIMEOUT)?;
+        if !output.status.success() {
+            return Err(git_failure("fetch", &output));
+        }
     } else {
         let _ = fs::remove_dir_all(&dir);
-        let mut command = git_command(&repos);
+        let mut command = remote_command(&repos, &remote);
         command
             .args([
                 "clone",
@@ -1395,10 +1401,10 @@ fn sync_clone(state_dir: &Path, target: &Target) -> Result<GitClone, String> {
                 "--config",
                 "core.symlinks=false",
                 "--",
-                &target.location,
+                &remote.url,
             ])
             .arg(&dir);
-        let output = crate::git_base::bounded_process_output(command, "git", GIT_TIMEOUT)?;
+        let output = run_git(command, GIT_TIMEOUT)?;
         if !output.status.success() {
             let _ = fs::remove_dir_all(&dir);
             return Err(git_failure("clone", &output));
@@ -1444,7 +1450,11 @@ fn sync_clone(state_dir: &Path, target: &Target) -> Result<GitClone, String> {
             .filter(|name| !name.is_empty())
     })
     .unwrap_or_else(|| "main".to_string());
-    Ok(GitClone { dir, branch })
+    Ok(GitClone {
+        dir,
+        branch,
+        remote,
+    })
 }
 
 /// Every git call a backup makes. It runs in a detached child with no terminal, so it must
@@ -1481,6 +1491,14 @@ fn git_command(dir: &Path) -> Command {
     ] {
         command.arg("-c").arg(setting);
     }
+    #[cfg(test)]
+    TEST_GIT.with(|test| {
+        if let Some((config, _)) = test.borrow().as_ref() {
+            for setting in config {
+                command.arg("-c").arg(setting);
+            }
+        }
+    });
     command
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never");
@@ -1490,14 +1508,142 @@ fn git_command(dir: &Path) -> Command {
     command
 }
 
+/// A shell credential helper that answers only for the target's host, with the user name and
+/// password [`remote_command`] puts in its environment. It holds no secret itself: git's
+/// command line is visible to every local user, its environment is not.
+const CREDENTIAL_HELPER: &str = "!f() { test \"$1\" = get || return 0; h=; while IFS= read -r l; do case $l in host=*) h=${l#host=};; esac; done; if test \"$h\" = \"$TSK_BACKUP_HOST\"; then printf 'username=%s\\npassword=%s\\n' \"$TSK_BACKUP_USERNAME\" \"$TSK_BACKUP_PASSWORD\"; fi; }; f";
+
+/// How git reaches a target: its URL without credentials, and the login the URL held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Remote {
+    url: String,
+    login: Option<Login>,
+}
+
+/// The user name and password of an http(s) URL, percent-decoded as git reads them, and the
+/// host (with its port) they belong to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Login {
+    host: String,
+    username: String,
+    password: String,
+}
+
+impl Remote {
+    /// A bare `https://TOKEN@host` logs in as `TOKEN` with an empty password, as git would.
+    /// An ssh password is dropped: ssh never takes one from git.
+    fn of(location: &str) -> Self {
+        let Some(url) = without_credentials(location) else {
+            return Self {
+                url: location.to_string(),
+                login: None,
+            };
+        };
+        let login = location.split_once("://").and_then(|(scheme, rest)| {
+            let http = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+            let authority = rest.split(['/', '?', '#']).next()?;
+            let (userinfo, host) = authority.rsplit_once('@')?;
+            let (username, password) = userinfo.split_once(':').unwrap_or((userinfo, ""));
+            (http && !userinfo.is_empty()).then(|| Login {
+                host: host.to_string(),
+                username: percent_decoded(username),
+                password: percent_decoded(password),
+            })
+        });
+        Self { url, login }
+    }
+}
+
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let hex = bytes
+            .get(index + 1..index + 3)
+            .filter(|_| bytes[index] == b'%')
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match hex {
+            Some(byte) => {
+                out.push(byte);
+                index += 3;
+            }
+            None => {
+                out.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// [`git_command`] for a call that reaches `remote`. A login goes to git through
+/// [`CREDENTIAL_HELPER`] and the environment, never the command line or the clone's
+/// `.git/config`, and is the only helper git asks: the user's own helpers would offer
+/// another account's login first, or store this one. Without a login the user's helpers
+/// answer as usual.
+fn remote_command(dir: &Path, remote: &Remote) -> Command {
+    let mut command = git_command(dir);
+    if let Some(login) = &remote.login {
+        command
+            .args(["-c", "credential.helper="])
+            .arg("-c")
+            .arg(format!("credential.helper={CREDENTIAL_HELPER}"))
+            .env("TSK_BACKUP_HOST", &login.host)
+            .env("TSK_BACKUP_USERNAME", &login.username)
+            .env("TSK_BACKUP_PASSWORD", &login.password);
+    }
+    command
+}
+
+/// `-c` settings a test adds to every git call, and each call's arguments.
+#[cfg(test)]
+type TestGit = (Vec<String>, Vec<Vec<String>>);
+
+#[cfg(test)]
+thread_local! {
+    /// Set by a test for git calls on its own thread.
+    static TEST_GIT: std::cell::RefCell<Option<TestGit>> = const { std::cell::RefCell::new(None) };
+}
+
+fn run_git(command: Command, timeout: Duration) -> Result<std::process::Output, String> {
+    #[cfg(test)]
+    TEST_GIT.with(|test| {
+        if let Some((_, calls)) = test.borrow_mut().as_mut() {
+            calls.push(
+                command
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect(),
+            );
+        }
+    });
+    crate::git_base::bounded_process_output(command, "git", timeout)
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<std::process::Output, String> {
     let mut command = git_command(dir);
     command.args(args);
-    crate::git_base::bounded_process_output(command, "git", GIT_TIMEOUT)
+    run_git(command, GIT_TIMEOUT)
 }
 
 fn git_ok(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = git(dir, args)?;
+    checked(args, git(dir, args)?)
+}
+
+/// [`git`] on `clone` for a call that reaches its remote (see [`remote_command`]).
+fn remote_git(clone: &GitClone, args: &[&str]) -> Result<std::process::Output, String> {
+    let mut command = remote_command(&clone.dir, &clone.remote);
+    command.args(args);
+    run_git(command, GIT_TIMEOUT)
+}
+
+fn remote_git_ok(clone: &GitClone, args: &[&str]) -> Result<String, String> {
+    checked(args, remote_git(clone, args)?)
+}
+
+fn checked(args: &[&str], output: std::process::Output) -> Result<String, String> {
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
@@ -2802,7 +2948,7 @@ every = "daily"
 
     #[test]
     fn a_stored_error_never_holds_a_token() {
-        // git quotes the token outside a URL here.
+        // git would quote the token outside a URL here, had it been handed the token.
         let root = TempDir::new("stored-error");
         let url = "git://me:S3CRET@127.0.0.1:9/x.git";
         let state = state_with_target(&root.0, Path::new(url), "");
@@ -2816,7 +2962,7 @@ every = "daily"
             .expect("an error is recorded");
         for error in [returned, stored, failure_message(&state).expect("shown")] {
             assert!(!error.contains("S3CRET"), "{error}");
-            assert!(error.contains("***@127.0.0.1"), "{error}");
+            assert!(error.contains("me@127.0.0.1"), "{error}");
         }
     }
 
@@ -3190,5 +3336,204 @@ every = "daily"
             "{results:?}"
         );
         assert_eq!(packs(), before, "no repack in a background run");
+    }
+
+    /// Every file under `dir` that holds `needle`.
+    fn files_holding(dir: &Path, needle: &str) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for entry in fs::read_dir(dir).expect("dir").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(files_holding(&path, needle));
+            } else if fs::read(&path).is_ok_and(|bytes| {
+                bytes
+                    .windows(needle.len())
+                    .any(|window| window == needle.as_bytes())
+            }) {
+                found.push(path);
+            }
+        }
+        found
+    }
+
+    /// Runs `body` with git's calls on this thread recorded and `config` added to each,
+    /// returning every call's arguments.
+    fn recording_git(config: Vec<String>, body: impl FnOnce()) -> Vec<Vec<String>> {
+        TEST_GIT.with(|test| *test.borrow_mut() = Some((config, Vec::new())));
+        body();
+        TEST_GIT
+            .with(|test| test.borrow_mut().take())
+            .map(|(_, calls)| calls)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_remote_keeps_its_login_out_of_the_url() {
+        let login = |host: &str, username: &str, password: &str| {
+            Some(Login {
+                host: host.into(),
+                username: username.into(),
+                password: password.into(),
+            })
+        };
+        assert_eq!(
+            Remote::of("https://me:s3cr%40et%2F@github.com:8443/me/b.git"),
+            Remote {
+                url: "https://github.com:8443/me/b.git".into(),
+                login: login("github.com:8443", "me", "s3cr@et/"),
+            }
+        );
+        assert_eq!(
+            Remote::of("https://ghp_TOKEN@github.com/me/b.git"),
+            Remote {
+                url: "https://github.com/me/b.git".into(),
+                login: login("github.com", "ghp_TOKEN", ""),
+            }
+        );
+        assert_eq!(
+            Remote::of("ssh://git:pw@host/x.git"),
+            Remote {
+                url: "ssh://git@host/x.git".into(),
+                login: None,
+            }
+        );
+        for plain in [
+            "https://github.com/me/b.git",
+            "git@github.com:me/b.git",
+            "/srv/b.git",
+        ] {
+            assert_eq!(
+                Remote::of(plain),
+                Remote {
+                    url: plain.into(),
+                    login: None,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_backup_never_puts_the_token_in_git_arguments_or_the_clone() {
+        let root = TempDir::new("token");
+        let remote = bare_repo(&root.0);
+        let url = "https://me:s3cr%40et@127.0.0.1:1/b.git";
+        let state = root.0.join("state");
+        fs::create_dir_all(&state).expect("state");
+        fs::write(
+            state.join("config.toml"),
+            format!("[[backup]]\nurl = {url:?}\n"),
+        )
+        .expect("config");
+        // The remote is served from disk under both spellings of its URL, so a build that
+        // still passes the token reaches it too and fails only on the token checks.
+        let config = ["https://127.0.0.1:1/b.git", url]
+            .iter()
+            .map(|https| format!("url.{}.insteadOf={https}", remote.display()))
+            .collect();
+        let mut versions = Vec::new();
+        let calls = recording_git(config, || {
+            assert_eq!(
+                run(&state, RunMode::One(0), at(DAY)).expect("run")[0].1,
+                Ok(RunOutcome::NoStore)
+            );
+            write_store(&state, "a1");
+            let results = run(&state, RunMode::Now, at(DAY + 1)).expect("run");
+            assert!(
+                matches!(results[0].1, Ok(RunOutcome::Written(_))),
+                "{results:?}"
+            );
+            let (listed, failures) = list_versions(&state, false).expect("versions");
+            assert!(failures.is_empty(), "{failures:?}");
+            versions = listed;
+        });
+        assert!(
+            calls
+                .iter()
+                .any(|args| args.iter().any(|arg| arg == "clone"))
+                && calls
+                    .iter()
+                    .any(|args| args.iter().any(|arg| arg == "push")),
+            "{calls:?}"
+        );
+        for args in &calls {
+            assert!(
+                !args
+                    .iter()
+                    .any(|arg| arg.contains("s3cr") && !arg.starts_with("url.")),
+                "token in git's arguments: {args:?}"
+            );
+        }
+        assert_eq!(versions.len(), 1);
+        let repos = state.join(REPOS_DIR);
+        assert_eq!(files_holding(&repos, "s3cr"), Vec::<PathBuf>::new());
+        let clone = repos.join(Target::new(url.into()).id());
+        assert_eq!(
+            git_in(&clone, &["remote", "get-url", "origin"]).trim(),
+            "https://127.0.0.1:1/b.git"
+        );
+    }
+
+    #[test]
+    fn an_old_clone_holding_the_token_is_rewritten_on_next_use() {
+        let root = TempDir::new("old-clone");
+        let remote = bare_repo(&root.0);
+        let state = state_with_target(&root.0, &remote, "");
+        run(&state, RunMode::One(0), at(DAY)).expect("run");
+        // As a clone made before the fix: the target's URL with its token in `.git/config`.
+        let url = "https://me:s3cret@127.0.0.1:1/b.git";
+        let clone = state
+            .join(REPOS_DIR)
+            .join(Target::new(remote.display().to_string()).id());
+        let moved = state.join(REPOS_DIR).join(Target::new(url.into()).id());
+        fs::rename(&clone, &moved).expect("move");
+        git_in(&moved, &["remote", "set-url", "origin", url]);
+        fs::write(
+            state.join("config.toml"),
+            format!("[[backup]]\nurl = {url:?}\n"),
+        )
+        .expect("config");
+        // Nothing listens on port 1: the fetch fails, after the remote was rewritten.
+        let results = run(&state, RunMode::One(0), at(DAY + 1)).expect("run");
+        assert!(results[0].1.is_err(), "{results:?}");
+        let config = fs::read_to_string(moved.join(".git/config")).expect("config");
+        assert!(!config.contains("s3cret"), "{config}");
+        assert!(
+            config.contains("url = https://127.0.0.1:1/b.git"),
+            "{config}"
+        );
+    }
+
+    #[test]
+    fn the_credential_helper_gives_the_login_to_its_host_only() {
+        let root = TempDir::new("helper");
+        let remote = Remote::of("https://me:s3cr%40et@example.com:8443/b.git");
+        let fill = |host: &str| {
+            let mut command = remote_command(&root.0, &remote);
+            command
+                .args(["credential", "fill"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            let mut child = command.spawn().expect("git");
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(format!("protocol=https\nhost={host}\n\n").as_bytes())
+                .expect("write");
+            let output = child.wait_with_output().expect("git");
+            (
+                output.status.success(),
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+            )
+        };
+        let (filled, answer) = fill("example.com:8443");
+        assert!(filled, "{answer}");
+        assert!(
+            answer.contains("username=me\npassword=s3cr@et\n"),
+            "{answer}"
+        );
+        let (filled, answer) = fill("elsewhere.example:8443");
+        assert!(!filled && !answer.contains("s3cr"), "{answer}");
     }
 }
