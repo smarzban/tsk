@@ -11,13 +11,12 @@ use tsk_tui::context::InvocationSnapshot;
 use tsk_tui::domain::{
     DomainState, HumanStatus, ProvenanceOrigin, Task, TaskEvent, TaskEventKind, TaskScope,
 };
-use tsk_tui::scope::paths_equivalent;
 use tsk_tui::store::TaskStore;
 use tsk_tui::ui::board::{apply_intent, draw_board, BoardModel, ProjectScopeOption};
 use tsk_tui::ui::input::BoardIntent;
 use tsk_tui::ui::queue::{
-    query_board, query_lens, BoardFilter, BoardLens, ProjectRow, QueueView, SectionKind,
-    ThreadFilter, INBOX_HEADER_ROW_ID,
+    query_board, query_lens, BoardFilter, BoardLens, QueueView, SectionKind, ThreadFilter,
+    INBOX_HEADER_ROW_ID,
 };
 use uuid::Uuid;
 
@@ -95,15 +94,6 @@ fn section_ids(view: &QueueView, kind: SectionKind) -> Vec<Uuid> {
         .filter(|section| section.kind == kind)
         .flat_map(|section| section.task_ids.iter().copied())
         .collect()
-}
-
-#[allow(unused)]
-fn project_row(view: &QueueView, path: &str) -> ProjectRow {
-    view.projects
-        .iter()
-        .find(|row| paths_equivalent(&row.path, path))
-        .expect("index row")
-        .clone()
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
