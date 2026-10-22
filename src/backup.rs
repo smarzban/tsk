@@ -770,10 +770,11 @@ pub fn run_probe(state_dir: &Path, spec: &str) -> Result<(), String> {
         .ok_or("no such target")?;
     let repos = repos_dir(state_dir);
     fsperm::ensure_private_dir(&repos).map_err(|error| error.to_string())?;
-    let remote = Remote::of(&target.location);
-    let mut command = remote_command(&repos, &remote);
-    command.args(["ls-remote", "--heads", "--", &remote.url]);
-    let found = match run_git(command, PROBE_WAIT) {
+    let found = match Remote::of(&target.location).and_then(|remote| {
+        let mut command = remote_command(&repos, &remote);
+        command.args(["ls-remote", "--heads", "--", &remote.url]);
+        run_git(command, PROBE_WAIT)
+    }) {
         Ok(output) if output.status.success() => "reached\n".to_string(),
         Ok(output) => format!(
             "error: {}\n",
@@ -1380,7 +1381,7 @@ fn sync_clone(state_dir: &Path, target: &Target) -> Result<GitClone, String> {
     let repos = repos_dir(state_dir);
     fsperm::ensure_private_dir(&repos).map_err(|error| error.to_string())?;
     let dir = repos.join(target.id());
-    let remote = Remote::of(&target.location);
+    let remote = Remote::of(&target.location)?;
     if dir.join(".git").is_dir() {
         // Also rewrites a clone made before credentials stayed out of `.git/config`.
         git_ok(&dir, &["remote", "set-url", "origin", "--", &remote.url])?;
@@ -1531,13 +1532,15 @@ struct Login {
 
 impl Remote {
     /// A bare `https://TOKEN@host` logs in as `TOKEN` with an empty password, as git would.
-    /// An ssh password is dropped: ssh never takes one from git.
-    fn of(location: &str) -> Self {
+    /// An ssh password is dropped: ssh never takes one from git. A login holding a line break
+    /// or NUL is refused: git's credential protocol is line based, so the rest of it would
+    /// read as another field or land in git's error message.
+    fn of(location: &str) -> Result<Self, String> {
         let Some(url) = without_credentials(location) else {
-            return Self {
+            return Ok(Self {
                 url: location.to_string(),
                 login: None,
-            };
+            });
         };
         let login = location.split_once("://").and_then(|(scheme, rest)| {
             let http = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
@@ -1550,7 +1553,17 @@ impl Remote {
                 password: percent_decoded(password),
             })
         });
-        Self { url, login }
+        if login.as_ref().is_some_and(|login| {
+            [&login.username, &login.password]
+                .iter()
+                .any(|part| part.contains(['\n', '\r', '\0']))
+        }) {
+            return Err(
+                "the user name or password in the backup URL holds a line break or NUL, which git cannot take"
+                    .into(),
+            );
+        }
+        Ok(Self { url, login })
     }
 }
 
@@ -3377,21 +3390,21 @@ every = "daily"
             })
         };
         assert_eq!(
-            Remote::of("https://me:s3cr%40et%2F@github.com:8443/me/b.git"),
+            Remote::of("https://me:s3cr%40et%2F@github.com:8443/me/b.git").expect("login"),
             Remote {
                 url: "https://github.com:8443/me/b.git".into(),
                 login: login("github.com:8443", "me", "s3cr@et/"),
             }
         );
         assert_eq!(
-            Remote::of("https://ghp_TOKEN@github.com/me/b.git"),
+            Remote::of("https://ghp_TOKEN@github.com/me/b.git").expect("login"),
             Remote {
                 url: "https://github.com/me/b.git".into(),
                 login: login("github.com", "ghp_TOKEN", ""),
             }
         );
         assert_eq!(
-            Remote::of("ssh://git:pw@host/x.git"),
+            Remote::of("ssh://git:pw@host/x.git").expect("ssh"),
             Remote {
                 url: "ssh://git@host/x.git".into(),
                 login: None,
@@ -3403,7 +3416,7 @@ every = "daily"
             "/srv/b.git",
         ] {
             assert_eq!(
-                Remote::of(plain),
+                Remote::of(plain).expect("plain"),
                 Remote {
                     url: plain.into(),
                     login: None,
@@ -3506,7 +3519,7 @@ every = "daily"
     #[test]
     fn the_credential_helper_gives_the_login_to_its_host_only() {
         let root = TempDir::new("helper");
-        let remote = Remote::of("https://me:s3cr%40et@example.com:8443/b.git");
+        let remote = Remote::of("https://me:s3cr%40et@example.com:8443/b.git").expect("login");
         let fill = |host: &str| {
             let mut command = remote_command(&root.0, &remote);
             command
@@ -3535,5 +3548,279 @@ every = "daily"
         );
         let (filled, answer) = fill("elsewhere.example:8443");
         assert!(!filled && !answer.contains("s3cr"), "{answer}");
+    }
+
+    #[test]
+    fn the_users_own_helpers_answer_only_for_a_url_without_a_login() {
+        let root = TempDir::new("own-helper");
+        let fill = |location: &str| {
+            let remote = Remote::of(location).expect("remote");
+            let mut command = remote_command(&root.0, &remote);
+            command
+                .args(["credential", "fill"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            let mut child = command.spawn().expect("git");
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(b"protocol=https\nhost=example.com\n\n")
+                .expect("write");
+            String::from_utf8_lossy(&child.wait_with_output().expect("git").stdout).into_owned()
+        };
+        // The user's helpers, as their global config would set them: one for every URL and
+        // one for this host only.
+        for helper in ["credential.helper", "credential.https://example.com.helper"] {
+            let config = vec![format!(
+                "{helper}=!f() {{ echo username=mine; echo password=kept; }}; f"
+            )];
+            let (plain, tokened) = (
+                std::cell::RefCell::new(String::new()),
+                std::cell::RefCell::new(String::new()),
+            );
+            recording_git(config, || {
+                *plain.borrow_mut() = fill("https://example.com/b.git");
+                *tokened.borrow_mut() = fill("https://me:s3cret@example.com/b.git");
+            });
+            let (plain, tokened) = (plain.into_inner(), tokened.into_inner());
+            assert!(
+                plain.contains("username=mine\npassword=kept\n"),
+                "{helper}: {plain}"
+            );
+            assert!(
+                tokened.contains("username=me\npassword=s3cret\n") && !tokened.contains("mine"),
+                "{helper}: {tokened}"
+            );
+        }
+    }
+
+    /// A smart-http git server on 127.0.0.1 for the repositories under `root`, answering 401
+    /// to any request without `user`:`password`, as a hosted remote does. Returns its port
+    /// and a `<method> <path> <authorized>` line per request.
+    fn http_remote(
+        root: &Path,
+        user: &str,
+        password: &str,
+    ) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        use std::io::{BufRead, BufReader, Read};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        let port = listener.local_addr().expect("addr").port();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let expected = format!("Basic {}", STANDARD.encode(format!("{user}:{password}")));
+        let (root, served) = (root.to_path_buf(), log.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream.try_clone().expect("stream"));
+                let mut stream = stream;
+                let mut request = String::new();
+                if reader.read_line(&mut request).is_err() {
+                    continue;
+                }
+                let mut headers = std::collections::HashMap::new();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((key, value)) = line.trim_end().split_once(": ") {
+                        headers.insert(key.to_ascii_lowercase(), value.to_string());
+                    }
+                }
+                let header = |key: &str| headers.get(key).cloned().unwrap_or_default();
+                let mut parts = request.split_whitespace();
+                let (method, target) = (
+                    parts.next().unwrap_or("").to_string(),
+                    parts.next().unwrap_or("").to_string(),
+                );
+                let authorized = header("authorization") == expected;
+                served
+                    .lock()
+                    .expect("log")
+                    .push(format!("{method} {target} {authorized}"));
+                if header("expect").eq_ignore_ascii_case("100-continue") {
+                    let _ = stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
+                }
+                let mut body = Vec::new();
+                if header("transfer-encoding").eq_ignore_ascii_case("chunked") {
+                    loop {
+                        let mut size = String::new();
+                        let _ = reader.read_line(&mut size);
+                        let size = usize::from_str_radix(size.trim(), 16).unwrap_or(0);
+                        let mut chunk = vec![0; size + 2];
+                        let _ = reader.read_exact(&mut chunk);
+                        if size == 0 {
+                            break;
+                        }
+                        body.extend_from_slice(&chunk[..size]);
+                    }
+                } else {
+                    let length = header("content-length").parse().unwrap_or(0);
+                    body.resize(length, 0);
+                    let _ = reader.read_exact(&mut body);
+                }
+                if !authorized {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"t\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    continue;
+                }
+                let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+                let mut backend = Command::new("git")
+                    .arg("http-backend")
+                    .env("GIT_PROJECT_ROOT", &root)
+                    .env("GIT_HTTP_EXPORT_ALL", "1")
+                    .env("PATH_INFO", path)
+                    .env("QUERY_STRING", query)
+                    .env("REQUEST_METHOD", &method)
+                    .env("CONTENT_TYPE", header("content-type"))
+                    .env("CONTENT_LENGTH", body.len().to_string())
+                    .env("HTTP_CONTENT_ENCODING", header("content-encoding"))
+                    .env("GIT_PROTOCOL", header("git-protocol"))
+                    .env("REMOTE_USER", "me")
+                    .env("REMOTE_ADDR", "127.0.0.1")
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("git http-backend");
+                let mut stdin = backend.stdin.take().expect("stdin");
+                let writer = std::thread::spawn(move || stdin.write_all(&body));
+                let output = backend.wait_with_output().expect("http-backend");
+                let _ = writer.join();
+                let split = output
+                    .stdout
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .unwrap_or(output.stdout.len());
+                let (cgi, content) = output.stdout.split_at(split);
+                let content = content.get(4..).unwrap_or_default();
+                let mut status = "200 OK".to_string();
+                let mut response = String::new();
+                for line in String::from_utf8_lossy(cgi).split("\r\n") {
+                    match line.split_once(": ") {
+                        Some((key, value)) if key.eq_ignore_ascii_case("status") => {
+                            status = value.to_string()
+                        }
+                        Some(_) => response.push_str(&format!("{line}\r\n")),
+                        None => {}
+                    }
+                }
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\n{response}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        content.len()
+                    )
+                    .as_bytes(),
+                );
+                let _ = stream.write_all(content);
+            }
+        });
+        (port, log)
+    }
+
+    #[test]
+    fn clone_probe_fetch_and_push_log_in_through_the_helper_alone() {
+        let root = TempDir::new("http-login");
+        let remote = bare_repo(&root.0);
+        git_in(&remote, &["config", "http.receivepack", "true"]);
+        let (port, log) = http_remote(&root.0, "me", "s3cr@et");
+        let url = format!("http://me:s3cr%40et@127.0.0.1:{port}/remote.git");
+        let state = root.0.join("state");
+        fs::create_dir_all(&state).expect("state");
+        fs::write(
+            state.join("config.toml"),
+            format!("[[backup]]\nurl = {url:?}\n"),
+        )
+        .expect("config");
+        let calls = recording_git(Vec::new(), || {
+            // Clones the empty remote.
+            assert_eq!(
+                run(&state, RunMode::One(0), at(DAY)).expect("run")[0].1,
+                Ok(RunOutcome::NoStore)
+            );
+            // `backup add`'s detached probe.
+            run_probe(&state, "0:1").expect("probe");
+            assert_eq!(
+                fs::read_to_string(state.join(format!("{PROBE_FILE_PREFIX}1"))).expect("probe"),
+                "reached\n"
+            );
+            // A push, then a fetch of the existing clone and another push.
+            for (index, title) in ["a1", "a2"].iter().enumerate() {
+                write_store(&state, title);
+                let results = run(&state, RunMode::Now, at(DAY + 1 + index as u64)).expect("run");
+                assert!(
+                    matches!(results[0].1, Ok(RunOutcome::Written(_))),
+                    "{results:?}"
+                );
+            }
+        });
+        assert_eq!(commits(&remote), 2);
+        let log = log.lock().expect("log").clone();
+        for (request, what) in [
+            (
+                "GET /remote.git/info/refs?service=git-upload-pack",
+                "clone and fetch",
+            ),
+            ("GET /remote.git/info/refs?service=git-receive-pack", "push"),
+            ("POST /remote.git/git-receive-pack", "push"),
+        ] {
+            assert!(
+                log.iter()
+                    .filter(|line| line.starts_with(request) && line.ends_with(" true"))
+                    .count()
+                    >= 2,
+                "{what} logged in twice: {log:?}"
+            );
+        }
+        assert!(
+            calls
+                .iter()
+                .any(|args| args.iter().any(|arg| arg == "ls-remote")),
+            "{calls:?}"
+        );
+        for args in &calls {
+            assert!(
+                !args.iter().any(|arg| arg.contains("s3cr")),
+                "token in git's arguments: {args:?}"
+            );
+        }
+        assert_eq!(
+            files_holding(&state.join(REPOS_DIR), "s3cr"),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn a_login_with_a_line_break_never_reaches_git() {
+        for url in [
+            "https://me:a%0ATAIL@127.0.0.1:1/b.git",
+            "https://me:a%0DTAIL@127.0.0.1:1/b.git",
+            "https://me%00TAIL@127.0.0.1:1/b.git",
+        ] {
+            let root = TempDir::new("line-break");
+            let state = root.0.join("state");
+            fs::create_dir_all(&state).expect("state");
+            fs::write(
+                state.join("config.toml"),
+                format!("[[backup]]\nurl = {url:?}\n"),
+            )
+            .expect("config");
+            let calls = recording_git(Vec::new(), || {
+                let results = run(&state, RunMode::One(0), at(DAY)).expect("run");
+                let error = results[0].1.clone().expect_err("refused");
+                assert!(error.contains("line break or NUL"), "{error}");
+                assert!(!error.contains("TAIL"), "{error}");
+                run_probe(&state, "0:1").expect("probe");
+                let probe =
+                    fs::read_to_string(state.join(format!("{PROBE_FILE_PREFIX}1"))).expect("probe");
+                assert!(
+                    probe.contains("line break or NUL") && !probe.contains("TAIL"),
+                    "{probe}"
+                );
+            });
+            assert_eq!(calls, Vec::<Vec<String>>::new(), "{url}");
+        }
     }
 }
