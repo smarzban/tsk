@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        run: [1, 2, 3]
+        run: [1, 2, 3, mutant-dies, mutant-outlives]
     env:
       TAG: v0.13.0
       TARGET: aarch64-pc-windows-msvc
@@ -32,4 +32,11 @@ jobs:
           set -euo pipefail
           echo "PATH=$PATH"; which git powershell pwsh sh || true; git --version
           python tests/packaging/test_install_windows.py
-          cargo test --locked --target "$TARGET"
+          case "${{ matrix.run }}" in
+            mutant-dies) sed -i 's/job::Job::contain(_child, !_outlive_tsk)/job::Job::contain(_child, false)/' src/git_base.rs ;;
+            mutant-outlives) sed -i 's/job::Job::contain(_child, !_outlive_tsk)/job::Job::contain(_child, true)/' src/git_base.rs ;;
+            *) cargo test --locked --target "$TARGET"; exit 0 ;;
+          esac
+          git diff --stat
+          if cargo test --target "$TARGET" --lib git_base::tests::a_git_meant_to_outlive; then echo "mutant survived"; exit 1; fi
+          echo "mutant caught"
