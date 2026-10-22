@@ -12,6 +12,10 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Changed
+
+- A backup URL with a user name, such as `https://org@host/…`, no longer asks your credential manager. Drop `org@` from the URL ([credentials](https://gettsk.sh/docs/storage/#credentials)).
+
 ### Fixed
 
 - A token in a backup URL stays out of git's command line and the backup's local clone, so other local users cannot see it.
