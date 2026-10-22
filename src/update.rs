@@ -215,40 +215,47 @@ impl UpdateCheck {
         if std::mem::take(&mut state.landed) {
             notice = Some(self.cached_notice());
         }
-        if !state.in_flight && now >= state.due_at {
-            let planned = plan(&self.dir, &self.current, now);
-            if planned.should_fetch {
-                mark_check_started(&self.dir, now);
-                state.due_at = now.saturating_add(STALE_AFTER_SECS);
-                state.in_flight = self.spawn_fetch();
-            } else {
-                let last = read_cache(&self.dir).map_or(now, |cache| cache.last_check_unix);
-                state.due_at = last.saturating_add(STALE_AFTER_SECS);
-            }
-            notice = Some(planned.notice);
+        if state.in_flight || now < state.due_at {
+            return notice;
         }
-        notice
+        let planned = plan(&self.dir, &self.current, now);
+        if planned.should_fetch {
+            mark_check_started(&self.dir, now);
+            state.due_at = now.saturating_add(STALE_AFTER_SECS);
+        } else {
+            let last = read_cache(&self.dir).map_or(now, |cache| cache.last_check_unix);
+            state.due_at = last.saturating_add(STALE_AFTER_SECS);
+        }
+        // A spawn that fails drops its `Landing` on this thread, which takes the lock.
+        drop(state);
+        if planned.should_fetch {
+            self.spawn_fetch();
+        }
+        Some(planned.notice)
     }
 
     fn cached_notice(&self) -> Option<String> {
         read_cache(&self.dir).and_then(|cache| notice_for(&cache.latest, &self.current))
     }
 
-    fn spawn_fetch(&self) -> bool {
+    fn spawn_fetch(&self) {
         if self.live && (cfg!(test) || !BACKGROUND_FETCH.load(Ordering::SeqCst)) {
-            return false;
+            return;
         }
         silence_update_check_panics();
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .in_flight = true;
         let dir = self.dir.clone();
         let fetch = self.fetch;
         let landing = Landing(Arc::clone(&self.state));
-        std::thread::Builder::new()
+        let _ = std::thread::Builder::new()
             .name(UPDATE_CHECK_THREAD.to_string())
             .spawn(move || {
                 let _landing = landing;
                 apply_fetch(&dir, unix_now(), fetch);
-            })
-            .is_ok()
+            });
     }
 }
 
