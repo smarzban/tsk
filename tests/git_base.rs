@@ -514,7 +514,7 @@ fn local_git_queries_are_bounded_and_kill_output_holding_children() {
     let r = repo();
     let fake = r.root.join("git");
     let escaped_root = r.root.to_string_lossy().replace('\'', "'\\''");
-    stub::write_stub(&fake, format!("#!/bin/sh\ncase \"$3:$4\" in fetch:*|remote:set-head) exit 0;; capture-output:*) dd if=/dev/zero bs=262144 count=1 2>/dev/null; dd if=/dev/zero bs=262144 count=1 1>&2 2>/dev/null; exit 7;; esac\n(sleep 1; echo escaped > '{escaped_root}/escaped') &\n# More than a pipe buffer on both streams, then hold them open.\ndd if=/dev/zero bs=262144 count=1 2>/dev/null\ndd if=/dev/zero bs=262144 count=1 1>&2 2>/dev/null\nsleep 30\n"), 0o700);
+    stub::write_stub(&fake, format!("#!/bin/sh\ncase \"$3:$4\" in fetch:*|remote:set-head) exit 0;; capture-output:*) dd if=/dev/zero bs=262144 count=1 2>/dev/null; dd if=/dev/zero bs=262144 count=1 1>&2 2>/dev/null; exit 7;; esac\nsleep 30 &\necho $! >> '{escaped_root}/pids'\n# More than a pipe buffer on both streams, then hold them open.\ndd if=/dev/zero bs=262144 count=1 2>/dev/null\ndd if=/dev/zero bs=262144 count=1 1>&2 2>/dev/null\nsleep 30\n"), 0o700);
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -543,10 +543,39 @@ fn local_git_queries_are_bounded_and_kill_output_holding_children() {
         std::thread::sleep(Duration::from_millis(10));
     };
     assert!(status.success());
-    std::thread::sleep(Duration::from_millis(1200));
+    // Each timed-out query's stub left a 30 s background sleeper in its process group. The
+    // group kill must have reaped it: poll its pid rather than wait for a delayed write, so
+    // the check does not depend on how late the kill lands. A killed orphan stays a zombie
+    // until launchd or init reaps it, hence the short grace.
+    let pids: Vec<i32> = std::fs::read_to_string(r.root.join("pids"))
+        .expect("the stub never ran")
+        .lines()
+        .map(|line| line.parse().unwrap())
+        .collect();
     assert!(
-        !r.root.join("escaped").exists(),
-        "Git descendants escaped timeout cancellation"
+        pids.len() >= 6,
+        "only {} queries reached the stub",
+        pids.len()
+    );
+    let gone = |pid: i32| {
+        // SAFETY: signal 0 only probes whether the pid exists.
+        let probe = unsafe { libc::kill(pid, 0) };
+        probe == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    };
+    let waited = Instant::now();
+    while !pids.iter().all(|&pid| gone(pid)) && waited.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let escaped: Vec<i32> = pids.into_iter().filter(|&pid| !gone(pid)).collect();
+    for &pid in &escaped {
+        // SAFETY: each pid is a stub's sleeper that outlived its query.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+    assert!(
+        escaped.is_empty(),
+        "Git descendants escaped timeout cancellation: {escaped:?}"
     );
 }
 
