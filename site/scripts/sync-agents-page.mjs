@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { DEFINITION_SENTENCE, SKILL_PAGES, stripFrontmatter } from "../src/lib/agent-docs.mjs";
+import { SKILL_PAGES, stripFrontmatter } from "../src/lib/agent-docs.mjs";
 
 const siteRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const repoRoot = dirname(siteRoot);

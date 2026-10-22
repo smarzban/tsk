@@ -328,8 +328,10 @@ migration or design work they imply. What the behaviour *is* lives in the docs
 - Mono modifiers only, no colour, at every width. There is no theme module.
 - Text wraps, never truncates. One wrap engine (`edit::wrap_text`) feeds every surface;
   `escaped_draft_rows` remains only for single-line Title/Thread editors.
-- `src/ui/capture.rs` is unreachable from the binary and stays that way; creation
-  detail lives on the task page and the expanded quick-add draft owns the whole frame.
+- The standalone capture screen has no production caller, but the module's field
+  types (`CaptureField`, `CaptureScopeChoice`, `TITLE_REQUIRED_MESSAGE`) are live
+  and the file stays. Creation detail lives on the task page and the expanded
+  quick-add draft owns the whole frame.
 - `Enter` on a stored step is `ToggleStep`, resolved at the keyboard boundary in
   `src/app.rs` so the save baseline loads first.
 - `map_edit` and `map_board_form_key` share `map_form_edit_key`. Save-recovery

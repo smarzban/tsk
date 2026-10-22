@@ -58,6 +58,11 @@ this file names things.
 - **thread token**: the `!t name` capture directive, sibling of `!p`; bare `!t` means
   unthreaded. Stripped from the saved title.
 - **unthreaded**: carrying no thread. Unthreaded tasks stay in the project's flat board.
+- **base token**: the `!b branch` capture directive, sibling of `!p` / `!t` / `!a`. Sets
+  the task's dispatch base branch. Stripped from the saved title.
+- **after token**: the `!w T12` capture directive ("wait for"), sibling of `!p` / `!t` /
+  `!a` / `!b`. Adds a prerequisite by task number (`!w 12` works too). Repeatable.
+  Stripped from the saved title.
 - **after / before**: a task runs *after* the tasks it names by number and waits while any
   of them is not done. Each unfinished prerequisite shows its waiters as *before*. When the
   last prerequisite is done, a waiting `ready` task starts.

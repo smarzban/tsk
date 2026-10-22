@@ -25,9 +25,6 @@ export const SIDEBAR_SLUGS = [
 export const SOURCE_REPO_BASE = "https://github.com/smarzban/tsk/blob/main";
 export const AGENTS_SKILL_REPO_PATH = "skills/tsk-cli/SKILL.md";
 export const COORDINATOR_SKILL_REPO_PATH = "skills/tsk-coordinator/SKILL.md";
-export function agentsSkillFsPath() {
-  return resolve(process.cwd(), "../skills/tsk-cli/SKILL.md");
-}
 
 // Docs pages generated from a skill (scripts/sync-agents-page.mjs), keyed by slug.
 export const SKILL_PAGES = {
@@ -106,14 +103,13 @@ export function twinSource(slug, filePath) {
   };
 }
 
-export function formatTwin({ title, slug, sourcePath, fileName, updatedIso, body }) {
+export function formatTwin({ title, slug, sourcePath, updatedIso, body }) {
   const trimmed = String(body).replace(/^\uFEFF/, "").replace(/\s+$/, "");
-  const path = sourcePath || `site/src/content/docs/docs/${fileName}`;
   return [
     `# ${title}`,
     "",
     `- html: ${htmlUrlForSlug(slug)}`,
-    `- source: ${SOURCE_REPO_BASE}/${path}`,
+    `- source: ${SOURCE_REPO_BASE}/${sourcePath}`,
     `- updated: ${updatedIso}`,
     "",
     trimmed,
