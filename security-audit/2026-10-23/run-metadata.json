@@ -1,0 +1,170 @@
+{
+  "run_id": "run-1",
+  "repo": "smarzban/tsk",
+  "target": "/workspace",
+  "source_ref": {
+    "commit": "8d714a201280318f92ed42d26d20bf233a1f5baf",
+    "branch": "main",
+    "delta_from": "b5b92d60f2a70f29798354e6096b52ae30871a04",
+    "delta_to": "8d714a201280318f92ed42d26d20bf233a1f5baf",
+    "worktree_dirty": false,
+    "commits_in_delta": [
+      "8e7c577 Outlive test: an MSYS sleep grandchild instead of PowerShell (T329) (#263)",
+      "462f136 git_base timeout test: assert the stub's sleeper pids are gone, not a delayed write (T330) (#265)",
+      "6f7d1dd tsk setup: name both installed skills (T331) (#264)",
+      "a8922b5 Strip a bare https backup token when the URL does not start at the scheme. (#261)",
+      "5109a61 Update notice: show it on an open board when the check lands, re-check daily (T326) (#266)",
+      "c8e8e8e Backups: keep URL credentials out of git argv and the clone's .git/config (T332) (#267)",
+      "8d714a2 Delete dead board helpers, align demo quick-add grammar, tidy docs (#262)"
+    ]
+  },
+  "profile": "standard",
+  "scope": "scoped delta of b5b92d60f2a70f29798354e6096b52ae30871a04..8d714a201280318f92ed42d26d20bf233a1f5baf and code those changes touch, plus the carried Windows state-dir ACL needs_validation",
+  "scope_paths": [
+    "src/backup.rs",
+    "src/cli/backup.rs",
+    "src/update.rs",
+    "src/cli/update.rs",
+    "src/app.rs",
+    "src/setup_agent.rs",
+    "src/cli/presenter.rs",
+    "src/git_base.rs",
+    "src/ui/input.rs",
+    "src/ui/board/model.rs",
+    "src/ui/capture.rs",
+    "src/ui/render.rs",
+    "src/ui/mod.rs",
+    "src/fsperm.rs",
+    "src/store.rs",
+    "site/public/capture.js",
+    "site/public/board-demo.js",
+    "site/src/lib/agent-docs.mjs",
+    "site/scripts/sync-agents-page.mjs"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "DATA-ISOLATION-AND-LIFECYCLE.md",
+    "SUPPLY-CHAIN-AND-RELEASE.md",
+    "CLIENT-SIDE.md",
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md"
+  ],
+  "prior_run_paths": [
+    "origin/security-audit/2026-10-22:security-audit/2026-10-22/coverage-ledger.json",
+    "origin/security-audit/2026-10-22:security-audit/2026-10-22/findings.json",
+    "origin/security-audit/2026-10-22:security-audit/2026-10-22/architecture.md",
+    "origin/security-audit/2026-10-22:security-audit/2026-10-22/run-metadata.json"
+  ],
+  "prior_source_ref": "b5b92d60f2a70f29798354e6096b52ae30871a04",
+  "shared_file_owners": {
+    "run-metadata.json": "parent",
+    "architecture.md": "parent",
+    "coverage-ledger.json": "parent",
+    "findings.json": "parent",
+    "REPORT.md": "parent",
+    "FINDINGS-DETAIL.md": "parent",
+    "NEEDS-VALIDATION.md": "parent"
+  },
+  "run_status": "complete",
+  "agent_invocations": {
+    "planned_minimum": {
+      "reconnaissance": 4,
+      "post_wave_critic": 1,
+      "final_clean_critic": 1,
+      "verifiers_reserved": "at least 1"
+    },
+    "spent": [
+      {
+        "id": "recon-1a",
+        "role": "reconnaissance",
+        "subagent_type": "explore"
+      },
+      {
+        "id": "recon-1b",
+        "role": "reconnaissance",
+        "subagent_type": "explore"
+      },
+      {
+        "id": "recon-1c",
+        "role": "reconnaissance",
+        "subagent_type": "explore"
+      },
+      {
+        "id": "recon-1d",
+        "role": "reconnaissance",
+        "subagent_type": "explore"
+      },
+      {
+        "id": "hunter-backup",
+        "role": "hunter",
+        "subagent_type": "general"
+      },
+      {
+        "id": "hunter-update",
+        "role": "hunter",
+        "subagent_type": "general"
+      },
+      {
+        "id": "hunter-setup",
+        "role": "hunter",
+        "subagent_type": "general"
+      },
+      {
+        "id": "hunter-ui",
+        "role": "hunter",
+        "subagent_type": "general"
+      },
+      {
+        "id": "hunter-gitbase",
+        "role": "hunter",
+        "subagent_type": "general"
+      },
+      {
+        "id": "hunter-obvious",
+        "role": "hunter",
+        "subagent_type": "general"
+      },
+      {
+        "id": "critic-post-wave",
+        "role": "post_wave_critic",
+        "subagent_type": "explore"
+      },
+      {
+        "id": "critic-final-clean",
+        "role": "final_clean_critic",
+        "subagent_type": "explore"
+      },
+      {
+        "id": "verifier-windows",
+        "role": "phase3_verifier",
+        "subagent_type": "general"
+      },
+      {
+        "id": "verifier-windows-p5",
+        "role": "phase5_verifier",
+        "subagent_type": "explore"
+      }
+    ]
+  },
+  "agents_spent": {
+    "reconnaissance": 4,
+    "hunters_wave_1": 6,
+    "post_wave_critic": 1,
+    "final_clean_critic": 1,
+    "phase3_verifier": 1,
+    "phase5_verifier": 1
+  },
+  "sandbox": "Target code was not executed. unshare is available, but bubblewrap and firejail are absent, and a read-only target was not combined with CPU, memory, process, and file-size limits.",
+  "final_critic": "stop true, no missing units, no reassign ids",
+  "phase5": {
+    "windows-state-dir-acl": "verified"
+  },
+  "carried_needs_validation": [
+    "windows-state-dir-acl"
+  ],
+  "confirmed": [],
+  "changed_source_revalidation": {
+    "backup.https-bare-userinfo.scheme-prefix": "resolved; not a current finding"
+  },
+  "notes": "Standard scoped delta from b5b92d60 to 8d714a2. No new confirmed finding. Carried windows-state-dir-acl remains needs_validation. Both critics stopped clean. Phase 5 verified that record."
+}

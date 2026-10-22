@@ -1,0 +1,2581 @@
+[
+  {
+    "canonical_refs": {
+      "surface": ".github/workflows/ci.yml#pull_request",
+      "boundary": ".github/workflows/ci.yml#permissions",
+      "subsystem": ".github/workflows",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes"
+    },
+    "surface": "GitHub Actions workflows",
+    "boundary": "pull_request token permissions",
+    "subsystem": ".github/workflows/ci.yml",
+    "attack_class": "Untrusted PR code reaching secrets",
+    "starting_paths": [
+      ".github/workflows/ci.yml",
+      ".github/workflows/installer.yml",
+      ".github/workflows/parity.yml",
+      ".github/workflows/site.yml",
+      ".github/workflows/vercel.yml"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": ".github%2Fworkflows%2Fci.yml%23pull_request::.github%2Fworkflows%2Fci.yml%23permissions::.github%2Fworkflows::SUPPLY-CHAIN-AND-RELEASE.md%23CI%20and%20automation%20attack%20classes"
+  },
+  {
+    "canonical_refs": {
+      "surface": ".github/workflows/release.yml#workflow_dispatch",
+      "boundary": ".github/workflows/release.yml#contents write",
+      "subsystem": ".github/workflows",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes"
+    },
+    "surface": "Prepare release workflow",
+    "boundary": "contents write only on the draft job after workflow_dispatch",
+    "subsystem": ".github/workflows",
+    "attack_class": "Untrusted code reaching a write token or publishing a release",
+    "starting_paths": [
+      ".github/workflows/release.yml",
+      "scripts/release.py",
+      ".github/workflows/vercel.yml",
+      ".github/workflows/installer.yml"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": ".github%2Fworkflows%2Frelease.yml%23workflow_dispatch::.github%2Fworkflows%2Frelease.yml%23contents%20write::.github%2Fworkflows::SUPPLY-CHAIN-AND-RELEASE.md%23CI%20and%20automation%20attack%20classes"
+  },
+  {
+    "canonical_refs": {
+      "surface": "CHANGELOG.md#Unreleased-2026-10-23",
+      "boundary": "src/main.rs#main",
+      "subsystem": "repository-delta-2026-10-23",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "This delta's added lines for secrets, debug gates, and command execution",
+    "boundary": "no production debug flag or committed secret in the seven commits",
+    "subsystem": "repository delta 2026-10-23",
+    "attack_class": "Obvious exposures in the audited diff",
+    "starting_paths": [
+      "CHANGELOG.md",
+      "src/backup.rs",
+      "src/update.rs",
+      "src/setup_agent.rs",
+      "src/cli/presenter.rs",
+      "site/public/capture.js",
+      "site/public/board-demo.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-obvious",
+    "reviewed_paths": [
+      "src/backup.rs",
+      "CHANGELOG.md",
+      "site/public/capture.js",
+      "site/public/board-demo.js"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-obvious",
+        "reviewed_paths": [
+          "src/backup.rs",
+          "CHANGELOG.md",
+          "site/public/capture.js",
+          "site/public/board-demo.js"
+        ],
+        "invariant": "The delta adds no production secret, skipped security check, debug gate, or shell eval of untrusted input.",
+        "method": "source",
+        "result": "Secret-shaped strings are fixture literals inside the backup tests. CREDENTIAL_HELPER is a fixed script. Git is spawned with an argument array. The demo has no eval. .gitignore is unchanged. Cargo.toml and package.json are outside the diff.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-obvious",
+    "coverage_id": "CHANGELOG.md%23Unreleased-2026-10-23::src%2Fmain.rs%23main::repository-delta-2026-10-23::ATTACK-CLASSES.md%23Obvious%20things",
+    "hardening_notes": [
+      "Placeholder backup tokens stay inside the test module."
+    ]
+  },
+  {
+    "canonical_refs": {
+      "surface": "CHANGELOG.md#Unreleased",
+      "boundary": "src/main.rs#main",
+      "subsystem": "repository-delta",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "v0.13.0 delta files for secrets, debug gates, and command execution",
+    "boundary": "No production debug flag or secret store in the changed files",
+    "subsystem": "repository delta",
+    "attack_class": "Obvious exposures in the audited diff",
+    "starting_paths": [
+      "CHANGELOG.md",
+      "Cargo.toml",
+      "Cargo.lock",
+      "skills/tsk-coordinator/SKILL.md",
+      "skills/tsk-cli/SKILL.md",
+      "src/agents.rs",
+      "src/dispatch.rs",
+      "src/backup.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Wildcard",
+        "reason": "Thread normalization, notice rendering, and the version handoff each have their own assigned unit. No remaining changed path is uncategorized."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "CHANGELOG.md%23Unreleased::src%2Fmain.rs%23main::repository-delta::ATTACK-CLASSES.md%23Obvious%20things"
+  },
+  {
+    "canonical_refs": {
+      "surface": "Cargo.toml#version",
+      "boundary": "site/public/install.sh#TSK_CURRENT_VERSION",
+      "subsystem": "src/cli/update.rs",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes"
+    },
+    "surface": "Compiled 0.12.0 version handed to the updater",
+    "boundary": "install.sh accepts TSK_CURRENT_VERSION only as a dotted release tag",
+    "subsystem": "src/cli/update.rs",
+    "attack_class": "Release version string reaches the installer environment",
+    "starting_paths": [
+      "Cargo.toml",
+      "herdr-plugin.toml",
+      "site/src/version.mjs",
+      "src/cli/update.rs",
+      "src/update.rs",
+      "site/public/install.sh",
+      "CHANGELOG.md"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Dependency and build-input attack classes",
+        "reason": "Cargo.lock changes only this package version. No dependency coordinate moved."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "No workflow file changed in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "The version handoff is an environment variable into a local installer, not an HTTP session."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "site/src/version.mjs is a static header string, not DOM from the capture parser."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+        "reason": "The updater runs as the invoking user. Helper confusion is not this handoff."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "No model or tool call consumes the version."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "The version is a compile-time string, not a binary parser."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Comparing two dotted versions is fixed work."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "Cargo.toml%23version::site%2Fpublic%2Finstall.sh%23TSK_CURRENT_VERSION::src%2Fcli%2Fupdate.rs::SUPPLY-CHAIN-AND-RELEASE.md%23Release%20and%20update%20attack%20classes"
+  },
+  {
+    "canonical_refs": {
+      "surface": "site/public/board-demo.js#innerHTML",
+      "boundary": "site/public/board-demo.js#esc",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Board demo capture fields reaching innerHTML",
+    "boundary": "esc() before innerHTML",
+    "subsystem": "site/public",
+    "attack_class": "DOM XSS in the static board demo",
+    "starting_paths": [
+      "site/public/board-demo.js",
+      "site/public/capture.js",
+      "site/test/capture-thread.test.mjs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "CLIENT-SIDE.md#Core discipline",
+      "CLIENT-SIDE.md#DOM and object-state attack classes",
+      "CLIENT-SIDE.md#Universal moves",
+      "CLIENT-SIDE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes",
+        "reason": "The demo does not read postMessage, location, or another origin."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Service-worker and browser-storage attack classes",
+        "reason": "The demo has no service worker and does not persist the draft."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-ui",
+    "reviewed_paths": [
+      "site/public/capture.js",
+      "site/public/board-demo.js"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-ui",
+        "reviewed_paths": [
+          "site/public/capture.js",
+          "site/public/board-demo.js"
+        ],
+        "invariant": "Demo capture fields reach innerHTML only through esc, and the script has no other-origin source.",
+        "method": "source",
+        "result": "parseCapture returns title, an unnormalized !b base, and fixed refuse strings. The quick-add row and saved fields pass those strings through esc before innerHTML. The script does not read location, postMessage, or storage.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-ui",
+    "coverage_id": "site%2Fpublic%2Fboard-demo.js%23innerHTML::site%2Fpublic%2Fboard-demo.js%23esc::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "hardening_notes": []
+  },
+  {
+    "canonical_refs": {
+      "surface": "site/public/github-stars.js#fetch",
+      "boundary": "site/public/github-stars.js#textContent",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes"
+    },
+    "surface": "GitHub stars script",
+    "boundary": "textContent update from a fixed API URL",
+    "subsystem": "site/public",
+    "attack_class": "DOM or cross-origin injection via the stars response",
+    "starting_paths": [
+      "site/public/github-stars.js",
+      "site/src/lib/github-stars.mjs",
+      "site/src/components/GitHubStars.astro"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "CLIENT-SIDE.md#Core discipline",
+      "CLIENT-SIDE.md#Cross-origin messaging and network attack classes",
+      "CLIENT-SIDE.md#Universal moves",
+      "CLIENT-SIDE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "site%2Fpublic%2Fgithub-stars.js%23fetch::site%2Fpublic%2Fgithub-stars.js%23textContent::site%2Fpublic::CLIENT-SIDE.md%23Cross-origin%20messaging%20and%20network%20attack%20classes"
+  },
+  {
+    "canonical_refs": {
+      "surface": "site/public/landing.js#c6b8de1",
+      "boundary": "site/public/landing.js#steps",
+      "subsystem": "site/public",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "Commit c6b8de1 landing.js diff",
+    "boundary": "Static section label literals with no secret or debug gate",
+    "subsystem": "site/public landing diff",
+    "attack_class": "Obvious exposures in the landing label diff",
+    "starting_paths": [
+      "site/public/landing.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "DOM write of the same labels is the other in-scope unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Injection of the cycle strings is the other in-scope unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "The obvious-things block already covers hardcoded secrets in this two-line diff."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "site%2Fpublic%2Flanding.js%23c6b8de1::site%2Fpublic%2Flanding.js%23steps::site%2Fpublic::ATTACK-CLASSES.md%23Obvious%20things"
+  },
+  {
+    "canonical_refs": {
+      "surface": "site/public/landing.js#data-copy",
+      "boundary": "site/public/landing.js#clipboard",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Landing install copy button",
+    "boundary": "clipboard write of shell example text",
+    "subsystem": "site/public landing copy",
+    "attack_class": "Clipboard read of page text",
+    "starting_paths": [
+      "site/public/landing.js"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Unchanged by c6b8de1 and not reached by steps[].sec. Recorded so a later full pass can review it. Not a covered claim."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "site%2Fpublic%2Flanding.js%23data-copy::site%2Fpublic%2Flanding.js%23clipboard::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes"
+  },
+  {
+    "canonical_refs": {
+      "surface": "site/public/landing.js#readout",
+      "boundary": "site/public/landing.js#columns",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Landing column readout",
+    "boundary": "innerHTML of a measured column count",
+    "subsystem": "site/public landing layout",
+    "attack_class": "DOM XSS in the column readout",
+    "starting_paths": [
+      "site/public/landing.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Unchanged by c6b8de1 and not reached by steps[].sec. Recorded so a later full pass can review it. Not a covered claim."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "site%2Fpublic%2Flanding.js%23readout::site%2Fpublic%2Flanding.js%23columns::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes"
+  },
+  {
+    "canonical_refs": {
+      "surface": "site/public/landing.js#steps",
+      "boundary": "site/public/landing.js#paint",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Landing status-cycle section labels",
+    "boundary": "paint assigns step fields with textContent",
+    "subsystem": "site/public landing script",
+    "attack_class": "DOM XSS from the status-cycle labels",
+    "starting_paths": [
+      "site/public/landing.js",
+      "site/src/pages/index.astro"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "CLIENT-SIDE.md#Core discipline",
+      "CLIENT-SIDE.md#DOM and object-state attack classes",
+      "CLIENT-SIDE.md#Universal moves",
+      "CLIENT-SIDE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes",
+        "reason": "landing.js has no postMessage, WebSocket, or credentialed fetch on the status-cycle path."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Service-worker and browser-storage attack classes",
+        "reason": "The cycle writes no worker, cache, or storage."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Cross-site information leak classes",
+        "reason": "The labels are public page copy and do not distinguish a protected cross-origin state."
+      },
+      {
+        "block": "CLIENT-SIDE.md#UI-redress and navigation attack classes",
+        "reason": "The cycle does not navigate or complete a framed state change."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "The landing page has no authenticator or per-resource authorization."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Resource and file handling",
+        "reason": "The cycle does not read or write files."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "Obvious-exposure review of the same diff is a separate unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Business logic",
+        "reason": "Section labels do not drive task status. The unread status field is display data only."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+        "reason": "No export, search, or notification path is in this diff."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries",
+        "reason": "The changed strings stop at textContent and are not consumed by a later trust decision."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Wildcard",
+        "reason": "The changed path is the cycle DOM write. Other sinks in the file are separate out-of-scope units."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Obvious things",
+        "reason": "Assigned as its own unit for the same diff."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "site%2Fpublic%2Flanding.js%23steps::site%2Fpublic%2Flanding.js%23paint::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes"
+  },
+  {
+    "canonical_refs": {
+      "surface": "site/public/landing.js#tsk:set-stage",
+      "boundary": "site/public/board-demo.js#stage",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes"
+    },
+    "surface": "Landing layout stage event",
+    "boundary": "CustomEvent detail is board or split",
+    "subsystem": "site/public landing layout event",
+    "attack_class": "Stage event influencing the board demo",
+    "starting_paths": [
+      "site/public/landing.js"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#Cross-origin messaging and network attack classes",
+        "reason": "The event detail is a same-document literal and the diff does not touch it."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "site%2Fpublic%2Flanding.js%23tsk%3Aset-stage::site%2Fpublic%2Fboard-demo.js%23stage::site%2Fpublic::CLIENT-SIDE.md%23Cross-origin%20messaging%20and%20network%20attack%20classes"
+  },
+  {
+    "canonical_refs": {
+      "surface": "site/src/pages/index.astro#BOARD_PINS",
+      "boundary": "site/public/landing.js#pin-paint",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Landing pin callout HTML",
+    "boundary": "innerHTML of author BOARD_PINS templates",
+    "subsystem": "site/public landing pins",
+    "attack_class": "DOM XSS in pin callouts",
+    "starting_paths": [
+      "site/public/landing.js",
+      "site/src/pages/index.astro"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "Unchanged by c6b8de1 and not reached by steps[].sec. Recorded so a later full pass can review it. Not a covered claim."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "site%2Fsrc%2Fpages%2Findex.astro%23BOARD_PINS::site%2Fpublic%2Flanding.js%23pin-paint::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/activity.rs#paper trail",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/activity.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Paper trail lines",
+    "boundary": "terminal_text before paint and CLI list",
+    "subsystem": "src/activity.rs",
+    "attack_class": "Terminal control injection from history or block text",
+    "starting_paths": [
+      "src/activity.rs",
+      "src/ui/mod.rs",
+      "src/cli/list.rs",
+      "src/cli/presenter.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+        "reason": "Paper trail text is same-user terminal output. The presenter edit in this delta is the setup summary, reviewed on the setup unit."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-setup",
+    "reviewed_paths": [
+      "src/activity.rs",
+      "src/ui/mod.rs",
+      "src/cli/presenter.rs",
+      "src/ui/render.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-setup",
+        "reviewed_paths": [
+          "src/activity.rs",
+          "src/ui/mod.rs",
+          "src/cli/presenter.rs",
+          "src/ui/render.rs"
+        ],
+        "invariant": "Paper-trail text reaches the terminal only after terminal_text.",
+        "method": "source",
+        "result": "Human list output and the task-page trail pass lines through terminal_text or present_line. The presenter edit in this delta is the setup summary, not the paper-trail printer.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-setup",
+    "coverage_id": "src%2Factivity.rs%23paper%20trail::src%2Fui%2Fmod.rs%23terminal_text::src%2Factivity.rs::ATTACK-CLASSES.md%23Injection",
+    "hardening_notes": []
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/agents.rs#powershell_script",
+      "boundary": "src/agents.rs#TskProgram",
+      "subsystem": "src/agents.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Windows PowerShell agent launcher",
+    "boundary": "base64 embedding and batch-only refusal",
+    "subsystem": "src/agents.rs",
+    "attack_class": "PowerShell or cmd injection from task text",
+    "starting_paths": [
+      "src/agents.rs",
+      "src/dispatch.rs",
+      "tests/cli_dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "src%2Fagents.rs%23powershell_script::src%2Fagents.rs%23TskProgram::src%2Fagents.rs::ATTACK-CLASSES.md%23Injection"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/agents.rs#shell_script",
+      "boundary": "src/agents.rs#shell_quote",
+      "subsystem": "src/agents.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Unix agent launcher script",
+    "boundary": "single-quoted argv and env before exec",
+    "subsystem": "src/agents.rs",
+    "attack_class": "Shell injection from task text or profile env",
+    "starting_paths": [
+      "src/agents.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "src%2Fagents.rs%23shell_script::src%2Fagents.rs%23shell_quote::src%2Fagents.rs::ATTACK-CLASSES.md%23Injection"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/announcements/catalog.toml#announcement",
+      "boundary": "src/ui/edit.rs#wrap_text",
+      "subsystem": "src/announcements.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "What's new catalog notes seeded onto the board",
+    "boundary": "wrap_text runs terminal_text on each notice character before paint",
+    "subsystem": "src/announcements.rs",
+    "attack_class": "Terminal control injection via What's new notes",
+    "starting_paths": [
+      "src/announcements/catalog.toml",
+      "src/announcements.rs",
+      "src/ui/edit.rs",
+      "src/ui/markdown.rs",
+      "src/ui/render.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-ui",
+    "reviewed_paths": [
+      "src/announcements.rs",
+      "src/ui/edit.rs",
+      "src/ui/render.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-ui",
+        "reviewed_paths": [
+          "src/announcements.rs",
+          "src/ui/edit.rs",
+          "src/ui/render.rs"
+        ],
+        "invariant": "Catalog notes pass through terminal_text before paint.",
+        "method": "source",
+        "result": "Board and CLI notice paint use wrap_text, which calls terminal_text. The catalog is embedded source, not a lower-trust input. The deleted StepsWindow helper is not this path.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-ui",
+    "coverage_id": "src%2Fannouncements%2Fcatalog.toml%23announcement::src%2Fui%2Fedit.rs%23wrap_text::src%2Fannouncements.rs::ATTACK-CLASSES.md%23Injection",
+    "hardening_notes": []
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/backup.rs#redacted",
+      "boundary": "src/backup.rs#without_credentials",
+      "subsystem": "src/backup.rs",
+      "attack_class": "ATTACK-CLASSES.md#Cryptography and secrets"
+    },
+    "surface": "Backup URL and config secrets",
+    "boundary": "userinfo strip before push, git argv, clone config, and redacted display",
+    "subsystem": "src/backup.rs",
+    "attack_class": "Credential disclosure to the remote, git argv, or the terminal",
+    "starting_paths": [
+      "src/backup.rs",
+      "src/cli/backup.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Cryptography and secrets",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      }
+    ],
+    "prior_status": "prior_confirmed_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-backup",
+    "reviewed_paths": [
+      "src/backup.rs",
+      "src/cli/backup.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-backup",
+        "reviewed_paths": [
+          "src/backup.rs"
+        ],
+        "invariant": "A bare http(s) userinfo is removed before the pushed config, git argv, and origin URL when bytes precede the scheme.",
+        "method": "source",
+        "result": "scheme_token at src/backup.rs:1159 is the trailing ASCII scheme run. credentials at src/backup.rs:1137 treats that run as http(s). A colon-free userinfo on http(s) is a secret. without_credentials at src/backup.rs:1080 drops it. sanitized_config at src/backup.rs:1054 writes the stripped URL. Remote::of at src/backup.rs:1552 puts only the stripped URL in remote.url. clone, set-url, and ls-remote pass remote.url after --. Prior fingerprint backup.https-bare-userinfo.scheme-prefix is not present in this source.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-backup",
+        "reviewed_paths": [
+          "src/backup.rs",
+          "src/cli/backup.rs"
+        ],
+        "invariant": "http(s) userinfo does not reach git argv or remote.origin.url.",
+        "method": "source",
+        "result": "Login is applied only as TSK_BACKUP_HOST, TSK_BACKUP_USERNAME, and TSK_BACKUP_PASSWORD. sync_clone rewrites origin with remote set-url origin -- remote.url at src/backup.rs:1399. No backup git argument is the raw target location.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-backup",
+    "coverage_id": "src%2Fbackup.rs%23redacted::src%2Fbackup.rs%23without_credentials::src%2Fbackup.rs::ATTACK-CLASSES.md%23Cryptography%20and%20secrets",
+    "hardening_notes": [
+      "A longer scheme such as xhttps:// is not classified as https. That string is not an https URL."
+    ]
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/backup.rs#remote_command",
+      "boundary": "src/backup.rs#CREDENTIAL_HELPER",
+      "subsystem": "src/backup.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Backup git credential helper and remote URL",
+    "boundary": "constant helper script and end-of-options git URL",
+    "subsystem": "src/backup.rs",
+    "attack_class": "Shell or argument injection from a backup URL",
+    "starting_paths": [
+      "src/backup.rs",
+      "src/cli/backup.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+        "reason": "Secret copies are the cryptography unit. This unit is the helper process boundary."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-backup",
+    "reviewed_paths": [
+      "src/backup.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-backup",
+        "reviewed_paths": [
+          "src/backup.rs"
+        ],
+        "invariant": "The helper script is constant. Username, password, and host are not interpolated into the script text.",
+        "method": "source",
+        "result": "CREDENTIAL_HELPER at src/backup.rs:1529 is a fixed string. remote_command at src/backup.rs:1615 passes it as one credential.helper argument and the login only through the environment, expanded inside double quotes. Remote::of rejects CR, LF, and NUL in the decoded username and password at src/backup.rs:1572. The URL is written by the operator via config.toml or tsk backup add. The backup remote does not supply that URL. A double quote inside the host or password would break those double quotes, and that writer is the same OS user.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-backup",
+    "coverage_id": "src%2Fbackup.rs%23remote_command::src%2Fbackup.rs%23CREDENTIAL_HELPER::src%2Fbackup.rs::ATTACK-CLASSES.md%23Injection",
+    "hardening_notes": [
+      "A double quote in the host or password can break the helper's double quotes. The URL writer is the OS user who runs tsk. Recorded as hardening, not a candidate."
+    ]
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/backup.rs#sync_clone",
+      "boundary": "src/backup.rs#git_command",
+      "subsystem": "src/backup.rs",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "Backup clone, hooks directory, and worktree writes",
+    "boundary": "hooksPath, symlink refusal, and credential-free origin URL",
+    "subsystem": "src/backup.rs",
+    "attack_class": "A backup remote planting a hook, symlink, or config write",
+    "starting_paths": [
+      "src/backup.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-backup",
+    "reviewed_paths": [
+      "src/backup.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-backup",
+        "reviewed_paths": [
+          "src/backup.rs"
+        ],
+        "invariant": "A backup remote cannot install a hook tsk runs or a symlink write_in_clone follows.",
+        "method": "source",
+        "result": "git_command at src/backup.rs:1480 sets core.symlinks=false and core.hooksPath to backup-repos/.no-hooks, created beside the clone. write_in_clone at src/backup.rs:1331 refuses a symlink component and renames a new temp file onto the destination. Commit and push pass --no-verify.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-backup",
+    "coverage_id": "src%2Fbackup.rs%23sync_clone::src%2Fbackup.rs%23git_command::src%2Fbackup.rs::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "hardening_notes": []
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/cli/backup.rs#restore",
+      "boundary": "src/store.rs#restore_document",
+      "subsystem": "src/backup.rs",
+      "attack_class": "ATTACK-CLASSES.md#Feature abuse and data leakage"
+    },
+    "surface": "tsk restore of a backup document",
+    "boundary": "format check and board lock before replace",
+    "subsystem": "src/backup.rs",
+    "attack_class": "Restore installing a dispatch record or secret the user did not accept",
+    "starting_paths": [
+      "src/cli/backup.rs",
+      "src/backup.rs",
+      "src/store.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-backup",
+    "reviewed_paths": [
+      "src/cli/backup.rs",
+      "src/backup.rs",
+      "src/store.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-backup",
+        "reviewed_paths": [
+          "src/cli/backup.rs",
+          "src/backup.rs",
+          "src/store.rs"
+        ],
+        "invariant": "tsk restore replaces tsk.json only and does not apply the backed-up config.toml.",
+        "method": "source",
+        "result": "restore_version at src/cli/backup.rs:799 passes the git blob to TaskStore::restore_document and tells the operator config.toml was not changed at src/cli/backup.rs:822. check_document requires a DomainState document. The call does not launch an agent.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-backup",
+    "coverage_id": "src%2Fcli%2Fbackup.rs%23restore::src%2Fstore.rs%23restore_document::src%2Fbackup.rs::ATTACK-CLASSES.md%23Feature%20abuse%20and%20data%20leakage",
+    "hardening_notes": []
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/cli/presenter.rs#setup_agent_batch",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/setup_agent.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Setup batch and listing stdout for skill and plugin paths",
+    "boundary": "terminal_text rewrites C0/C1 before human setup output",
+    "subsystem": "src/setup_agent.rs and src/setup.rs",
+    "attack_class": "Terminal control injection via setup path output",
+    "starting_paths": [
+      "src/cli/presenter.rs",
+      "src/setup.rs",
+      "src/setup_agent.rs",
+      "src/ui/mod.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-setup",
+    "reviewed_paths": [
+      "src/cli/presenter.rs",
+      "src/setup_agent.rs",
+      "src/ui/mod.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-setup",
+        "reviewed_paths": [
+          "src/cli/presenter.rs",
+          "src/setup_agent.rs",
+          "src/ui/mod.rs"
+        ],
+        "invariant": "Human setup output encodes the skills root with terminal_text. JSON paths are same-user data.",
+        "method": "source",
+        "result": "installed_skills_text at src/cli/presenter.rs:2822 wraps skills_root in terminal_text. JSON fields go through serde_json. Those paths are the invoking user's home or --skill-dir.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-setup",
+    "coverage_id": "src%2Fcli%2Fpresenter.rs%23setup_agent_batch::src%2Fui%2Fmod.rs%23terminal_text::src%2Fsetup_agent.rs::ATTACK-CLASSES.md%23Injection",
+    "hardening_notes": []
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/cli/reply.rs#send",
+      "boundary": "src/dispatch.rs#agent prompt",
+      "subsystem": "src/cli/reply.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "tsk reply --send",
+    "boundary": "herdr agent prompt argument array",
+    "subsystem": "src/cli/reply.rs",
+    "attack_class": "Reply text reaching a shell",
+    "starting_paths": [
+      "src/cli/reply.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "src%2Fcli%2Freply.rs%23send::src%2Fdispatch.rs%23agent%20prompt::src%2Fcli%2Freply.rs::ATTACK-CLASSES.md%23Injection"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/cli/update.rs#run_for",
+      "boundary": "src/cli/update.rs#hardened_curl",
+      "subsystem": "src/cli/update.rs",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes"
+    },
+    "surface": "Release installer download and shell handoff",
+    "boundary": "0700 download dir and fd-to-shell",
+    "subsystem": "src/cli/update.rs",
+    "attack_class": "Installer script substitution",
+    "starting_paths": [
+      "src/cli/update.rs",
+      "site/public/install.sh"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "src%2Fcli%2Fupdate.rs%23run_for::src%2Fcli%2Fupdate.rs%23hardened_curl::src%2Fcli%2Fupdate.rs::SUPPLY-CHAIN-AND-RELEASE.md%23Release%20and%20update%20attack%20classes"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/context.rs#HERDR_PLUGIN_CONTEXT_JSON",
+      "boundary": "src/board_pane.rs#is_flag_safe_pane_id",
+      "subsystem": "src/context.rs",
+      "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes"
+    },
+    "surface": "Herdr pane lookup and plugin context JSON",
+    "boundary": "No peer authentication on HERDR_PLUGIN_CONTEXT_JSON",
+    "subsystem": "src/context.rs",
+    "attack_class": "Host-injected capture context",
+    "starting_paths": [
+      "src/context.rs",
+      "src/board_pane.rs",
+      "scripts/open-board.sh"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Not in the delta and not one of the four narrative prior leads."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: still outside b5b92d6..8d714a2. Prior reason: src/context.rs, src/board_pane.rs, and scripts/open-board.sh are unchanged since c6b8de10. Dispatch calls the herdr binary directly and does not read HERDR_PLUGIN_CONTEXT_JSON.."
+    ],
+    "coverage_id": "src%2Fcontext.rs%23HERDR_PLUGIN_CONTEXT_JSON::src%2Fboard_pane.rs%23is_flag_safe_pane_id::src%2Fcontext.rs::DESKTOP-MOBILE-AND-LOCAL-IPC.md%23Local%20IPC%20and%20exported-component%20attack%20classes"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/dispatch/pr.rs#merge",
+      "boundary": "src/dispatch/pr.rs#merge_args",
+      "subsystem": "src/dispatch/pr.rs",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "gh pull request merge",
+    "boundary": "merge flags and head commit match",
+    "subsystem": "src/dispatch/pr.rs",
+    "attack_class": "Merge bypass or gh argument injection",
+    "starting_paths": [
+      "src/dispatch/pr.rs",
+      "src/cli/clean.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "gh is spawned with an argument array. Branch and method strings are still checked for interpolation inside this business-logic unit."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "src%2Fdispatch%2Fpr.rs%23merge::src%2Fdispatch%2Fpr.rs%23merge_args::src%2Fdispatch%2Fpr.rs::ATTACK-CLASSES.md%23Business%20logic"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/dispatch.rs#branch delete",
+      "boundary": "src/dispatch.rs#merged base",
+      "subsystem": "src/dispatch.rs",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "Cleanup branch delete and merge",
+    "boundary": "dirty tree and unmerged-branch refusal",
+    "subsystem": "src/dispatch.rs",
+    "attack_class": "Deleting unmerged work or merging past a check",
+    "starting_paths": [
+      "src/dispatch.rs",
+      "src/dispatch/pr.rs",
+      "src/cli/clean.rs",
+      "src/git_base.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Deletion, revocation, and lifecycle attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "src%2Fdispatch.rs%23branch%20delete::src%2Fdispatch.rs%23merged%20base::src%2Fdispatch.rs::ATTACK-CLASSES.md%23Business%20logic"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/dispatch.rs#cleanup",
+      "boundary": "src/dispatch.rs#target_matches",
+      "subsystem": "src/dispatch.rs",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "Worktree cleanup removal",
+    "boundary": "registered worktree path and project-root refusal",
+    "subsystem": "src/dispatch.rs",
+    "attack_class": "Removal of a path outside the recorded worktree",
+    "starting_paths": [
+      "src/dispatch.rs",
+      "src/git_base.rs",
+      "src/cli/clean.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Deletion, revocation, and lifecycle attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "src%2Fdispatch.rs%23cleanup::src%2Fdispatch.rs%23target_matches::src%2Fdispatch.rs::ATTACK-CLASSES.md%23Resource%20and%20file%20handling"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/dispatch.rs#herdr",
+      "boundary": "src/dispatch.rs#sh_launch_line",
+      "subsystem": "src/dispatch.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Dispatch herdr and pane launch line",
+    "boundary": "fixed sh or powershell launch line and herdr argv",
+    "subsystem": "src/dispatch.rs",
+    "attack_class": "Task title, branch, or state path reaching a shell",
+    "starting_paths": [
+      "src/dispatch.rs",
+      "src/agents.rs",
+      "src/board_pane.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "src%2Fdispatch.rs%23herdr::src%2Fdispatch.rs%23sh_launch_line::src%2Fdispatch.rs::ATTACK-CLASSES.md%23Injection"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/fsperm.rs#ensure_private_dir",
+      "boundary": "src/fsperm.rs#tighten_file",
+      "subsystem": "src/store.rs",
+      "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes"
+    },
+    "surface": "State directory creation on Windows",
+    "boundary": "ensure_private_dir claims no ACL hardening off Unix",
+    "subsystem": "src/store.rs",
+    "attack_class": "Windows state directory readable by another OS principal",
+    "starting_paths": [
+      "src/fsperm.rs",
+      "src/store.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#HTTP framing and cache attack classes",
+        "reason": "tsk has no HTTP server or browser session."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud workload or IAM selector in the binary."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No RPC server on the state-directory path."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store; no tenant field is an authorization boundary."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "State files are not model tool output."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "fsperm has no unsafe parser on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Directory creation is local and bounded by the filesystem."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "State files are not exposed through a webview."
+      }
+    ],
+    "prior_status": "prior_needs_validation",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "verifier-windows",
+    "reviewed_paths": [
+      "src/fsperm.rs",
+      "src/store.rs",
+      "site/src/content/docs/docs/storage.md",
+      "site/public/install.ps1"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-windows",
+        "reviewed_paths": [
+          "src/fsperm.rs",
+          "src/store.rs",
+          "site/src/content/docs/docs/storage.md",
+          "site/public/install.ps1"
+        ],
+        "invariant": "Windows state creation sets no security descriptor, and the inherited DACL is not visible from this tree.",
+        "method": "source",
+        "result": "ensure_private_dir uses create_dir_all after a Windows reparse check. create_private_file applies mode 0600 only under cfg(unix). tighten_file is a no-op off Unix. default_state_dir uses LOCALAPPDATA\\tsk or USERPROFILE\\.tsk. The installer creates the program directory and does not ACL the state directory. No DACL API appears in the repository. The inherited ACL was not observed because this host is Linux and target code was not executed.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "windows-state-dir-acl"
+    ],
+    "unresolved": [],
+    "hunter_group": null,
+    "coverage_id": "src%2Ffsperm.rs%23ensure_private_dir::src%2Ffsperm.rs%23tighten_file::src%2Fstore.rs::DESKTOP-MOBILE-AND-LOCAL-IPC.md%23Privileged-helper%20and%20local-file%20attack%20classes"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/git_base.rs#git",
+      "boundary": "src/git_base.rs#process group",
+      "subsystem": "src/git_base.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "git subprocess for base and fetch",
+    "boundary": "argument array and process-group kill",
+    "subsystem": "src/git_base.rs",
+    "attack_class": "Ref or path injection into git, or killing an unrelated process",
+    "starting_paths": [
+      "src/git_base.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+      "MEMORY-SAFETY-AND-BINARY.md#Kernel and privileged-interface attack classes",
+      "MEMORY-SAFETY-AND-BINARY.md#Universal moves",
+      "MEMORY-SAFETY-AND-BINARY.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "The delta does not change a parser. Production git_base is test-only in this range."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-gitbase",
+    "reviewed_paths": [
+      "src/git_base.rs",
+      "src/dispatch.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-gitbase",
+        "reviewed_paths": [
+          "src/git_base.rs",
+          "src/dispatch.rs"
+        ],
+        "invariant": "Production git argv and process-tree kill were not weakened.",
+        "method": "source",
+        "result": "The delta changes only cfg(test) code in src/git_base.rs, extracting sleeper_alias. run_bounded, stop_tree, and the Windows job object are unchanged. The outlive test still asserts a non-outliving grandchild dies with tsk, and it no longer treats a null process handle as already exited.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-gitbase",
+    "coverage_id": "src%2Fgit_base.rs%23git::src%2Fgit_base.rs%23process%20group::src%2Fgit_base.rs::ATTACK-CLASSES.md%23Injection",
+    "hardening_notes": [
+      "A Windows grandchild started between spawn and job assignment can still escape the job. That window is unchanged production code."
+    ]
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/setup_agent.rs#omp_config_root",
+      "boundary": "src/setup_agent.rs#normalize_absolute_path",
+      "subsystem": "src/setup_agent.rs",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "Skill install roots including the new skills_root parent walk",
+    "boundary": "lexical normalization, symlink refusal, and two-parent skills_root",
+    "subsystem": "src/setup_agent.rs",
+    "attack_class": "Skill install writing outside the intended skills directory",
+    "starting_paths": [
+      "src/setup_agent.rs",
+      "tests/cli_setup_agent.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-setup",
+    "reviewed_paths": [
+      "src/setup_agent.rs",
+      "src/fsperm.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-setup",
+        "reviewed_paths": [
+          "src/setup_agent.rs",
+          "src/fsperm.rs"
+        ],
+        "invariant": "Skill writes stay under the chosen root and refuse symlinks.",
+        "method": "source",
+        "result": "skills_root walks two parents of a path install sets to root/tsk-cli/SKILL.md, and that walk is used for display. Writes use the install root. Symlink and reparse points are refused. PI_CONFIG_DIR is the invoking user's environment.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-setup",
+    "coverage_id": "src%2Fsetup_agent.rs%23omp_config_root::src%2Fsetup_agent.rs%23normalize_absolute_path::src%2Fsetup_agent.rs::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "hardening_notes": [
+      "Symlink refusal is not atomic with staging. A same-user writer of the skills directory can already replace the skill file."
+    ]
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/setup_agent.rs#skill_states_text",
+      "boundary": "src/cli/presenter.rs#setup_probe",
+      "subsystem": "src/setup_agent.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Installer skill-state probe tsk setup --skill-states",
+    "boundary": "control characters in the TSV path field are replaced before stdout",
+    "subsystem": "src/setup_agent.rs",
+    "attack_class": "Tab-separated probe row forgery",
+    "starting_paths": [
+      "src/setup_agent.rs",
+      "src/cli/presenter.rs",
+      "src/cli/mod.rs",
+      "tests/cli_setup_agent.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-setup",
+    "reviewed_paths": [
+      "src/setup_agent.rs",
+      "src/cli/presenter.rs",
+      "src/cli/mod.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-setup",
+        "reviewed_paths": [
+          "src/setup_agent.rs",
+          "src/cli/presenter.rs",
+          "src/cli/mod.rs"
+        ],
+        "invariant": "The skill-states probe cannot gain a field or a row from a control character in a path.",
+        "method": "source",
+        "result": "skill_states_text replaces control characters in the path with ?. id and state are fixed words. version is a dotted triple or a dash. setup_probe prints that text unchanged.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-setup",
+    "coverage_id": "src%2Fsetup_agent.rs%23skill_states_text::src%2Fcli%2Fpresenter.rs%23setup_probe::src%2Fsetup_agent.rs::ATTACK-CLASSES.md%23Injection",
+    "hardening_notes": []
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/store.rs#Dispatch",
+      "boundary": "src/dispatch.rs#worktree remove",
+      "subsystem": "src/store.rs",
+      "attack_class": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries"
+    },
+    "surface": "Stored dispatch record",
+    "boundary": "cleanup trusts worktree, branch, and base from tsk.json",
+    "subsystem": "src/store.rs",
+    "attack_class": "A tampered dispatch record deleting or merging a different path",
+    "starting_paths": [
+      "src/store.rs",
+      "src/domain/task.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "tsk fills a user-owned argv and does not read model output or grant tools."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "This path has no HTTP session, cookie, or origin server."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema. Local argv is covered as process invocation."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "src%2Fstore.rs%23Dispatch::src%2Fdispatch.rs%23worktree%20remove::src%2Fstore.rs::ATTACK-CLASSES.md%23Chained%20vulnerabilities%20and%20trust%20boundaries"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/store.rs#TaskStore",
+      "boundary": "src/fsperm.rs#tighten_private_dir",
+      "subsystem": "src/store.rs",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "Unix state file modes and trash lifecycle",
+    "boundary": "0700/0600 and flock on tsk.json",
+    "subsystem": "src/store.rs",
+    "attack_class": "Another OS user reading the store on Unix",
+    "starting_paths": [
+      "src/store.rs",
+      "src/fsperm.rs"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Unix permission hardening did not change in this delta. Windows ACLs are a separate in-scope unit."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: this unit's security-relevant source was not edited in b5b92d6..8d714a2, or a current unit owns the edited overlap. Not re-closed as covered."
+    ],
+    "coverage_id": "src%2Fstore.rs%23TaskStore::src%2Ffsperm.rs%23tighten_private_dir::src%2Fstore.rs::ATTACK-CLASSES.md%23Resource%20and%20file%20handling"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/ui/edit.rs#delete_word_left",
+      "boundary": "src/ui/board/apply.rs#apply",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Wildcard"
+    },
+    "surface": "Text-editing delta outside the named injection and chord gates",
+    "boundary": "Same-user editor invariants in src/ui/edit.rs",
+    "subsystem": "src/ui",
+    "attack_class": "Uncategorized defects in the editing change",
+    "starting_paths": [
+      "src/ui/edit.rs",
+      "src/ui/board/apply.rs",
+      "src/ui/board/model.rs",
+      "tests/queue_board_edit.rs",
+      "tests/queue_board_verbs.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Wildcard",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Obvious things",
+        "reason": "Obvious exposures are a separate unit."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: still outside b5b92d6..8d714a2. Prior reason: Same-user text editing has no trust boundary beyond the injection, chord, and bidi units, which are in scope for this delta.."
+    ],
+    "coverage_id": "src%2Fui%2Fedit.rs%23delete_word_left::src%2Fui%2Fboard%2Fapply.rs%23apply::src%2Fui::ATTACK-CLASSES.md%23Wildcard"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/ui/edit.rs#escaped_draft_rows",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Editor draft and verb-bar paint after helper deletions",
+    "boundary": "terminal_text and present_line on draft bytes before the terminal",
+    "subsystem": "src/ui",
+    "attack_class": "Terminal control injection via edited task text",
+    "starting_paths": [
+      "src/ui/edit.rs",
+      "src/ui/render.rs",
+      "src/ui/input.rs",
+      "src/ui/board/apply.rs",
+      "src/app.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-ui",
+    "reviewed_paths": [
+      "src/ui/mod.rs",
+      "src/ui/edit.rs",
+      "src/ui/render.rs",
+      "src/ui/board/draw.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-ui",
+        "reviewed_paths": [
+          "src/ui/mod.rs",
+          "src/ui/edit.rs",
+          "src/ui/render.rs",
+          "src/ui/board/draw.rs"
+        ],
+        "invariant": "Draft paint still encodes controls, and the deleted helpers were not that encoder.",
+        "method": "source",
+        "result": "terminal_text remains the encoder. escaped_draft_rows and wrap_text call it. present_line and paint_bounded_line still wrap the title, notes, and bottom-input sinks.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-ui",
+    "coverage_id": "src%2Fui%2Fedit.rs%23escaped_draft_rows::src%2Fui%2Fmod.rs%23terminal_text::src%2Fui::ATTACK-CLASSES.md%23Injection",
+    "hardening_notes": []
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/ui/input.rs#PrimaryBoardAction",
+      "boundary": "src/ui/render.rs#steps_window",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Wildcard"
+    },
+    "surface": "Deleted unused board helpers",
+    "boundary": "no remaining caller of PrimaryBoardAction, format_scope, or StepsWindow",
+    "subsystem": "src/ui",
+    "attack_class": "Uncategorized behavior in the deleted helpers",
+    "starting_paths": [
+      "src/ui/input.rs",
+      "src/ui/capture.rs",
+      "src/ui/render.rs",
+      "src/ui/mod.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Wildcard",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "not_applicable",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "The deleted helpers had no remaining callers. Live keymap, paint, and save-recovery paths are separate units."
+    ],
+    "hunter_group": null,
+    "coverage_id": "src%2Fui%2Finput.rs%23PrimaryBoardAction::src%2Fui%2Frender.rs%23steps_window::src%2Fui::ATTACK-CLASSES.md%23Wildcard"
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/ui/input.rs#word_chord",
+      "boundary": "src/app.rs#save recovery allowlist",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "Word, line, and Enter chords after unused keymap helpers were deleted",
+    "boundary": "keyboard boundary and save-recovery allowlist in src/app.rs",
+    "subsystem": "src/ui",
+    "attack_class": "Editing chords changing status or skipping save recovery",
+    "starting_paths": [
+      "src/ui/input.rs",
+      "src/app.rs",
+      "src/ui/board/apply.rs",
+      "src/ui/mouse.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-ui",
+    "reviewed_paths": [
+      "src/ui/input.rs",
+      "src/app.rs",
+      "src/ui/mouse.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-ui",
+        "reviewed_paths": [
+          "src/ui/input.rs",
+          "src/app.rs",
+          "src/ui/mouse.rs"
+        ],
+        "invariant": "Deleted keymap helpers did not remove the save-recovery allowlist.",
+        "method": "source",
+        "result": "Save recovery is still resolved before the retained form mode. Retry and cancel are the only mutating keys that leave recovery. Word and line chords stay edit intents. Mouse mapping returns no action during recovery.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-ui",
+    "coverage_id": "src%2Fui%2Finput.rs%23word_chord::src%2Fapp.rs%23save%20recovery%20allowlist::src%2Fui::ATTACK-CLASSES.md%23Business%20logic",
+    "hardening_notes": []
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/ui/mod.rs#present_line",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Feature abuse and data leakage"
+    },
+    "surface": "present_line and the update-notice footer",
+    "boundary": "present_line encodes C0/C1 and does not reinterpret bidi",
+    "subsystem": "src/ui",
+    "attack_class": "Control or bidi characters in the release notice and other footer text",
+    "starting_paths": [
+      "src/ui/mod.rs",
+      "src/ui/render.rs",
+      "src/ui/board/draw.rs",
+      "src/cli/presenter.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-ui",
+    "reviewed_paths": [
+      "src/ui/mod.rs",
+      "src/ui/render.rs",
+      "src/ui/board/draw.rs",
+      "src/update.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-ui",
+        "reviewed_paths": [
+          "src/ui/mod.rs",
+          "src/ui/render.rs",
+          "src/ui/board/draw.rs",
+          "src/update.rs"
+        ],
+        "invariant": "The release-notice footer is painted through present_line.",
+        "method": "source",
+        "result": "status_idle inserts the notice. paint_status_line and the wrapped idle rows call present_line, which calls terminal_text before width truncation. Bidi and format characters are not controls and are left as present_line documents.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-ui",
+    "coverage_id": "src%2Fui%2Fmod.rs%23present_line::src%2Fui%2Fmod.rs%23terminal_text::src%2Fui::ATTACK-CLASSES.md%23Feature%20abuse%20and%20data%20leakage",
+    "hardening_notes": [
+      "A release tag may contain Unicode bidi. present_line encodes only C0 and C1. The tag publisher is the same principal that publishes the binary the notice names."
+    ]
+  },
+  {
+    "canonical_refs": {
+      "surface": "src/update.rs#spawn_fetch",
+      "boundary": "src/cli/update.rs#curl_path",
+      "subsystem": "src/update.rs",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes"
+    },
+    "surface": "Background release check on board open",
+    "boundary": "fixed releases URL, hardened curl, and present_line on the notice",
+    "subsystem": "src/update.rs",
+    "attack_class": "Update client executes an env-selected curl or paints an unsanitized tag",
+    "starting_paths": [
+      "src/update.rs",
+      "src/cli/update.rs",
+      "src/app.rs",
+      "src/ui/board/model.rs",
+      "src/ui/board/draw.rs",
+      "src/ui/render.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not read model output or grant tools."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this delta."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "No broker or RPC schema on this path."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "The notice is a terminal footer, not a browser DOM."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-update",
+    "reviewed_paths": [
+      "src/update.rs",
+      "src/app.rs",
+      "src/ui/board/model.rs",
+      "src/ui/board/draw.rs",
+      "src/ui/render.rs",
+      "src/ui/mod.rs",
+      "src/cli/update.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-update",
+        "reviewed_paths": [
+          "src/update.rs",
+          "src/app.rs",
+          "src/ui/board/model.rs",
+          "src/ui/board/draw.rs",
+          "src/ui/render.rs",
+          "src/ui/mod.rs"
+        ],
+        "invariant": "A release tag_name containing C0 or C1 does not reach the terminal as a control.",
+        "method": "source",
+        "result": "parse_latest_release keeps tag_name. set_update_notice stores the notice raw. status_idle at src/ui/board/draw.rs:2040 places it in the idle context. paint_status_line at src/ui/render.rs:7035 calls present_line, and wrapped rows call terminal_text. terminal_text at src/ui/mod.rs:18 encodes every control character.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-update",
+        "reviewed_paths": [
+          "src/update.rs",
+          "src/cli/update.rs"
+        ],
+        "invariant": "The fetch URL and curl arguments stay fixed.",
+        "method": "source",
+        "result": "RELEASES_URL is the constant GitHub releases URL. hardened_curl appends only https protocol limits, tlsv1.2, -fsSL, and max-time. TSK_UPDATE_CURL selects an absolute curl binary from the operator environment, not from the release document. src/cli/update.rs is unchanged in this delta.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_group": "hunter-update",
+    "coverage_id": "src%2Fupdate.rs%23spawn_fetch::src%2Fcli%2Fupdate.rs%23curl_path::src%2Fupdate.rs::SUPPLY-CHAIN-AND-RELEASE.md%23Release%20and%20update%20attack%20classes",
+    "hardening_notes": [
+      "The notice is escaped at the status-row sink rather than by an allowlist in parse_latest_release."
+    ]
+  }
+]
