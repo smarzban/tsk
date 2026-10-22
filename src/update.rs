@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -161,26 +162,106 @@ pub fn apply_fetch(dir: &Path, now: u64, fetch: impl FnOnce() -> Option<String>)
     );
 }
 
-pub fn startup(state_dir: &Path, current: &str) -> Option<String> {
-    let now = unix_now();
-    let planned = plan(state_dir, current, now);
-    if planned.should_fetch {
-        mark_check_started(state_dir, now);
-        spawn_fetch(state_dir.to_path_buf());
-    }
-    planned.notice
+/// A full board's release check: the cached notice at open, then one background check
+/// whenever the last one is a day old. The fetch thread only writes the cache and flags the
+/// landing; the board's frame tick picks the notice up, so the UI thread never waits on it.
+#[derive(Debug, Clone)]
+pub struct UpdateCheck {
+    dir: PathBuf,
+    current: String,
+    fetch: fn() -> Option<String>,
+    /// The real release check honours `suppress_background_fetch`; a stub fetch always runs.
+    live: bool,
+    state: Arc<Mutex<CheckState>>,
 }
 
-fn spawn_fetch(dir: PathBuf) {
-    if cfg!(test) || !BACKGROUND_FETCH.load(Ordering::SeqCst) {
-        return;
+#[derive(Debug, Default)]
+struct CheckState {
+    /// Unix time the cache is next worth reading: a day after the last check started.
+    due_at: u64,
+    in_flight: bool,
+    landed: bool,
+}
+
+impl UpdateCheck {
+    pub fn new(dir: &Path, current: &str) -> Self {
+        Self::build(dir, current, fetch_latest, true)
     }
-    silence_update_check_panics();
-    let _ = std::thread::Builder::new()
-        .name(UPDATE_CHECK_THREAD.to_string())
-        .spawn(move || {
-            apply_fetch(&dir, unix_now(), fetch_latest);
-        });
+
+    /// The same check with the network call stood in for, for tests.
+    pub fn with_fetch(dir: &Path, current: &str, fetch: fn() -> Option<String>) -> Self {
+        Self::build(dir, current, fetch, false)
+    }
+
+    fn build(dir: &Path, current: &str, fetch: fn() -> Option<String>, live: bool) -> Self {
+        Self {
+            dir: dir.to_path_buf(),
+            current: current.to_string(),
+            fetch,
+            live,
+            state: Arc::default(),
+        }
+    }
+
+    /// `Some` when the notice should be (re)set: a check landed, or the cache came due and
+    /// was read again. Starts at most one background check, and only once a day has passed
+    /// since the last one, here or in another tsk process sharing the cache.
+    pub fn poll(&self, now: u64) -> Option<Option<String>> {
+        if opt_out() {
+            return None;
+        }
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut notice = None;
+        if std::mem::take(&mut state.landed) {
+            notice = Some(self.cached_notice());
+        }
+        if !state.in_flight && now >= state.due_at {
+            let planned = plan(&self.dir, &self.current, now);
+            if planned.should_fetch {
+                mark_check_started(&self.dir, now);
+                state.due_at = now.saturating_add(STALE_AFTER_SECS);
+                state.in_flight = self.spawn_fetch();
+            } else {
+                let last = read_cache(&self.dir).map_or(now, |cache| cache.last_check_unix);
+                state.due_at = last.saturating_add(STALE_AFTER_SECS);
+            }
+            notice = Some(planned.notice);
+        }
+        notice
+    }
+
+    fn cached_notice(&self) -> Option<String> {
+        read_cache(&self.dir).and_then(|cache| notice_for(&cache.latest, &self.current))
+    }
+
+    fn spawn_fetch(&self) -> bool {
+        if self.live && (cfg!(test) || !BACKGROUND_FETCH.load(Ordering::SeqCst)) {
+            return false;
+        }
+        silence_update_check_panics();
+        let dir = self.dir.clone();
+        let fetch = self.fetch;
+        let landing = Landing(Arc::clone(&self.state));
+        std::thread::Builder::new()
+            .name(UPDATE_CHECK_THREAD.to_string())
+            .spawn(move || {
+                let _landing = landing;
+                apply_fetch(&dir, unix_now(), fetch);
+            })
+            .is_ok()
+    }
+}
+
+/// Flags the check as landed when its thread ends, a panic included, so the board stops
+/// waiting on it and reads the cache again.
+struct Landing(Arc<Mutex<CheckState>>);
+
+impl Drop for Landing {
+    fn drop(&mut self) {
+        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        state.in_flight = false;
+        state.landed = true;
+    }
 }
 
 const UPDATE_CHECK_THREAD: &str = "tsk-update-check";

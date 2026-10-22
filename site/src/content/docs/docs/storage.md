@@ -324,7 +324,9 @@ After an upgrade, the first board open adds one `What's new in tsk` task to your
 
 ## Update check
 
-When the board opens, tsk asks GitHub for the latest release if its last check is more than 24 hours old. A newer version shows on the status row as `vX.Y.Z available, run tsk update`. The check sends no task data, and a failed check stays silent.
+When the board opens, tsk asks GitHub for the latest release if its last check is more than 24 hours old. A board left open checks again once a day. A newer version shows on the status row as `vX.Y.Z available, run tsk update` as soon as the check finishes.
+
+The check sends no task data, and a failed check stays silent. Quick capture and the CLI never check.
 
 | Setting | Effect |
 | --- | --- |
