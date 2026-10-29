@@ -1,5 +1,5 @@
-//! Headless edits: title, notes, assignee, base, after, and who an open block or review
-//! waits on.
+//! Headless edits: title, notes, assignee, base, due date, after, and who an open block or
+//! review waits on.
 
 use std::path::PathBuf;
 
@@ -23,6 +23,8 @@ pub struct EditFields {
     pub assignee: Option<Option<String>>,
     /// `None` leaves it unchanged, `Some(None)` clears it.
     pub base: Option<Option<String>>,
+    /// `None` leaves it unchanged, `Some(None)` clears it. A day is `YYYY-MM-DD`.
+    pub due: Option<Option<String>>,
     /// `None` leaves it unchanged; `Some` replaces the list (empty clears it).
     pub after: Option<Vec<u64>>,
     /// Who the open block or review waits on, as typed; `None` leaves it.
@@ -46,6 +48,8 @@ pub enum EditError {
     EmptyTitle,
     InvalidTitle,
     UnknownBase(String),
+    /// `--due` is not a real `YYYY-MM-DD` day.
+    InvalidDue(String),
     AgentConfig(String),
     /// An `--after` task is this task, not on the board, or already done.
     InvalidAfter(String),
@@ -68,6 +72,7 @@ impl EditError {
             Self::EmptyTitle => "empty-title",
             Self::InvalidTitle => "invalid-title",
             Self::UnknownBase(_) => "unknown-base",
+            Self::InvalidDue(_) => "invalid-due",
             Self::AgentConfig(_) => "agent-config",
             Self::InvalidAfter(_) => "invalid-after",
             Self::AfterLoop(_) => "after-loop",
@@ -96,7 +101,10 @@ pub fn run(
             return Err(EditError::EmptyTitle);
         }
     }
-
+    if let Some(text) = fields.due.as_ref().and_then(|due| due.as_deref()) {
+        crate::domain::parse_due(text)
+            .map_err(|error| EditError::InvalidDue(format!("{text:?}: {error}")))?;
+    }
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
     // The name rule: you, an agent profile, or any other name for a person. Broken profiles
     // refuse rather than guess, so a profile's name never becomes a person by accident.
@@ -124,6 +132,7 @@ pub fn run(
         append_notes: fields.append_notes,
         assignee,
         base: fields.base,
+        due: fields.due,
         after: fields.after,
         on: fields.on.zip(profiles),
     };
@@ -143,6 +152,7 @@ pub fn run(
                     thread: task.thread.clone(),
                     assignee: task.assigned(),
                     base: task.base.clone(),
+                    due: task.due.clone(),
                     after: task.after.clone(),
                     soft_deleted: task.soft_deleted,
                 });
@@ -158,6 +168,7 @@ struct Edit {
     append_notes: Option<String>,
     assignee: Option<Option<Assignee>>,
     base: Option<Option<String>>,
+    due: Option<Option<String>>,
     after: Option<Vec<u64>>,
     /// The typed `--on` value and the profiles it is read against.
     on: Option<(String, AgentProfiles)>,
@@ -172,6 +183,7 @@ struct Found {
     thread: Option<String>,
     assignee: Option<Assignee>,
     base: Option<String>,
+    due: Option<String>,
     after: Vec<u64>,
     soft_deleted: bool,
 }
@@ -220,6 +232,8 @@ fn apply(
         }
     }
     let next_after = fields.after.clone().unwrap_or_else(|| found.after.clone());
+    let next_due = fields.due.clone().unwrap_or_else(|| found.due.clone());
+    let changed_due = next_due != found.due;
     let changed_after = next_after != found.after;
     if changed_after {
         if let Err(error) = state.check_after(found.id, &next_after) {
@@ -245,6 +259,7 @@ fn apply(
         && next_assignee == found.assignee
         && next_base == found.base
         && !changed_after
+        && !changed_due
         && !changed_on
     {
         return (
@@ -283,6 +298,13 @@ fn apply(
     let edited = edited.and_then(|()| match on {
         Some(on) if changed_on => state.set_on(found.id, on).map(|_| ()),
         _ => Ok(()),
+    });
+    let edited = edited.and_then(|()| {
+        if changed_due {
+            state.edit_due(found.id, next_due.clone()).map(|_| ())
+        } else {
+            Ok(())
+        }
     });
     match edited {
         Ok(()) => (

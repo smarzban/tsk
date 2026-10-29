@@ -15,7 +15,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 ### Breaking
 
 - Dispatch refusal codes name no host: `not-in-herdr` is `no-host` and `herdr-failed` is `host-failed` ([refusal codes](https://gettsk.sh/docs/cli/#exit-contract)).
-- Store format 17 records each dispatch's host and project titles: `tsk list T12 --json` shows `host` and `session`, and Herdr keeps `herdr_workspace_id`. tsk 0.13 and older refuse it; roll back with `tsk.json.v6`.
+- Store format 18 records each dispatch's host, project titles, and due days: `tsk list T12 --json` shows `host` and `session`, and Herdr keeps `herdr_workspace_id`. tsk 0.13 and older refuse it; roll back with `tsk.json.v6`.
 
 ### Added
 
@@ -25,6 +25,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - `[dispatch] worktrees` in `config.toml` sets where dispatch puts new worktrees ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
 - Project titles: `ctrl+e` on a project row or `tsk project title` names a project; `-p` accepts the title ([project titles](https://gettsk.sh/docs/board/#project-titles)). Thanks @s3rgiosan (#249).
 - `tsk checks T12 set 2 passed` marks a review check from the command line ([checks](https://gettsk.sh/docs/cli/#checks)). Thanks @Tobi4161 (#269).
+- Give a task a due day: `tsk add --due YYYY-MM-DD`, `tsk edit --due` or `--clear-due`, a plan item's `due`, and `tsk list --sort due`. The task page shows it. Thanks @bnivanov-true (#270).
 
 ### Changed
 

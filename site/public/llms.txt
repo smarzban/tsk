@@ -23,6 +23,7 @@ The human works the board in a TUI; agents read and write the same tasks with th
 - Block: a task waiting on an answer, with why, what it needs, and options to choose from. Replies answer it; unblocking sends them to the running dispatched agent. `tsk edit T12 --on <who>` changes who an open block or review waits on.
 - Review: work handed back with what was done and checks to verify. The human marks the checks, then approves or sends it back with feedback.
 - After: a task waits until the tasks it runs after are done. The last done starts it if it is ready.
+- Due: an optional calendar day, `YYYY-MM-DD`, with no time of day. `tsk add --due`, `tsk edit --due` and `--clear-due` set it; `tsk list --sort due --json` orders by it, undated last.
 - Paper trail: who changed what on a task, newest first.
 
 ## For agents

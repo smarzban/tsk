@@ -753,7 +753,7 @@ import { parseCapture } from "./capture.js";
   function sortChoices(owner = "outer") {
     if (owner === "projects") return PROJECT_SORTS;
     const slot = layoutSlot(owner);
-    return ["recent", "project", "thread", "title", "assignee"].filter(
+    return ["recent", "project", "thread", "title", "assignee", "due"].filter(
       (sort) => sort !== slot,
     );
   }
@@ -815,6 +815,7 @@ import { parseCapture } from "./capture.js";
     thread: (t) => (t.thread ? [0, t.thread.toLowerCase()] : [1, ""]),
     title: (t) => [0, t.title.toLowerCase()],
     assignee: (t) => (t.assignee ? [0, t.assignee.toLowerCase()] : [1, ""]),
+    due: (t) => (t.due ? [0, t.due] : [1, ""]),
   };
   function sortRows(tasks, sort) {
     const key = SORT_KEYS[sort];
