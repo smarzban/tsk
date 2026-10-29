@@ -95,13 +95,13 @@ Press `g` to group, `s` to sort, or click the `group: none ▾` and `sort: recen
 | | Choices |
 | --- | --- |
 | Group by | none, project, thread, assignee |
-| Sort by | recent, project, thread, title, assignee |
+| Sort by | recent, project, thread, title, assignee, due |
 
 Neither offers what the view already fixes: a project board has no project choice, a thread view no thread, an `@name` view no assignee.
 
 Grouping adds dim sub-headers inside NEEDS YOU, IN MOTION, ON DECK, and the inbox, such as `▾ #release · 2` or `▾ unassigned · 1`. Each sub-header counts its rows. The group whose newest row changed status most recently comes first. The done drawer and its archived group never group.
 
-Sorting reorders rows inside each group, or inside each section when ungrouped. **recent** is the section's normal order. The others sort by project (desk last), thread (unthreaded last), title, or assignee (yours first, unassigned last). Notices still lead.
+Sorting reorders rows inside each group, or inside each section when ungrouped. **recent** is the section's normal order. The others sort by project (desk last), thread (unthreaded last), title, assignee (yours first, unassigned last), or due day (earliest first, undated last). Notices still lead.
 
 The desk, project boards, thread views, and `@name` views each keep their own choice for the session. The desk and project boards start from the board defaults in [`config.toml`](/docs/storage/#configuration), if set; everything else starts ungrouped and sorted by recent. Session changes are never written back.
 

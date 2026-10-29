@@ -1239,15 +1239,15 @@ mod tests {
     #[test]
     fn embedded_skill_declares_semver() {
         let version = embedded_skill_version();
-        assert_eq!(version, "1.6.0");
-        assert_eq!(frontmatter_version(SKILL_MD).as_deref(), Some("1.6.0"));
+        assert_eq!(version, "1.7.0");
+        assert_eq!(frontmatter_version(SKILL_MD).as_deref(), Some("1.7.0"));
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in SKILL_MD.bytes() {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
         assert_eq!(
-            hash, 0x7be6_ba02_284e_53ae,
+            hash, 0x455f_07d3_79e3_1b0a,
             "skills/tsk-cli/SKILL.md changed: refresh this hash pin, and bump `version:` only if this is the first skill edit since the last release"
         );
     }
@@ -1272,7 +1272,7 @@ mod tests {
         assert!(COORDINATOR_MD.contains("\nname: tsk-coordinator\n"));
         assert_eq!(
             fnv1a(COORDINATOR_MD),
-            0xec58_43bd_dbf4_616e,
+            0xe36c_6f4c_11f6_0389,
             "skills/tsk-coordinator/SKILL.md changed: refresh this hash pin, and bump both skills' `version:` only if this is the first skill edit since the last release"
         );
     }

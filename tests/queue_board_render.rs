@@ -52,6 +52,7 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, secs_ago: 
         assignee: None,
         assignee_kind: Default::default(),
         base: None,
+        due: None,
         dispatch: None,
         after: Vec::new(),
         status,
@@ -1538,6 +1539,55 @@ fn assigned_task_renders_on_the_row_and_before_thread_in_the_page_footer() {
         page_body.contains("@reviewer · ⎇ default · #release · desk"),
         "task footer must order assignee, base, thread, project:\n{page_body}"
     );
+}
+
+#[test]
+fn task_page_footer_shows_a_set_due_day_between_base_and_thread_and_hides_an_unset_one() {
+    let mut domain = DomainState::new();
+    let dated = domain
+        .create_assigned(
+            "dated work",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            Some("release".into()),
+            None,
+        )
+        .expect("create dated");
+    domain
+        .edit_due(dated, Some("2026-03-15".into()))
+        .expect("set due");
+    let mut model = BoardModel::from_domain(&domain, None);
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+    assert_eq!(model.selected_id(), Some(dated));
+    let page = board_rows(&model, 80, 24).join("\n");
+    assert!(
+        page.contains("⎇ default · due 2026-03-15 · #release · desk"),
+        "a due day sits after the base and before the thread:\n{page}"
+    );
+
+    let mut plain_domain = DomainState::new();
+    plain_domain
+        .create_assigned(
+            "plain work",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            Some("release".into()),
+            None,
+        )
+        .expect("create plain");
+    let mut plain = BoardModel::from_domain(&plain_domain, None);
+    apply_intent(
+        &mut plain_domain,
+        &mut plain,
+        BoardIntent::OpenTaskPage,
+        None,
+    )
+    .expect("open page");
+    let page = board_rows(&plain, 80, 24).join("\n");
+    assert!(page.contains("⎇ default · #release · desk"), "{page}");
+    assert!(!page.contains("due "), "no due, no slot:\n{page}");
 }
 
 #[test]

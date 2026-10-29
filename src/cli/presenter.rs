@@ -112,7 +112,7 @@ fn group(heading: &str, options: &[(&str, &str)]) -> HelpGroup {
 
 /// Usage lines shared by a command's `--help` and its usage errors, so the two never disagree.
 const ADD_USAGE: &[&str] = &[
-    "tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--json] [--state-dir <dir>]",
+    "tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--due <date>] [--json] [--state-dir <dir>]",
     "tsk add [--file <path|->] [--state-dir <dir>]",
 ];
 const LIST_USAGE: &[&str] = &[
@@ -126,7 +126,7 @@ const STATUS_USAGE: &[&str] = &[
     "tsk status <task> review [--done <text>] [--check <text>]... [--next <text>] [--on <who>]",
 ];
 const EDIT_USAGE: &[&str] = &[
-    "tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]",
+    "tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--due <date> | --clear-due] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]",
 ];
 const STEPS_USAGE: &[&str] = &[
     "tsk steps <task> add <text> [<place>] [--state-dir <dir>]",
@@ -204,7 +204,7 @@ pub fn top_level_help() -> String {
         "  add      create a task, or every task in a JSON plan\n",
         "  list     read tasks\n",
         "  status   set a task's status, block it, or put it up for review\n",
-        "  edit     change title, notes, assignee, base, after list, or who it waits on\n",
+        "  edit     change title, notes, assignee, base, due, after, or who it waits on\n",
         "  steps    add, toggle, rename, move, or remove a step\n",
         "  reply    answer a block, or give feedback on a review\n",
         "  dispatch launch a task's assigned agent in its own worktree\n",
@@ -276,6 +276,10 @@ pub fn add_help() -> CliOutput {
                     ),
                     ("--clear-base", "dispatch from the project's default branch"),
                     (
+                        "--due <date>",
+                        "the day it is due, as YYYY-MM-DD; no time of day",
+                    ),
+                    (
                         "--file <path|->",
                         "read a JSON plan from a file, or - for stdin",
                     ),
@@ -296,8 +300,8 @@ pub fn add_help() -> CliOutput {
             "cat plan.json | tsk add".into(),
         ],
         refusals: vec![
-            "empty-title, invalid-title, unknown-project, project-archived, unknown-base".into(),
-            "in a plan item: invalid-item, invalid-thread, invalid-assignee, invalid-after".into(),
+            "empty-title, invalid-title, unknown-project, project-archived, unknown-base, invalid-due".into(),
+            "in a plan item: invalid-item, invalid-thread, invalid-assignee, invalid-after, invalid-due".into(),
         ],
         exit: exit_line(
             "every item created or already there",
@@ -350,7 +354,7 @@ pub fn list_help(_terminal_width: Option<usize>) -> CliOutput {
                     ),
                     (
                         "--sort <by>",
-                        "order live tasks: recent, project (with --all), thread, title, or assignee",
+                        "order live tasks: recent, project (with --all), thread, title, assignee, or due (earliest first, undated last)",
                     ),
                 ],
             ),
@@ -485,6 +489,8 @@ fn list_json(result: &ListResult) -> String {
             assignee: &'a Option<String>,
             assignee_kind: Option<&'static str>,
             base: &'a Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            due: &'a Option<String>,
             thread: &'a Option<String>,
             after: &'a [crate::cli::list::AfterLink],
             before: &'a [u64],
@@ -513,6 +519,7 @@ fn list_json(result: &ListResult) -> String {
             assignee: &row.assignee,
             assignee_kind: row.assignee_kind,
             base: &row.base,
+            due: &row.due,
             thread: &row.thread,
             after: &row.after,
             before: &row.before,
@@ -902,8 +909,9 @@ fn append_rows(
     }
 }
 
-/// One task row. `include_assignee` paints `@assignee` and `⎇ base`; both flags drop out
-/// for a direct listing (detail blocks carry them) and for the dimension a group names.
+/// One task row. `include_assignee` paints `@assignee` and `⎇ base`; `due` shows when either
+/// flag does. Both flags drop out for a direct listing (detail blocks carry them) and each
+/// drops out for the dimension a group names.
 fn append_row(
     output: &mut String,
     row: &ListRow,
@@ -922,6 +930,12 @@ fn append_row(
         if let Some(base) = row.base.as_deref() {
             content.push_str(" ⎇ ");
             content.push_str(&terminal_text(base));
+        }
+    }
+    if include_thread || include_assignee {
+        if let Some(due) = row.due.as_deref() {
+            content.push_str(" due ");
+            content.push_str(&terminal_text(due));
         }
     }
     if include_thread {
@@ -1004,6 +1018,14 @@ fn append_direct_details(
         }
         let base = terminal_text(&format!("⎇ {base}"));
         append_wrapped(output, &detail_prefix, &detail_prefix, &base, output_width);
+        has_prior = true;
+    }
+    if let Some(due) = row.due.as_deref() {
+        if has_prior {
+            output.push('\n');
+        }
+        let due = format!("due {}", terminal_text(due));
+        append_wrapped(output, &detail_prefix, &detail_prefix, &due, output_width);
         has_prior = true;
     }
     for (word, numbers) in [
@@ -2097,7 +2119,7 @@ pub fn status_rejected(error: StatusError, task: TaskAddress) -> CliOutput {
 pub fn edit_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(EDIT_USAGE),
-        purpose: "Change a task's title, notes, assignee, dispatch base, the tasks it runs after, or who its open block or review waits on. Scope and thread stay as they are.".into(),
+        purpose: "Change a task's title, notes, assignee, dispatch base, due date, the tasks it runs after, or who its open block or review waits on. Scope and thread stay as they are.".into(),
         groups: vec![
             group("Arguments", &[("<task>", "a task number or UUID")]),
             group(
@@ -2123,6 +2145,11 @@ pub fn edit_help() -> CliOutput {
                         "dispatch from the project's default branch",
                     ),
                     (
+                        "--due <date>",
+                        "set the day it is due, as YYYY-MM-DD; no time of day",
+                    ),
+                    ("--clear-due", "remove the due date"),
+                    (
                         "--after <task>",
                         "run after this task; repeat for more, replaces the list",
                     ),
@@ -2146,7 +2173,7 @@ pub fn edit_help() -> CliOutput {
             "tsk edit T12 --on coordinator".into(),
         ],
         refusals: vec![
-            "unknown-task, soft-deleted-task, empty-title, invalid-title, unknown-base".into(),
+            "unknown-task, soft-deleted-task, empty-title, invalid-title, unknown-base, invalid-due".into(),
             "--on: not-blocked (nothing open to change), invalid-blocker, text-too-long".into(),
             "invalid-after: the task itself, one not on the board, or one already done".into(),
             "after-loop: the link would close a loop".into(),
@@ -2193,6 +2220,7 @@ pub fn edit_usage(reason: &str) -> CliOutput {
 pub fn edit_rejected(error: EditError, task: TaskAddress) -> CliOutput {
     let (detail, code) = match error {
         EditError::UnknownBase(detail) => (format!("unknown-base: {}", terminal_text(&detail)), 1),
+        EditError::InvalidDue(detail) => (format!("invalid-due: {}", terminal_text(&detail)), 1),
         EditError::InvalidAfter(detail) => (format!("invalid-after: {detail}"), 1),
         EditError::AfterLoop(detail) => (format!("after-loop: {detail}"), 1),
         EditError::NotBlocked => (
@@ -2556,6 +2584,7 @@ pub fn rejected(error: AddError) -> CliOutput {
             )
         }
         AddError::UnknownBase(detail) => (format!("unknown-base: {}", terminal_text(detail)), 1),
+        AddError::InvalidDue(detail) => (format!("invalid-due: {}", terminal_text(detail)), 1),
         AddError::AgentConfig(detail) => (detail.clone(), 2),
         AddError::Store(detail) => (detail.clone(), 3),
         other => (other.code().into(), 1),

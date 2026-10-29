@@ -1,7 +1,7 @@
 ---
 name: tsk-cli
 description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|reply|edit|steps|archive|dispatch|clean|trash`, never the TUI.
-version: 1.6.0
+version: 1.7.0
 ---
 
 # tsk: the user's task board
@@ -78,6 +78,9 @@ task's running agent, add `--send`: it sends only that reply and prints `sent to
     ([JSON plans](https://gettsk.sh/docs/cli.md#json-plans)).
 12. **A restored task may change number.** `tsk trash restore T12` prints the number it got; use that
     one from then on ([trash](https://gettsk.sh/docs/cli.md#trash)).
+13. **A due date is a day.** `--due YYYY-MM-DD` on `tsk add` and `tsk edit`, `--clear-due` to remove
+    it; a time, a zone, or a word refuses with `invalid-due`. Order by it with
+    `tsk list --sort due --json` ([edit](https://gettsk.sh/docs/cli.md#edit)).
 
 ## Reading the board
 

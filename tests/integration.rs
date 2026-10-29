@@ -20,6 +20,7 @@ mod cli_archive;
 mod cli_backup;
 mod cli_discovery;
 mod cli_dispatch;
+mod cli_due;
 mod cli_edit;
 mod cli_guide;
 mod cli_help;

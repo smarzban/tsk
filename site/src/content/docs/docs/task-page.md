@@ -17,12 +17,13 @@ From the top: the title and status, a BLOCKED or REVIEW section while the task h
 
 Click the task's `T` number to copy it.
 
-The footer reads `@assignee · ⎇ <base> · after T202 · before T205 · #thread · project`:
+The footer reads `@assignee · ⎇ <base> · due 2026-03-15 · after T202 · before T205 · #thread · project`:
 
 | Slot | Shows |
 | --- | --- |
 | `@assignee` | The [assignee](/docs/dispatch/#assign): an agent profile, you, or a person. An unassigned task shows `+ assign` when at least one [agent profile](/docs/storage/#configuration) exists. Click to pick |
 | `⎇ <base>` | The base branch. Unset, it shows the repository default, such as `⎇ main (default)`, or `⎇ default` on the desk. Click to pick |
+| `due 2026-03-15` | The day the task is due. Shown only when set, and read-only here: `tsk edit --due` changes it |
 | `after T202` | The tasks this one [runs after](/docs/board/#after). Shown only when set, or during an edit. Click to pick |
 | `before T205` | The tasks that run after this one. Read-only: it changes when you edit theirs. Click a number to open that task |
 | `#thread · project` | The thread and the project, or desk |
@@ -212,6 +213,7 @@ Below the steps, the paper trail lists who did what to the task, newest first. I
 | Created | `created · you 3d` |
 | Status change | `open → started · @claude 2m`, `started · after T202` (its last prerequisite was done) |
 | Assignee, base | `assigned @claude`, `unassigned`, `base ⎇ origin/dev`, `base cleared` |
+| Due | `due edited` |
 | Waiting on | `on: you → @pi` |
 | Dispatch | `dispatched tsk/t12-fix from origin/main @ 3333b79`, or `relaunched …` |
 | Cleanup | `cleaned · worktree removed, branch kept` |

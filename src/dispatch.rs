@@ -7927,8 +7927,7 @@ mod tests {
     }
 
     #[test]
-    fn cleaned_marker_is_optional_and_store_format_stays_v6() {
-        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 6);
+    fn cleaned_marker_is_optional() {
         let record = Dispatch {
             argv: vec!["agent".into()],
             worktree: "/tmp/worktree".into(),

@@ -265,6 +265,7 @@ fn field_list(fields: &[EditedField]) -> String {
             EditedField::Thread => "thread",
             EditedField::Project => "project",
             EditedField::After => "after",
+            EditedField::Due => "due",
         })
         .collect();
     match names.split_last() {

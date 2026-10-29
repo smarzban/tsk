@@ -12,6 +12,14 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Breaking
+
+- Store format 16, for due days. Older tsk refuses it; to roll back, restore the `tsk.json.v6` copy.
+
+### Added
+
+- Give a task a due day: `tsk add --due YYYY-MM-DD`, `tsk edit --due` or `--clear-due`, a plan item's `due`, and `tsk list --sort due`. The task page shows it.
+
 ### Changed
 
 - `tsk setup` names both installed skills, `tsk-cli` and `tsk-coordinator`, beside each agent's skills directory instead of printing only the `tsk-cli` file.

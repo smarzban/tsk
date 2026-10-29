@@ -74,6 +74,9 @@ pub(crate) struct ListRow {
     /// `agent` or `person` (you, or a named person); `null` when unassigned.
     pub(crate) assignee_kind: Option<&'static str>,
     pub(crate) base: Option<String>,
+    /// The due day, `YYYY-MM-DD`; the key is absent when the task has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) due: Option<String>,
     /// The tasks this one runs after, in its own order, each with whether it is done.
     pub(crate) after: Vec<AfterLink>,
     /// The live tasks that run after this one (read-only, derived from their `after`).
@@ -396,8 +399,9 @@ fn parse_sort(value: &str) -> Result<SortBy, String> {
         "thread" => Ok(SortBy::Thread),
         "title" => Ok(SortBy::Title),
         "assignee" => Ok(SortBy::Assignee),
+        "due" => Ok(SortBy::Due),
         _ => Err(format!(
-            "unknown --sort {value}, expected recent, project, thread, title, or assignee"
+            "unknown --sort {value}, expected recent, project, thread, title, assignee, or due"
         )),
     }
 }
@@ -640,6 +644,7 @@ fn row_for(task: &crate::domain::Task, domain: &DomainState) -> ListRow {
         assignee: task.assignee.clone(),
         assignee_kind: task.assignee.as_ref().map(|_| task.assignee_kind.name()),
         base: task.base.clone(),
+        due: task.due.clone(),
         after: task
             .after
             .iter()

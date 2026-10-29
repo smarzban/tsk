@@ -1,7 +1,7 @@
 ---
 name: tsk-coordinator
 description: 'Coordinate a multi-agent build: plan the work, brief builder agents, gate every pull request with an independent review, live-test before merge, and report to the user. Works with any agent and tracker, tuned for the tsk board. Use when asked to coordinate builders or workers, run parallel agents, "move the plan along", or work through a task list on your own.'
-version: 1.6.0
+version: 1.7.0
 ---
 
 # tsk-coordinator: run builders for the user

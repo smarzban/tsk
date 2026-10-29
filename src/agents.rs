@@ -196,10 +196,10 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # message lines under board rows (`z` toggles them for the session). `me` is
 # the name the board shows for you, such as `@sam` on a task assigned to you.
 #   group          "none" (the default), "project", "thread", or "assignee"
-#   sort           "recent" (the default), "project", "thread", "title", or
-#                  "assignee"
+#   sort           "recent" (the default), "project", "thread", "title",
+#                  "assignee", or "due"
 #   project_group  "none" (the default), "thread", or "assignee"
-#   project_sort   "recent" (the default), "thread", "title", or "assignee"
+#   project_sort   "recent" (the default), "thread", "title", "assignee", or "due"
 #   messages       "shown" (the default) or "hidden"
 #   me             `you` by default; a name of lowercase letters, digits, -
 #                  and ., up to 32 characters, starting with a letter or
@@ -1480,7 +1480,7 @@ command = ["pi"]
             ),
             (
                 "[board]\nsort = \"age\"\n",
-                "sort \"age\" is not recent, project, thread, title, or assignee",
+                "sort \"age\" is not recent, project, thread, title, assignee, or due",
             ),
             (
                 "[board]\nproject_group = \"project\"\n",
@@ -1488,7 +1488,7 @@ command = ["pi"]
             ),
             (
                 "[board]\nproject_sort = \"project\"\n",
-                "project_sort \"project\" is not recent, thread, title, or assignee",
+                "project_sort \"project\" is not recent, thread, title, assignee, or due",
             ),
             (
                 "[board]\nmessages = \"off\"\n",

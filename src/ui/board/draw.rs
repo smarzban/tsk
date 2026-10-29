@@ -1170,7 +1170,15 @@ fn build_task_page_overlay<'a>(
                     .join(", ")
             )
         });
-    for segment in [after_segment, before_segment].into_iter().flatten() {
+    // The due day is read-only on the board for now: `tsk edit --due` changes it.
+    let due_segment = bound_task
+        .filter(|_| !capture_form)
+        .and_then(|task| task.due.as_deref())
+        .map(|due| format!("due {}", terminal_text(due)));
+    for segment in [due_segment, after_segment, before_segment]
+        .into_iter()
+        .flatten()
+    {
         if !meta.is_empty() {
             meta.push_str(" · ");
         }

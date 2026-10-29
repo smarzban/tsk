@@ -291,15 +291,18 @@ pub enum SortBy {
     Thread,
     Title,
     Assignee,
+    /// Earliest due day first; tasks with no due day last.
+    Due,
 }
 
 impl SortBy {
-    pub const ALL: [SortBy; 5] = [
+    pub const ALL: [SortBy; 6] = [
         SortBy::Recent,
         SortBy::Project,
         SortBy::Thread,
         SortBy::Title,
         SortBy::Assignee,
+        SortBy::Due,
     ];
 
     pub fn word(self) -> &'static str {
@@ -309,6 +312,7 @@ impl SortBy {
             SortBy::Thread => "thread",
             SortBy::Title => "title",
             SortBy::Assignee => "assignee",
+            SortBy::Due => "due",
         }
     }
 
@@ -1591,6 +1595,10 @@ fn sort_rows(rows: &mut [&Task], sort: SortBy) {
                 Some(assignee) => (false, assignee.to_lowercase()),
                 None => (true, String::new()),
             },
+            SortBy::Due => match task.due.as_deref() {
+                Some(due) => (false, due.to_string()),
+                None => (true, String::new()),
+            },
         }
     };
     if sort == SortBy::Recent {
@@ -1649,6 +1657,7 @@ mod tests {
             assignee: None,
             assignee_kind: Default::default(),
             base: None,
+            due: None,
             dispatch: None,
             after: Vec::new(),
             status,

@@ -29,7 +29,7 @@ Status, edit, delete, and archive keys take `ctrl`. Bare letters move, open, and
 | Reply to a blocked row, or give feedback on a review row | `r` |
 | Open / close the done drawer | `d` |
 | Group by none, project, thread, or assignee | `g` |
-| Sort by recent, project, thread, title, or assignee; on the Projects view, sort the projects | `s` |
+| Sort by recent, project, thread, title, assignee, or due; on the Projects view, sort the projects | `s` |
 | Fold / unfold the cursor's group | `f` |
 | Fold / unfold every group in view | `shift+F` |
 | Hide / show agent messages, the [live lines](/docs/board/#rows) under rows | `z` |

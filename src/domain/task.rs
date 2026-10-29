@@ -118,6 +118,9 @@ pub struct Task {
     /// Optional explicit branch from which this task should be dispatched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// Optional due date: a calendar day written `YYYY-MM-DD`, checked by [`parse_due`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due: Option<String>,
     /// Last successful dispatch. Status changes never alter this record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<Dispatch>,
@@ -315,6 +318,8 @@ pub enum DomainError {
     AfterDone(u64),
     /// `waiting` already runs after `prerequisite`, directly or through other tasks.
     AfterLoop { waiting: u64, prerequisite: u64 },
+    /// A due date that is not a real `YYYY-MM-DD` day.
+    InvalidDue(super::DueError),
 }
 
 impl std::fmt::Display for DomainError {
@@ -348,6 +353,7 @@ impl std::fmt::Display for DomainError {
                 waiting,
                 prerequisite,
             } => write!(f, "T{waiting} already runs after T{prerequisite}"),
+            DomainError::InvalidDue(error) => write!(f, "{error}"),
         }
     }
 }
@@ -521,7 +527,7 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 6;
+pub const STORE_FORMAT_VERSION: u32 = 16;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -872,6 +878,7 @@ impl DomainState {
             assignee: None,
             assignee_kind: AssigneeKind::Agent,
             base: None,
+            due: None,
             dispatch: None,
             after: Vec::new(),
             status: HumanStatus::Open,

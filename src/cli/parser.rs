@@ -698,6 +698,10 @@ pub struct FlagEdit {
     pub unassign: bool,
     pub base: Option<String>,
     pub clear_base: bool,
+    /// `--due`: a day as typed. Checked when the edit runs, so a bad date refuses with
+    /// `invalid-due` rather than as a usage error.
+    pub due: Option<String>,
+    pub clear_due: bool,
     /// `--after`, repeatable: the task numbers this task runs after, replacing the list.
     pub after: Vec<u64>,
     pub clear_after: bool,
@@ -739,6 +743,8 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
         unassign: false,
         base: None,
         clear_base: false,
+        due: None,
+        clear_due: false,
         after: Vec::new(),
         clear_after: false,
         on: None,
@@ -808,6 +814,18 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
                 parsed.clear_base = true;
                 index += 1;
             }
+            flag if flag.starts_with("--due=") => {
+                parsed.due = Some(flag["--due=".len()..].to_owned());
+                index += 1;
+            }
+            "--due" => {
+                parsed.due = Some(value(flag)?);
+                index += 2;
+            }
+            "--clear-due" => {
+                parsed.clear_due = true;
+                index += 1;
+            }
             flag if flag.starts_with("--after=") => {
                 parsed
                     .after
@@ -849,6 +867,9 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
     }
     if parsed.clear_base && parsed.base.is_some() {
         return Err("--clear-base cannot be used with --base".into());
+    }
+    if parsed.clear_due && parsed.due.is_some() {
+        return Err("--clear-due cannot be used with --due".into());
     }
     if parsed.clear_after && !parsed.after.is_empty() {
         return Err("--clear-after cannot be used with --after".into());
@@ -1149,6 +1170,8 @@ mod tests {
                 unassign: false,
                 base: None,
                 clear_base: false,
+                due: None,
+                clear_due: false,
                 after: Vec::new(),
                 clear_after: false,
                 on: None,
@@ -1434,6 +1457,8 @@ pub struct FlagAdd {
     pub base: Option<String>,
     /// Explicitly keep the new task on default base resolution.
     pub clear_base: bool,
+    /// Due day as typed, checked when the task is created.
+    pub due: Option<String>,
     pub global: bool,
     pub json: bool,
     pub state_dir: Option<PathBuf>,
@@ -1457,6 +1482,7 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
         unassign: false,
         base: None,
         clear_base: false,
+        due: None,
         global: false,
         json: false,
         state_dir: None,
@@ -1548,6 +1574,16 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
                 parsed.clear_base = true;
                 parsed.has_item_flags = true;
                 index += 1;
+            }
+            flag if flag.starts_with("--due=") => {
+                parsed.due = Some(flag["--due=".len()..].to_owned());
+                parsed.has_item_flags = true;
+                index += 1;
+            }
+            "--due" => {
+                parsed.due = Some(value(flag)?);
+                parsed.has_item_flags = true;
+                index += 2;
             }
             "--desk" => {
                 parsed.global = true;

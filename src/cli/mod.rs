@@ -477,12 +477,14 @@ fn run_edit(args: Vec<String>) -> CliOutput {
         && !input.unassign
         && input.base.is_none()
         && !input.clear_base
+        && input.due.is_none()
+        && !input.clear_due
         && input.after.is_empty()
         && !input.clear_after
         && input.on.is_none()
     {
         return presenter::edit_usage(
-            "title, notes, append-notes, assignee, base, after, on, --unassign, --clear-base, or --clear-after is required",
+            "title, notes, append-notes, assignee, base, due, after, on, --unassign, --clear-base, --clear-due, or --clear-after is required",
         );
     }
     let assignee = if input.unassign {
@@ -495,6 +497,11 @@ fn run_edit(args: Vec<String>) -> CliOutput {
     } else {
         input.base.map(Some)
     };
+    let due = if input.clear_due {
+        Some(None)
+    } else {
+        input.due.map(Some)
+    };
     if matches!(base, Some(Some(_))) {
         share_fetch_window(&input.state_dir);
     }
@@ -506,6 +513,7 @@ fn run_edit(args: Vec<String>) -> CliOutput {
             append_notes: input.append_notes,
             assignee,
             base,
+            due,
             after: if input.clear_after {
                 Some(Vec::new())
             } else {

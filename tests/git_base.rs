@@ -605,15 +605,14 @@ fn fresh_validation_fetches_remote_but_board_validation_is_local_only() {
 }
 
 #[test]
-fn dispatch_exact_base_ref_is_optional_in_v6_and_round_trips() {
-    use tsk_tui::domain::{Dispatch, STORE_FORMAT_VERSION};
+fn dispatch_exact_base_ref_is_optional_and_round_trips() {
+    use tsk_tui::domain::Dispatch;
     let r = repo();
     let old = serde_json::json!({
         "argv": [], "worktree": r.local, "branch": "tsk/test", "base": "integration/main",
         "herdr_workspace_id": "unused", "at": [0, 0]
     });
     let mut dispatch: Dispatch = serde_json::from_value(old).unwrap();
-    assert_eq!(STORE_FORMAT_VERSION, 6);
     assert_eq!(dispatch.base_ref, None);
     assert!(serde_json::to_value(&dispatch)
         .unwrap()

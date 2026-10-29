@@ -19,7 +19,7 @@ tsk list
 | [`tsk add`](#add) | Add a task, or every task in a JSON plan |
 | [`tsk list`](#list) | Read tasks |
 | [`tsk status`](#status) | Set a task's status, block it, or put it up for review |
-| [`tsk edit`](#edit) | Change a task's title, notes, assignee, base, after list, or who its block or review waits on |
+| [`tsk edit`](#edit) | Change a task's title, notes, assignee, base, due date, after list, or who its block or review waits on |
 | [`tsk steps`](#steps) | Add, toggle, rename, move, or remove a step |
 | [`tsk reply`](#reply) | Answer a block, or give feedback on a review |
 | [`tsk dispatch`](#dispatch) | Launch a task's assigned agent in its own worktree |
@@ -78,7 +78,7 @@ Rows the board paints as `N1`, `N2`… are notices: starter tasks and release no
 Creates one task from flags, or every task in a JSON plan.
 
 ```text
-tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--json] [--state-dir <dir>]
+tsk add -t <title> [-n <notes>] [-p <project> | --desk] [--thread <name>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--due <date>] [--json] [--state-dir <dir>]
 tsk add [--file <path|->] [--state-dir <dir>]
 ```
 
@@ -92,6 +92,7 @@ tsk add [--file <path|->] [--state-dir <dir>]
 | `--unassign` | No assignee |
 | `--base <branch>` | Dispatch from this existing branch of the project ([base branch](/docs/dispatch/#base-branch)) |
 | `--clear-base` | Dispatch from the project's default branch |
+| `--due <date>` | The day it is due, as `YYYY-MM-DD`. No time of day (`invalid-due`) |
 | `--file <path>`, `--file -` | Read a JSON plan from a file, or from stdin |
 | `--json` | Print the result as one JSON object |
 
@@ -131,12 +132,13 @@ A plan is a JSON array of task objects, read from `--file` or piped to `tsk add`
 | `thread` | Thread name, or `null` |
 | `assignee` | An assignee name, as for `--assignee`, or `null` |
 | `base` | Dispatch base branch, or `null` for the default branch |
+| `due` | The day it is due, as `YYYY-MM-DD`, or `null` for none |
 | `after` | Tasks this one [runs after](/docs/board/#after), such as `[202]` or `["T202"]`, in any project |
 
 The result is one JSON object with three arrays: `created`, `existing`, and `failed`. Each entry carries the item's index `i`. Created and existing entries add `id`, `number`, and `title`; failed ones add `title`, `code`, and `error`.
 
 - Valid items save even when others fail. Retry only the failed items.
-- An item's refusal codes include `invalid-item`, `invalid-thread`, `invalid-assignee`, and `invalid-after` (an unknown or done task).
+- An item's refusal codes include `invalid-item`, `invalid-thread`, `invalid-assignee`, `invalid-after` (an unknown or done task), and `invalid-due`.
 - Item flags and `--file` do not mix. With item flags, piped input is ignored.
 - A leading byte order mark, which Windows PowerShell 5.1 writes, is ignored.
 
@@ -164,7 +166,7 @@ tsk list [<task>] [-p <project> | --desk | --all] [--thread <name> | --no-thread
 | `--archived` | Archived tasks, and tasks in archived projects, in any status |
 | `--deleted` | Deleted tasks, newest first, kept for 30 days ([deleted tasks](/docs/storage/#deleted-tasks)) |
 | `--group <by>` | Live tasks under each status, grouped by `none`, `project`, `thread`, or `assignee`, hottest group first |
-| `--sort <by>` | Live tasks ordered by `recent` (the default), `project`, `thread`, `title`, or `assignee` |
+| `--sort <by>` | Live tasks ordered by `recent` (the default), `project`, `thread`, `title`, `assignee`, or `due` (earliest first, undated last) |
 | `--json` | JSON instead of text |
 
 `--group` and `--sort` work like the board's [group and sort](/docs/board/#group-and-sort). They never arrange by something every row shares: `project` needs `--all`, and `thread` and `assignee` do not combine with a thread or assignee filter.
@@ -180,10 +182,10 @@ tsk list --all --thread release --json
 ### Text output
 
 - Tasks group by status in the order `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW`, and keep the board's order inside each status.
-- A row reads `- 12 Fix login timeout @claude ⎇ main #auth`. A blocked row adds `blocked: <why>` beneath.
+- A row reads `- 12 Fix login timeout @claude ⎇ main due 2026-03-15 #auth`. A blocked row adds `blocked: <why>` beneath.
 - With `--all`, each status groups its rows by project and desk. A sort other than `recent` lists the rows flat instead, each ending with its scope.
 - With `--group`, sub-headings name each group as the board paints it.
-- One task in full adds its notes, steps, `@assignee`, `⎇ base`, `after` and `before` tasks, `#thread`, and its latest five [paper trail](/docs/task-page/#paper-trail) entries.
+- One task in full adds its notes, steps, `@assignee`, `⎇ base`, `due` day, `after` and `before` tasks, `#thread`, and its latest five [paper trail](/docs/task-page/#paper-trail) entries.
 - Text wraps to the terminal width. Redirected output keeps each line whole.
 
 ### JSON fields
@@ -197,6 +199,7 @@ tsk list --all --thread release --json
 | `title`, `status` | Title and status |
 | `project` | Project path, or `null` on the desk |
 | `thread`, `assignee`, `base` | Thread, assignee name, and explicit base branch, each `null` when unset. An assignee of `you` is you |
+| `due` | The due day as `YYYY-MM-DD`. The key is absent when the task has none |
 | `assignee_kind` | `agent` for an agent profile, `person` for you or a named person, `null` when unassigned |
 | `after` | Tasks this one runs after, in order, each `{"task": 202, "done": false}`. A task gone from the board reads as done |
 | `before` | Numbers of the tasks that run after this one |
@@ -259,7 +262,7 @@ Times such as `at` are `[seconds, nanoseconds]` since the Unix epoch.
 | `dispatched` | `branch`, `base`, `sha`, `relaunch: true` on a relaunch, and `after` as above |
 | `cleaned` | `outcome`: `removed`, `branch_kept`, or `missing` |
 | `on_set` | `on_from` and `on_to`, shaped like a block's `on` |
-| `edited` | `fields`: any of `title`, `notes`, `thread`, `project`, `after` |
+| `edited` | `fields`: any of `title`, `notes`, `thread`, `project`, `after`, `due` |
 
 ## status
 
@@ -374,10 +377,10 @@ tsk status T12 review --done "Opened PR #42" --check "tests pass" --next "docs"
 
 ## edit
 
-Changes a task's title, notes, assignee, dispatch base, the tasks it runs after, or who its open block or review waits on. Scope and thread stay as they are: to move a task, add it again in the right scope and archive the old one.
+Changes a task's title, notes, assignee, dispatch base, due date, the tasks it runs after, or who its open block or review waits on. Scope and thread stay as they are: to move a task, add it again in the right scope and archive the old one.
 
 ```text
-tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]
+tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--due <date> | --clear-due] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]
 ```
 
 | Flag | Meaning |
@@ -389,10 +392,13 @@ tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--a
 | `--unassign` | Clear the assignee |
 | `--base <branch>` | Dispatch from this existing branch, not a tag or commit (`unknown-base`) |
 | `--clear-base` | Dispatch from the project's default branch |
+| `--due <date>` | Set the day it is due, as `YYYY-MM-DD`. No time of day (`invalid-due`) |
+| `--clear-due` | Remove the due date |
 | `--after <task>` | Run after this task; repeat for more. Replaces the list |
 | `--clear-after` | Run after nothing |
 | `--on <who>` | Change who the open block or review waits on, as for [block](#block) and [review](#review) `--on` |
 
+- `--due` takes a calendar day that exists: `2028-02-29` is accepted, `2027-02-29` is not. A time, a time zone, or a word such as `tomorrow` refuses with `invalid-due`. A due date changes neither the status nor `--after`.
 - `--after` takes tasks in any project. It refuses the task itself, a task not on the board, or a done one (`invalid-after`), and a link that would close a loop (`after-loop`). There is no `--before`: set the other task's `--after`.
 - `--on` keeps the round, its text, checks, and replies. A task with no open block or review refuses with `not-blocked`.
 - Output is `edited T12 <title>`, plus `assigned T12 to @dana (not an agent profile)` for a person. Repeating the same values is safe.
@@ -763,12 +769,12 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 
 | Command | Refusal codes |
 | --- | --- |
-| `add` | `empty-title`, `invalid-title`, `unknown-project`, `project-archived`, `unknown-base`; in a plan also `invalid-item`, `invalid-thread`, `invalid-assignee`, `invalid-after` |
+| `add` | `empty-title`, `invalid-title`, `unknown-project`, `project-archived`, `unknown-base`, `invalid-due`; in a plan also `invalid-item`, `invalid-thread`, `invalid-assignee`, `invalid-after` |
 | `status` | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker` |
 | `status … started` | `after-not-done`, `agent-gone`, and the `dispatch` codes `needs-git-project`, `unknown-agent`, `agent-config`, `unknown-base`, `no-default-base`, `herdr-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
 | `status … done --clean` | The `clean` codes except `not-dispatched` and `already-cleaned` |
 | `status … done --merge` | Every `clean` code, with `--merge` |
-| `edit` | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title`, `unknown-base`, `invalid-after`, `after-loop`; with `--on` also `not-blocked`, `invalid-blocker`, `text-too-long` |
+| `edit` | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title`, `unknown-base`, `invalid-due`, `invalid-after`, `after-loop`; with `--on` also `not-blocked`, `invalid-blocker`, `text-too-long` |
 | `steps` | `unknown-task`, `soft-deleted-task`, `empty-step-text`, `invalid-step-text`, `unknown-step`, `ambiguous-step`, `same-step` |
 | `reply` | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
 | `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `not-in-herdr`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |

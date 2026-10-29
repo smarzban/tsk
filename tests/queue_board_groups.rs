@@ -251,7 +251,7 @@ fn g_and_s_open_pickers_whose_choices_follow_the_surface() {
     assert_eq!(board.model.list_picker_kind(), Some(ListPickerKind::SortBy));
     assert_eq!(
         board.picker_labels(),
-        ["recent", "project", "thread", "title", "assignee"]
+        ["recent", "project", "thread", "title", "assignee", "due"]
     );
     board.apply(BoardIntent::CancelListPicker);
 
@@ -263,7 +263,7 @@ fn g_and_s_open_pickers_whose_choices_follow_the_surface() {
     board.key(press(KeyCode::Char('s')));
     assert_eq!(
         board.picker_labels(),
-        ["recent", "thread", "title", "assignee"]
+        ["recent", "thread", "title", "assignee", "due"]
     );
     board.apply(BoardIntent::CancelListPicker);
 
@@ -285,7 +285,7 @@ fn g_and_s_open_pickers_whose_choices_follow_the_surface() {
     board.key(press(KeyCode::Char('s')));
     assert_eq!(
         board.picker_labels(),
-        ["recent", "project", "thread", "title"]
+        ["recent", "project", "thread", "title", "due"]
     );
 }
 
