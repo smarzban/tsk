@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use crate::cli::parser::TaskAddress;
-use crate::domain::{CheckState, DomainError};
+use crate::domain::{CheckState, DomainError, DomainState};
 use crate::store::{default_state_dir, TaskStore};
 
 /// A set check: the task and the check's 1-based position.
@@ -50,33 +50,40 @@ pub fn run(
     let store = TaskStore::new(state_dir.unwrap_or_else(default_state_dir));
     store
         .locked_transition_if_changed(|domain| {
-            let outcome = (|| {
-                let task = domain
-                    .tasks()
-                    .iter()
-                    .find(|task| target.matches(task))
-                    .ok_or(CheckError::UnknownTask)?;
-                if task.soft_deleted {
-                    return Err(CheckError::SoftDeletedTask);
-                }
-                let (id, number) = (task.id, task.number.unwrap_or_default());
-                let index = position.checked_sub(1).ok_or(CheckError::UnknownCheck)?;
-                let changed = domain
-                    .set_check(id, index, state)
-                    .map_err(map_domain_error)?;
-                Ok((
-                    CheckResult {
-                        number,
-                        position,
-                        state,
-                    },
-                    changed,
-                ))
-            })();
+            let outcome = apply(domain, target, position, state);
             let changed = outcome.as_ref().is_ok_and(|(_, changed)| *changed);
             Ok((outcome.map(|(result, _)| result), changed))
         })
         .map_err(CheckError::Store)?
+}
+
+fn apply(
+    domain: &mut DomainState,
+    target: TaskAddress,
+    position: usize,
+    state: CheckState,
+) -> Result<(CheckResult, bool), CheckError> {
+    let task = domain
+        .tasks()
+        .iter()
+        .find(|task| target.matches(task))
+        .ok_or(CheckError::UnknownTask)?;
+    if task.soft_deleted {
+        return Err(CheckError::SoftDeletedTask);
+    }
+    let (id, number) = (task.id, task.number.unwrap_or_default());
+    let index = position.checked_sub(1).ok_or(CheckError::UnknownCheck)?;
+    let changed = domain
+        .set_check(id, index, state)
+        .map_err(map_domain_error)?;
+    Ok((
+        CheckResult {
+            number,
+            position,
+            state,
+        },
+        changed,
+    ))
 }
 
 fn map_domain_error(error: DomainError) -> CheckError {

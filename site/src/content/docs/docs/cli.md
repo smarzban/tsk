@@ -473,7 +473,7 @@ tsk check <task> <n> <state> [--state-dir <dir>]
 
 | Argument | Meaning |
 | --- | --- |
-| `<n>` | The check's position in the round, from 1, in the order `tsk list T12 --json` prints `checks` |
+| `<n>` | The check's position in the round, from 1, in the order the task page and `tsk list T12` show them |
 | `<state>` | `open`, `passed`, or `failed` |
 
 - One check per run. Setting the state it already has changes nothing and exits 0, so a retry is safe.

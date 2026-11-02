@@ -7,9 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ratatui::backend::TestBackend;
+use ratatui::Terminal;
 use tsk_tui::cli::{run_with, CliOutput};
-use tsk_tui::domain::{CheckState, TaskEventKind};
+use tsk_tui::domain::TaskEventKind;
 use tsk_tui::store::TaskStore;
+use tsk_tui::ui::board::{apply_intent, draw_board, BoardModel};
+use tsk_tui::ui::input::BoardIntent;
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -58,6 +62,8 @@ fn seed_review(dir: &Path) {
         dir,
     );
     assert_eq!(review.code, 0, "{}", review.stderr);
+    let reply = cli(&["tsk", "reply", "T1", "the flicker is back"], dir);
+    assert_eq!(reply.code, 0, "{}", reply.stderr);
 }
 
 fn check(dir: &Path, task: &str, index: &str, state: &str) -> CliOutput {
@@ -91,6 +97,7 @@ fn check_sets_each_state_and_keeps_everything_else() {
         assert_eq!(output.code, 0, "{state}: {}", output.stderr);
         assert_eq!(output.stdout, format!("T1 check 2 {state}\n"));
         let task = listed(&dir);
+        assert_eq!(task["review"]["feedback"][0]["text"], "the flicker is back");
         assert_eq!(
             task["review"]["checks"],
             serde_json::json!([
@@ -143,6 +150,11 @@ fn check_refusals_change_nothing() {
         (["T2", "1", "passed"], 1, "tsk check: not-in-review: T2 "),
         (["T1", "0", "passed"], 1, "tsk check: unknown-check: "),
         (["T1", "3", "passed"], 1, "tsk check: unknown-check: "),
+        (
+            ["T1", "99999999999999999999999", "passed"],
+            1,
+            "tsk check: unknown-check: ",
+        ),
         (["T1", "1", "done"], 2, "tsk check: "),
         (["T1", "x", "passed"], 2, "tsk check: "),
         (["T1", "-1", "passed"], 2, "tsk check: "),
@@ -185,7 +197,7 @@ fn check_refuses_a_deleted_task() {
     assert_eq!(fs::read(dir.join("tsk.json")).expect("read"), before);
 }
 
-/// The board reads the stored state on reload: the domain the TUI loads carries the new state.
+/// The board, reloading the store after a `tsk check`, paints the new state on the task page.
 #[test]
 fn the_board_sees_the_new_check_state_on_reload() {
     let dir = temp_state_dir("reload");
@@ -193,10 +205,56 @@ fn the_board_sees_the_new_check_state_on_reload() {
     seed_review(&dir);
     assert_eq!(check(&dir, "T1", "1", "failed").code, 0);
 
-    let state = TaskStore::new(&dir).load().expect("load");
-    let review = state.tasks()[0].block.as_ref().expect("open review round");
-    assert!(review.is_review());
-    assert_eq!(review.checks[0].state, CheckState::Failed);
-    assert_eq!(review.checks[0].text, "tests pass");
-    assert_eq!(review.checks[1].state, CheckState::Open);
+    let mut domain = TaskStore::new(&dir).load().expect("load");
+    let id = domain.tasks()[0].id;
+    let mut model = BoardModel::from_domain(&domain, None);
+    model.sync_from_domain(&domain);
+    let index = model
+        .visible_ids()
+        .iter()
+        .position(|visible| *visible == id)
+        .expect("task visible");
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectIndex(index),
+        None,
+    )
+    .expect("select");
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
+
+    let (width, height) = (100, 60);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            let _ = draw_board(frame, &model);
+        })
+        .expect("draw");
+    let buffer = terminal.backend().buffer();
+    let rows: Vec<String> = (0..height)
+        .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect();
+    let row = |text: &str| {
+        rows.iter()
+            .find(|row| row.contains(text))
+            .unwrap_or_else(|| panic!("{text:?} missing:\n{}", rows.join("\n")))
+            .clone()
+    };
+    assert!(row("tests pass").contains('✗'), "{}", rows.join("\n"));
+    assert!(!row("no flicker").contains('✗'), "{}", rows.join("\n"));
+}
+
+/// A check adds no undo entry, like `Enter` on a check on the board.
+#[test]
+fn check_adds_no_undo_entry() {
+    let dir = temp_state_dir("undo");
+    let _guard = TempDirGuard(dir.clone());
+    seed_review(&dir);
+    let undo_stack = || {
+        let raw = fs::read_to_string(dir.join("tsk.json")).expect("read");
+        serde_json::from_str::<serde_json::Value>(&raw).expect("store json")["undo_stack"].clone()
+    };
+    let before = undo_stack();
+    assert_eq!(check(&dir, "T1", "2", "passed").code, 0);
+    assert_eq!(undo_stack(), before);
 }

@@ -730,24 +730,16 @@ pub fn parse_flag_check(args: &[String]) -> Result<FlagCheck, String> {
     }
     if let Some(position) = positionals.get(1) {
         let valid = !position.is_empty() && position.bytes().all(|byte| byte.is_ascii_digit());
-        parsed.position = Some(
-            valid
-                .then(|| position.parse::<usize>().ok())
-                .flatten()
-                .ok_or_else(|| format!("invalid check number {position}"))?,
-        );
+        if !valid {
+            return Err(format!("invalid check number {position}"));
+        }
+        // Too many digits for any round is past the last check, not a usage error.
+        parsed.position = Some(position.parse::<usize>().unwrap_or(usize::MAX));
     }
     if let Some(state) = positionals.get(2) {
-        parsed.state = Some(match *state {
-            "open" => CheckState::Open,
-            "passed" => CheckState::Passed,
-            "failed" => CheckState::Failed,
-            other => {
-                return Err(format!(
-                    "unknown check state {other}; expected open, passed, or failed"
-                ))
-            }
-        });
+        parsed.state = Some(CheckState::from_name(state).ok_or_else(|| {
+            format!("unknown check state {state}; expected open, passed, or failed")
+        })?);
     }
     Ok(parsed)
 }

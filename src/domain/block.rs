@@ -143,6 +143,13 @@ impl CheckState {
             CheckState::Failed => "failed",
         }
     }
+
+    /// The state `name` prints, read back: `open`, `passed`, or `failed`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [CheckState::Open, CheckState::Passed, CheckState::Failed]
+            .into_iter()
+            .find(|state| state.name() == name)
+    }
 }
 
 /// One thing the reviewer should check.
