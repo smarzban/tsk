@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::agents::{AgentProfiles, MergeMethod, RenderContext};
+use crate::agents::{AfterSettings, AgentProfiles, MergeMethod, RenderContext};
 use crate::domain::{Dispatch, DomainState, HumanStatus, Task, TaskScope};
 
 pub mod pr;
@@ -3041,34 +3041,33 @@ pub const NO_LAUNCH_DISPATCH_RUNNING: &str = "a dispatch is running";
 /// save and join the done's undo entry; an assigned task never dispatched is also held for a
 /// launch once that save lands ([`launch_released_with_host`]). Started on disk, it is no other
 /// start's to dispatch. `launch_blocked` (a running marked-set dispatch) leaves such a task
-/// ready instead, with the reason. With `after.start` off nothing starts or launches: each
+/// ready instead, with the reason. With `settings.start` off nothing starts or launches: each
 /// released task stays ready and is reported as [`ReleasedStart::CanStart`].
 pub fn plan_released_with_host(
     state: &mut DomainState,
     actor: &str,
     in_herdr: bool,
     launch_blocked: Option<&'static str>,
-    after: crate::agents::AfterSettings,
+    settings: AfterSettings,
     host: &mut impl DispatchHost,
 ) -> Vec<Released> {
     let done = state.take_completed();
     let mut released = Vec::new();
-    for (id, by) in state.released_by(&done) {
+    for (id, after) in state.released_by(&done) {
         let Some(task) = state.get(id) else {
             continue;
         };
         let Some(number) = task.number else {
             continue;
         };
-        if !after.start {
+        if !settings.start {
             released.push(Released {
                 number,
-                after: by,
+                after,
                 start: ReleasedStart::CanStart,
             });
             continue;
         }
-        let after = by;
         let (start, launch) = match start_route(task, actor, in_herdr, host) {
             StartRoute::Dispatch => match launch_blocked {
                 Some(reason) => {
@@ -3169,9 +3168,9 @@ pub fn save_releasing_with_host(
     host: &mut impl DispatchHost,
 ) -> Result<Vec<Released>, crate::store::StoreError> {
     let completed = local.completed_ids();
-    let after = crate::agents::AfterSettings::for_release(store.path());
+    let settings = AfterSettings::for_release(store.path());
     let mut released = match store.reload_merge_save_then(local, |merged| {
-        plan_released_with_host(merged, actor, in_herdr, launch_blocked, after, host)
+        plan_released_with_host(merged, actor, in_herdr, launch_blocked, settings, host)
     }) {
         Ok(released) => released,
         Err(error) => {

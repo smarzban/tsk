@@ -150,7 +150,7 @@ pub fn run_done_with_host(
 ) -> Result<(StatusResult, Vec<dispatch::Released>), StatusError> {
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
     let store = TaskStore::new(&state_dir);
-    let after = crate::agents::AfterSettings::for_release(&state_dir);
+    let settings = crate::agents::AfterSettings::for_release(&state_dir);
     let (result, mut released, launches, token) = store
         .locked_transition_if_changed(|state: &mut DomainState| {
             let found = state
@@ -175,7 +175,7 @@ pub fn run_done_with_host(
                 actor,
             );
             let released = if changed {
-                dispatch::plan_released_with_host(state, actor, in_herdr, None, after, host)
+                dispatch::plan_released_with_host(state, actor, in_herdr, None, settings, host)
             } else {
                 Vec::new()
             };
