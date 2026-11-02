@@ -10,6 +10,7 @@ use crate::dispatch::CleanupError;
 pub mod add;
 pub mod archive;
 pub mod backup;
+pub mod check;
 pub mod clean;
 pub mod dispatch;
 pub mod edit;
@@ -110,6 +111,7 @@ fn run_verb<R: Read>(
         Some("list") => run_list(args, terminal_width),
         Some("status") => run_status(args),
         Some("reply") => run_reply(args),
+        Some("check") => run_check(args),
         Some("dispatch") => run_dispatch(args),
         Some("clean") => run_clean(args),
         Some("edit") => run_edit(args),
@@ -126,7 +128,7 @@ fn run_verb<R: Read>(
             run_archive(args, verb, archive)
         }
         _ => presenter::usage(
-            "expected add, steps, list, status, reply, dispatch, clean, edit, trash, backup, restore, archive, unarchive, or project command",
+            "expected add, steps, list, status, reply, check, dispatch, clean, edit, trash, backup, restore, archive, unarchive, or project command",
         ),
     }
 }
@@ -153,6 +155,7 @@ fn run_help(args: Vec<String>) -> CliOutput {
             "list" => presenter::list_help(None),
             "status" => presenter::status_help(),
             "reply" => presenter::reply_help(),
+            "check" => presenter::check_help(),
             "dispatch" => presenter::dispatch_help(),
             "clean" => presenter::clean_help(),
             "edit" => presenter::edit_help(),
@@ -456,6 +459,24 @@ fn run_reply(args: Vec<String>) -> CliOutput {
     match reply::run(task, &text, input.state_dir) {
         Ok(result) => presenter::replied(result),
         Err(error) => presenter::reply_rejected(error, task),
+    }
+}
+
+fn run_check(args: Vec<String>) -> CliOutput {
+    let input = match parser::parse_flag_check(&args) {
+        Ok(input) => input,
+        Err(reason) => return presenter::check_usage(&reason),
+    };
+    if input.help {
+        return presenter::check_help();
+    }
+    let (Some(task), Some(position), Some(state)) = (input.task, input.position, input.state)
+    else {
+        return presenter::check_usage("task number, check number, and state are required");
+    };
+    match check::run(task, position, state, input.state_dir) {
+        Ok(result) => presenter::checked(result),
+        Err(error) => presenter::check_rejected(error, task),
     }
 }
 

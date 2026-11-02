@@ -22,6 +22,7 @@ tsk list
 | [`tsk edit`](#edit) | Change a task's title, notes, assignee, base, after list, or who its block or review waits on |
 | [`tsk steps`](#steps) | Add, toggle, rename, move, or remove a step |
 | [`tsk reply`](#reply) | Answer a block, or give feedback on a review |
+| [`tsk check`](#check) | Mark a review check open, passed, or failed |
 | [`tsk dispatch`](#dispatch) | Launch a task's assigned agent in its own worktree |
 | [`tsk clean`](#clean) | Remove a dispatched task's worktree and merged branch |
 | [`tsk archive`](#archive) / [`unarchive`](#unarchive) | Hide a task, or put it back |
@@ -462,6 +463,30 @@ tsk reply <task> <text> [--send] [--state-dir <dir>]
 tsk reply T12 "Use postgres" --send
 ```
 
+## check
+
+Sets one check of a task's open review round, as `Enter` on a check does on the task page.
+
+```text
+tsk check <task> <n> <state> [--state-dir <dir>]
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `<n>` | The check's position in the round, from 1, in the order `tsk list T12 --json` prints `checks` |
+| `<state>` | `open`, `passed`, or `failed` |
+
+- One check per run. Setting the state it already has changes nothing and exits 0, so a retry is safe.
+- The check's text, the other checks, the round, and the status stay as they are.
+- Output is `T12 check 2 passed`.
+- A task with no open review round refuses with `not-in-review`. A number past the last check refuses with `unknown-check`. Any other state word is a usage error, exit 2.
+
+**Refusals:** codes and exits in the [exit contract](#exit-contract).
+
+```sh
+tsk check T12 2 passed
+```
+
 ## dispatch
 
 Launches an assigned task's agent in its own Git worktree and Herdr workspace, then sets the task `started`. [Dispatch](/docs/dispatch/#dispatch) explains names, prompts, and what the agent gets.
@@ -771,6 +796,7 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 | `edit` | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title`, `unknown-base`, `invalid-after`, `after-loop`; with `--on` also `not-blocked`, `invalid-blocker`, `text-too-long` |
 | `steps` | `unknown-task`, `soft-deleted-task`, `empty-step-text`, `invalid-step-text`, `unknown-step`, `ambiguous-step`, `same-step` |
 | `reply` | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
+| `check` | `unknown-task`, `soft-deleted-task`, `not-in-review`, `unknown-check` |
 | `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `not-in-herdr`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
 | `clean` | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `herdr-failed`; on Windows `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
 | `archive`, `unarchive` | `unknown-task`, `soft-deleted-task` |

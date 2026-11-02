@@ -12,6 +12,10 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Added
+
+- `tsk check T12 2 passed` marks one review check open, passed, or failed from the command line ([check](https://gettsk.sh/docs/cli/#check)).
+
 ### Changed
 
 - `tsk setup` names both installed skills, `tsk-cli` and `tsk-coordinator`, beside each agent's skills directory instead of printing only the `tsk-cli` file.

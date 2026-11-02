@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use super::steps::{StepPlacement, StepsAction};
-use crate::domain::{normalize_thread, thread_refusal_message, HumanStatus};
+use crate::domain::{normalize_thread, thread_refusal_message, CheckState, HumanStatus};
 
 /// A direct task operand, either the internal UUID or its human task number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -671,6 +671,84 @@ pub fn parse_flag_reply(args: &[String]) -> Result<FlagReply, String> {
         parsed.task = Some(parse_task_address(task)?);
     }
     parsed.text = positionals.get(1).map(|text| text.to_string());
+    Ok(parsed)
+}
+
+/// Parsed `check` input: the task address, the check's 1-based position, and its new state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagCheck {
+    pub task: Option<TaskAddress>,
+    pub position: Option<usize>,
+    pub state: Option<CheckState>,
+    pub state_dir: Option<PathBuf>,
+    pub help: bool,
+}
+
+/// Parse `tsk check <task> <n> <state>` arguments, including argv0.
+pub fn parse_flag_check(args: &[String]) -> Result<FlagCheck, String> {
+    if args.get(1).map(String::as_str) != Some("check") {
+        return Err("expected check command".into());
+    }
+    let mut parsed = FlagCheck {
+        task: None,
+        position: None,
+        state: None,
+        state_dir: None,
+        help: false,
+    };
+    let mut positionals: Vec<&str> = Vec::new();
+    let mut index = 2;
+    while let Some(arg) = args.get(index).map(String::as_str) {
+        index += 1;
+        if !arg.starts_with('-') {
+            if positionals.len() == 3 {
+                return Err(format!("unexpected check argument {arg}"));
+            }
+            positionals.push(arg);
+            continue;
+        }
+        match arg {
+            "--help" => parsed.help = true,
+            flag if flag.starts_with("--state-dir=") => {
+                parsed.state_dir = Some(PathBuf::from(&flag["--state-dir=".len()..]));
+            }
+            "--state-dir" => match args.get(index) {
+                Some(value) if !value.starts_with('-') => {
+                    parsed.state_dir = Some(PathBuf::from(value));
+                    index += 1;
+                }
+                _ => return Err("missing value for --state-dir".into()),
+            },
+            flag => return Err(format!("unknown check argument {flag}")),
+        }
+    }
+    if parsed.help {
+        return Ok(parsed);
+    }
+    if let Some(task) = positionals.first() {
+        parsed.task = Some(parse_task_address(task)?);
+    }
+    if let Some(position) = positionals.get(1) {
+        let valid = !position.is_empty() && position.bytes().all(|byte| byte.is_ascii_digit());
+        parsed.position = Some(
+            valid
+                .then(|| position.parse::<usize>().ok())
+                .flatten()
+                .ok_or_else(|| format!("invalid check number {position}"))?,
+        );
+    }
+    if let Some(state) = positionals.get(2) {
+        parsed.state = Some(match *state {
+            "open" => CheckState::Open,
+            "passed" => CheckState::Passed,
+            "failed" => CheckState::Failed,
+            other => {
+                return Err(format!(
+                    "unknown check state {other}; expected open, passed, or failed"
+                ))
+            }
+        });
+    }
     Ok(parsed)
 }
 

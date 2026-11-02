@@ -136,6 +136,7 @@ const STEPS_USAGE: &[&str] = &[
     "tsk steps <task> remove <step-short-id> [--state-dir <dir>]",
 ];
 const REPLY_USAGE: &[&str] = &["tsk reply <task> <text> [--send] [--state-dir <dir>]"];
+const CHECK_USAGE: &[&str] = &["tsk check <task> <n> <state> [--state-dir <dir>]"];
 const DISPATCH_USAGE: &[&str] = &[
     "tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]",
     "tsk dispatch <task> --show-prompt [--base <branch>] [--state-dir <dir>]",
@@ -207,6 +208,7 @@ pub fn top_level_help() -> String {
         "  edit     change title, notes, assignee, base, after list, or who it waits on\n",
         "  steps    add, toggle, rename, move, or remove a step\n",
         "  reply    answer a block, or give feedback on a review\n",
+        "  check    mark a review check open, passed, or failed\n",
         "  dispatch launch a task's assigned agent in its own worktree\n",
         "  clean    remove a dispatched task's worktree and merged branch\n\n",
         "Board\n",
@@ -1516,6 +1518,8 @@ fn task_refusal_message(code: &str, task: TaskAddress) -> String {
         "not-blocked" => format!("{display} is not blocked or in review; nothing to reply to"),
         "empty-reply" => "the reply is empty".to_string(),
         "same-step" => "a step cannot be placed relative to itself".to_string(),
+        "not-in-review" => format!("{display} has no open review round"),
+        "unknown-check" => format!("{display}'s review round has no check with that number"),
         _ => return code.to_string(),
     };
     format!("{code}: {message}")
@@ -2021,6 +2025,63 @@ pub fn reply_rejected(error: crate::cli::reply::ReplyError, task: TaskAddress) -
     CliOutput {
         stdout: String::new(),
         stderr: format!("tsk reply: {detail}\n"),
+        code,
+    }
+}
+
+pub fn check_help() -> CliOutput {
+    help(HelpDoc {
+        usage: lines(CHECK_USAGE),
+        purpose: "Set one check of a task's open review round. Setting the state it already has changes nothing, so a retry is safe."
+            .into(),
+        groups: vec![group(
+            "Arguments",
+            &[
+                ("<task>", "a task number or UUID"),
+                ("<n>", "the check's position in the round, from 1, as list prints them"),
+                ("<state>", "open, passed, or failed"),
+            ],
+        ),
+        group("Options", &[("--state-dir <dir>", "use another board store")]),
+        ],
+        examples: vec![
+            "tsk check T12 2 passed".into(),
+            "tsk check T12 1 failed".into(),
+        ],
+        refusals: vec!["unknown-task, soft-deleted-task, not-in-review, unknown-check".into()],
+        exit: exit_line(
+            "check set, or it already had that state",
+            Some("check refusal, nothing persisted"),
+            true,
+        ),
+    })
+}
+
+pub fn checked(result: crate::cli::check::CheckResult) -> CliOutput {
+    CliOutput {
+        stdout: format!(
+            "T{} check {} {}\n",
+            result.number,
+            result.position,
+            result.state.name()
+        ),
+        stderr: String::new(),
+        code: 0,
+    }
+}
+
+pub fn check_usage(reason: &str) -> CliOutput {
+    usage_error("check", reason, CHECK_USAGE)
+}
+
+pub fn check_rejected(error: crate::cli::check::CheckError, task: TaskAddress) -> CliOutput {
+    let (detail, code) = match error {
+        crate::cli::check::CheckError::Store(detail) => (detail, 3),
+        other => (task_refusal_message(other.code(), task), 1),
+    };
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!("tsk check: {detail}\n"),
         code,
     }
 }
