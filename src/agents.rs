@@ -190,6 +190,13 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # [merge]
 # method = "merge"
 
+# When the last task a ready task waits on is done, the ready task starts on
+# its own (an assigned one dispatches). `start = false` leaves it ready
+# instead, and the done says it can start.
+#   start  true (the default) or false
+# [after]
+# start = true
+
 # The group and sort a fresh board starts from (`g` and `s` change them for
 # the session only). `group` and `sort` set the desk; `project_group` and
 # `project_sort` set every project board. `messages` shows or hides the agent
@@ -846,6 +853,65 @@ impl MergeMethod {
                 "method {other:?} is not merge, squash, or rebase"
             ))),
             Some(None) => Err(invalid("method must be a string".into())),
+        }
+    }
+}
+
+/// Whether a done starts the ready tasks it releases: `[after] start` in `config.toml`.
+/// Without the setting, it does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AfterSettings {
+    pub start: bool,
+}
+
+impl Default for AfterSettings {
+    fn default() -> Self {
+        Self { start: true }
+    }
+}
+
+impl AfterSettings {
+    /// Read `[after]` from `<state_dir>/config.toml`. A missing file, table, or key is the
+    /// default; only the `[after]` table is validated, so a broken profile never blocks it.
+    pub fn load(state_dir: impl AsRef<Path>) -> Result<Self, AgentLoadError> {
+        let path = state_dir.as_ref().join(CONFIG_FILE);
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(source) => return Err(AgentLoadError::Io { path, source }),
+        };
+        Self::parse(&content)
+    }
+
+    /// What a done uses: a file it cannot read, or a broken `[after]`, starts nothing until
+    /// it is fixed. The board's status row names the error ([`Self::load`]).
+    pub fn for_release(state_dir: impl AsRef<Path>) -> Self {
+        Self::load(state_dir).unwrap_or(Self { start: false })
+    }
+
+    fn parse(content: &str) -> Result<Self, AgentLoadError> {
+        let document: DocumentMut =
+            content
+                .parse()
+                .map_err(|source| AgentLoadError::MalformedToml {
+                    source: Box::new(source),
+                })?;
+        let invalid = |message: String| AgentLoadError::InvalidDocument {
+            message: format!("[after] {message}"),
+        };
+        let Some(after) = document.get("after") else {
+            return Ok(Self::default());
+        };
+        let table = after
+            .as_table_like()
+            .ok_or_else(|| invalid("must be a table".into()))?;
+        if let Some(key) = table.iter().map(|(key, _)| key).find(|key| *key != "start") {
+            return Err(invalid(format!("unknown key {key:?}")));
+        }
+        match table.get("start").map(|item| item.as_bool()) {
+            None => Ok(Self::default()),
+            Some(Some(start)) => Ok(Self { start }),
+            Some(None) => Err(invalid("start must be true or false".into())),
         }
     }
 }
@@ -1554,6 +1620,61 @@ command = ["pi"]
     }
 
     #[test]
+    fn after_start_defaults_to_true_and_reads_each_value() {
+        let dir = TempDir::new("after-start");
+        assert_eq!(
+            AfterSettings::load(dir.path()).unwrap(),
+            AfterSettings::default()
+        );
+        assert!(AfterSettings::default().start);
+        dir.write("[agent.x]\ncommand = [\"x\"]\n");
+        assert!(AfterSettings::load(dir.path()).unwrap().start);
+        dir.write("[after]\n");
+        assert!(AfterSettings::load(dir.path()).unwrap().start);
+        dir.write("[after]\nstart = false\n");
+        assert!(!AfterSettings::load(dir.path()).unwrap().start);
+        assert!(!AfterSettings::for_release(dir.path()).start);
+        dir.write("[after]\nstart = true\n");
+        assert!(AfterSettings::for_release(dir.path()).start);
+        // A broken profile never blocks the setting.
+        dir.write("[after]\nstart = false\n[agent.x]\nprompt = 1\n");
+        assert!(!AfterSettings::load(dir.path()).unwrap().start);
+    }
+
+    #[test]
+    fn a_broken_after_table_is_a_clear_config_error_and_starts_nothing() {
+        let dir = TempDir::new("after-start-bad");
+        for (content, needle) in [
+            ("[after]\nstart = \"no\"\n", "start must be true or false"),
+            ("[after]\nstrat = false\n", "unknown key \"strat\""),
+            ("after = false\n", "[after] must be a table"),
+        ] {
+            dir.write(content);
+            let error = AfterSettings::load(dir.path()).expect_err(content);
+            assert!(
+                error.to_string().starts_with("config.toml: [after]"),
+                "{error}"
+            );
+            assert!(error.to_string().contains(needle), "{error}");
+            assert!(!AfterSettings::for_release(dir.path()).start, "{content}");
+        }
+        dir.write("[after\n");
+        assert!(!AfterSettings::for_release(dir.path()).start);
+    }
+
+    #[test]
+    fn starter_after_example_holds_the_default_once_uncommented() {
+        let uncommented = STARTER_CONFIG
+            .replace("# [after]\n", "[after]\n")
+            .replace("# start = ", "start = ");
+        assert!(uncommented.contains("[after]\nstart = "));
+        assert_eq!(
+            AfterSettings::parse(&uncommented).expect("example parses"),
+            AfterSettings::default()
+        );
+    }
+
+    #[test]
     fn starter_board_example_parses_once_uncommented() {
         assert_eq!(
             BoardDefaults::parse(STARTER_CONFIG).expect("starter parses"),
@@ -2227,6 +2348,7 @@ then set review again.
             "[agent.<name>.env]",
             "review_on ",
             "method ",
+            "start ",
             "group ",
             "sort ",
             "project_group ",

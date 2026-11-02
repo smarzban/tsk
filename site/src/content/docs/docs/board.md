@@ -226,7 +226,7 @@ Set it with:
 
 Palette **chain marked tasks in order** makes each marked task run after the one marked before it, in one undo step.
 
-When the last prerequisite is done, each waiting **ready** task starts in the same save, and an assigned one [dispatches](/docs/dispatch/#dispatch). Review does not count as done. The status row says so, for example `T205 started · T202 done`. Waiting tasks in open, blocked, or review stay put.
+When the last prerequisite is done, each waiting **ready** task starts in the same save, and an assigned one [dispatches](/docs/dispatch/#dispatch). Review does not count as done. The status row says so, for example `T205 started · T202 done`. Waiting tasks in open, blocked, or review stay put. To only say what can start, set [`[after] start = false`](/docs/storage/#after): the status row then reads `T202 done · T205 can start`.
 
 - A launch that fails puts the task back to ready and never blocks the done.
 - `ctrl+u` on the done reverts the statuses only. A launched agent keeps running.

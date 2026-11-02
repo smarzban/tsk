@@ -306,7 +306,7 @@ A launch that fails leaves the task unstarted. `ready` on a blocked task whose d
 
 ### Done
 
-`done` closes the task. Each `ready` task that [runs after](/docs/board/#after) it, and now has every prerequisite done, starts the way `started` starts it. A second line says what happened, such as `T13 dispatched to @claude · T12 done`. The done stands even when such a start fails.
+`done` closes the task. Each `ready` task that [runs after](/docs/board/#after) it, and now has every prerequisite done, starts the way `started` starts it. A second line says what happened, such as `T13 dispatched to @claude · T12 done`. The done stands even when such a start fails. With [`[after] start = false`](/docs/storage/#after) nothing starts, and the second line says `T12 done · T13 can start`.
 
 | Flag | Meaning |
 | --- | --- |

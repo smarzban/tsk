@@ -281,8 +281,10 @@ migration or design work they imply. What the behaviour *is* lives in the docs
 
 - Human status is source of truth. Never auto-complete tasks from agent status. The one
   automatic status change is a `ready` task whose last `after` prerequisite became done: it
-  starts through `dispatch::start_route`, like any start. Undoing a reopen back to done
-  releases nothing: the release belonged to the original done.
+  starts through `dispatch::start_route`, like any start. `[after] start = false` (or a
+  broken `[after]`) turns it off: `plan_released_with_host` then reports each release as
+  `CanStart` and changes nothing. Undoing a reopen back to done releases nothing: the
+  release belonged to the original done.
 - A done and the starts it releases land together. Every done path (board, cleanup card,
   missing-worktree converge, CLI) saves through `save_releasing_with_host` or its CLI twin,
   which decides the release under the save's lock on the merged state, never a stale copy.

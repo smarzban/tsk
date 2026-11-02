@@ -137,6 +137,10 @@ fn load_board_inner(
         }
         Err(error) => Some(error.to_string()),
     };
+    // A bad `[after]` starts nothing on a done until it is fixed; say why.
+    let after_error = crate::agents::AfterSettings::load(&state_dir)
+        .err()
+        .map(|error| error.to_string());
     let backup_error = if full_board_open {
         crate::backup::after_open(&state_dir);
         // Shown on every full open until the target succeeds; nothing is marked shown, so a
@@ -149,6 +153,7 @@ fn load_board_inner(
     // else wants the status row.
     let message = profiles_error
         .or(board_error)
+        .or(after_error)
         .or(owner.error)
         .or(backup_error)
         .or_else(|| {

@@ -240,6 +240,33 @@ fn starting_a_waiting_task_refuses_unless_forced() {
     assert_eq!(temp.status(second), HumanStatus::Started);
 }
 
+/// `[after] start = false`: the done leaves its ready dependent ready and says it can start.
+#[test]
+fn a_done_with_after_start_off_only_says_what_can_start() {
+    let temp = Temp::new("release-off");
+    fs::write(temp.state().join("config.toml"), "[after]\nstart = false\n").expect("config");
+    let first = temp.add("first", None);
+    let second = temp.add("second", None);
+    let link = temp.run(&["edit", &format!("T{second}"), "--after", &first.to_string()]);
+    assert_eq!(link.code, 0, "{}", link.stderr);
+    assert_eq!(
+        temp.run(&["status", &format!("T{second}"), "ready"]).code,
+        0
+    );
+
+    let output = temp.run(&["status", &format!("T{first}"), "done"]);
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(
+        output.stdout,
+        format!("status T{first} done first\nT{first} done · T{second} can start\n"),
+    );
+    assert_eq!(temp.status(first), HumanStatus::Done);
+    assert_eq!(temp.status(second), HumanStatus::Ready);
+    let output = temp.run(&["status", &format!("T{second}"), "started"]);
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    assert_eq!(temp.status(second), HumanStatus::Started);
+}
+
 /// A chain across a project and the desk: the done of the last prerequisite starts the waiting
 /// ready task and records why; a waiting task in open does not move.
 #[test]

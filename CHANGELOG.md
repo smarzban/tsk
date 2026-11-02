@@ -12,6 +12,10 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Added
+
+- `[after] start = false` in `config.toml` stops a done from starting the ready tasks waiting on it; the done says which can start ([after](https://gettsk.sh/docs/storage/#after)).
+
 ### Changed
 
 - `tsk setup` names both installed skills, `tsk-cli` and `tsk-coordinator`, beside each agent's skills directory instead of printing only the `tsk-cli` file.

@@ -3016,6 +3016,9 @@ pub enum ReleasedStart {
     Unrecorded(Box<DispatchResult>, String),
     /// The start itself failed: the task stays ready. The done stands.
     Failed(String),
+    /// Not started: `[after] start = false` (or a broken `[after]`). Still ready, and it can
+    /// start now.
+    CanStart,
 }
 
 /// One task a completion released, and what its start did.
@@ -3038,23 +3041,34 @@ pub const NO_LAUNCH_DISPATCH_RUNNING: &str = "a dispatch is running";
 /// save and join the done's undo entry; an assigned task never dispatched is also held for a
 /// launch once that save lands ([`launch_released_with_host`]). Started on disk, it is no other
 /// start's to dispatch. `launch_blocked` (a running marked-set dispatch) leaves such a task
-/// ready instead, with the reason.
+/// ready instead, with the reason. With `after.start` off nothing starts or launches: each
+/// released task stays ready and is reported as [`ReleasedStart::CanStart`].
 pub fn plan_released_with_host(
     state: &mut DomainState,
     actor: &str,
     in_herdr: bool,
     launch_blocked: Option<&'static str>,
+    after: crate::agents::AfterSettings,
     host: &mut impl DispatchHost,
 ) -> Vec<Released> {
     let done = state.take_completed();
     let mut released = Vec::new();
-    for (id, after) in state.released_by(&done) {
+    for (id, by) in state.released_by(&done) {
         let Some(task) = state.get(id) else {
             continue;
         };
         let Some(number) = task.number else {
             continue;
         };
+        if !after.start {
+            released.push(Released {
+                number,
+                after: by,
+                start: ReleasedStart::CanStart,
+            });
+            continue;
+        }
+        let after = by;
         let (start, launch) = match start_route(task, actor, in_herdr, host) {
             StartRoute::Dispatch => match launch_blocked {
                 Some(reason) => {
@@ -3155,8 +3169,9 @@ pub fn save_releasing_with_host(
     host: &mut impl DispatchHost,
 ) -> Result<Vec<Released>, crate::store::StoreError> {
     let completed = local.completed_ids();
+    let after = crate::agents::AfterSettings::for_release(store.path());
     let mut released = match store.reload_merge_save_then(local, |merged| {
-        plan_released_with_host(merged, actor, in_herdr, launch_blocked, host)
+        plan_released_with_host(merged, actor, in_herdr, launch_blocked, after, host)
     }) {
         Ok(released) => released,
         Err(error) => {
@@ -3220,16 +3235,22 @@ pub fn released_warnings(released: &[Released]) -> Vec<String> {
 }
 
 /// One line for what a completion released: `T203 started · T202 done`, with any launch or
-/// refusal named per task.
+/// refusal named per task. A task left ready by `[after] start = false` follows the done:
+/// `T202 done · T205 can start`.
 pub fn released_message(released: &[Released]) -> Option<String> {
     if released.is_empty() {
         return None;
     }
+    let can_start: Vec<String> = released
+        .iter()
+        .filter(|released| released.start == ReleasedStart::CanStart)
+        .map(|released| format!("T{} can start", released.number))
+        .collect();
     let mut parts: Vec<String> = released
         .iter()
-        .map(|released| {
+        .filter_map(|released| {
             let number = released.number;
-            match &released.start {
+            Some(match &released.start {
                 ReleasedStart::Started => format!("T{number} started"),
                 ReleasedStart::NoLaunch(reason) => {
                     format!("T{number} started · no launch: {reason}")
@@ -3258,7 +3279,8 @@ pub fn released_message(released: &[Released]) -> Option<String> {
                     result.assignee, result.record.worktree
                 ),
                 ReleasedStart::Failed(reason) => format!("T{number} stays ready: {reason}"),
-            }
+                ReleasedStart::CanStart => return None,
+            })
         })
         .collect();
     let mut done: Vec<u64> = released.iter().map(|released| released.after).collect();
@@ -3270,6 +3292,7 @@ pub fn released_message(released: &[Released]) -> Option<String> {
         .collect::<Vec<_>>()
         .join(", ");
     parts.push(format!("{done} done"));
+    parts.extend(can_start);
     Some(parts.join(" · "))
 }
 
@@ -5060,6 +5083,88 @@ mod tests {
         let disk = store.load().expect("load");
         assert_eq!(disk.get(ids[2]).expect("task").status, HumanStatus::Started);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// `[after] start` gates every release: off, or a broken `[after]`, leaves an assigned and
+    /// an unassigned dependent ready with nothing launched, and the done says they can start.
+    /// On (the default) starts the plain one and dispatches the assigned one.
+    #[test]
+    fn after_start_off_or_broken_leaves_released_tasks_ready() {
+        for (name, after, starts) in [
+            ("default", "", true),
+            ("on", "[after]\nstart = true\n", true),
+            ("off", "[after]\nstart = false\n", false),
+            ("bad value", "[after]\nstart = \"no\"\n", false),
+            ("unknown key", "[after]\nstrat = true\n", false),
+        ] {
+            let (dir, _) = profiles();
+            let config = dir.join("config.toml");
+            let profile = fs::read_to_string(&config).expect("config");
+            fs::write(&config, format!("{after}{profile}")).expect("after");
+            let store = crate::store::TaskStore::new(&dir);
+            let mut local = store.load().expect("load");
+            let scope = TaskScope::Project {
+                path: "/repos/app".into(),
+            };
+            let first = local
+                .create("first", None, scope.clone(), ProvenanceOrigin::Manual, None)
+                .expect("create");
+            let plain = local
+                .create("plain", None, scope.clone(), ProvenanceOrigin::Manual, None)
+                .expect("create");
+            let assigned = local
+                .create_assigned(
+                    "assigned",
+                    None,
+                    scope,
+                    ProvenanceOrigin::Manual,
+                    None,
+                    Some("implementer".into()),
+                )
+                .expect("create");
+            store.reload_merge_save(&mut local).expect("save");
+            let number = |state: &DomainState, id: Uuid| {
+                state.get(id).and_then(|task| task.number).expect("number")
+            };
+            let t1 = number(&local, first);
+            for id in [plain, assigned] {
+                local.set_after(id, &[t1]).expect("after");
+            }
+            store.reload_merge_save(&mut local).expect("save");
+            for id in [plain, assigned] {
+                local.set_status(id, HumanStatus::Ready).expect("ready");
+            }
+            store.reload_merge_save(&mut local).expect("save");
+
+            local.set_status(first, HumanStatus::Done).expect("done");
+            let mut host = FakeHost {
+                git: true,
+                ..FakeHost::default()
+            };
+            let released =
+                save_releasing_with_host(&store, &mut local, "owner", true, None, &mut host)
+                    .expect("save");
+            let disk = store.load().expect("load");
+            assert_eq!(disk.get(first).expect("T1").status, HumanStatus::Done);
+            let (t2, t3) = (number(&disk, plain), number(&disk, assigned));
+            if starts {
+                assert_eq!(host.runs.len(), 1, "{name}: the assigned agent launched");
+                assert_eq!(disk.get(plain).expect("T2").status, HumanStatus::Started);
+                assert_eq!(disk.get(assigned).expect("T3").status, HumanStatus::Started);
+            } else {
+                assert!(host.runs.is_empty(), "{name}: nothing launched");
+                assert_eq!(host.creates, 0, "{name}: no worktree");
+                assert_eq!(disk.get(plain).expect("T2").status, HumanStatus::Ready);
+                assert_eq!(disk.get(assigned).expect("T3").status, HumanStatus::Ready);
+                assert!(disk.get(assigned).expect("T3").dispatch.is_none());
+                assert_eq!(
+                    released_message(&released).as_deref(),
+                    Some(format!("T{t1} done · T{t2} can start · T{t3} can start").as_str()),
+                    "{name}"
+                );
+            }
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     /// A restore lands while the agent a board done released launches. The record save after it

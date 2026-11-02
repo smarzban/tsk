@@ -143,6 +143,17 @@ How tsk launches the command:
 method = "squash"   # "merge" (the default), "squash", or "rebase"
 ```
 
+### After
+
+When the last task a ready task waits on is done, the ready task [starts on its own](/docs/board/#after). The `[after]` table can turn that off:
+
+```toml
+[after]
+start = false   # true (the default) or false
+```
+
+With `start = false`, a done never changes another task's status, on the board or from the CLI. The done says what is free to start instead, such as `T202 done · T205 can start`. Start it yourself when you want it.
+
 ### Board defaults
 
 The `[board]` table sets the [group and sort](/docs/board/#group-and-sort) a fresh board starts with, whether it shows the [live lines](/docs/board/#rows) under rows, and the name the board calls you:
@@ -175,9 +186,10 @@ An unknown key or a bad value in one table never blocks the others. A file that 
 | Mistake | What happens |
 | --- | --- |
 | Unknown top-level key or table | Ignored, so a file written for a newer tsk still loads |
-| Unknown key inside `[agent.<name>]`, `[project."<path>"]`, `[merge]`, `[board]`, or `[[backup]]` | That table is an error |
+| Unknown key inside `[agent.<name>]`, `[project."<path>"]`, `[merge]`, `[after]`, `[board]`, or `[[backup]]` | That table is an error |
 | Broken profile or `[project."<path>"]` | The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` with an assignee exit 2 without saving |
 | Broken `[merge]` | Only merging refuses: the cleanup card says why, and the CLI refuses with `merge-config` |
+| Broken `[after]`, or a file that is not valid TOML | A done starts nothing until it is fixed. The board shows the error on its status row |
 | Broken `[board]` | The board opens at the default layout and shows the error on its status row. A bad `me` leaves the layout alone and names you `you` |
 | Broken `[[backup]]` | No backup runs. Every full board open shows `backup off:` and the error on its status row. `tsk backup`, `tsk backup list`, and `tsk restore` exit 1 with the error |
 
