@@ -102,6 +102,14 @@ if [ "${1:-}" = setup ] && [ "${2:-}" = rex ] && [ "${3:-}" = --check ]; then
     if [ -n "${TSK_REX_BOUND:-}" ]; then echo bound; else echo unbound; fi
     exit 0
 fi
+if [ "${1:-}" = setup ] && [ "${2:-}" = rex ]; then
+    if [ -n "${TSK_SETUP_LOG:-}" ]; then
+        printf '%s\\n' "$*" >> "$TSK_SETUP_LOG"
+    fi
+    if [ "${TSK_SETUP_FAIL:-}" = rex ]; then echo "tsk setup: rex keymap failed" >&2; exit 7; fi
+    printf '    Shortcuts:      %s\\n' "${TSK_REX_SHORTCUTS-alt+t board, alt+a quick capture}"
+    exit 0
+fi
 if [ "${1:-}" = setup ] && [ "${2:-}" = agents ] && [ "${3:-}" = --yes ]; then
     if [ -n "${TSK_SETUP_LOG:-}" ]; then
         printf '%s\\n' "$*" >> "$TSK_SETUP_LOG"
@@ -622,6 +630,39 @@ echo installed-fixture
         self.assertIn("Rex detected. Add the tsk board (alt+t) and quick capture (alt+a) keys to Rex now? [y/N]", result.stdout)
         self.assertIn("setup rex", self.setup_calls())
         self.assertIn("or press alt+t in Rex.", result.stdout)
+
+    @unittest.skipUnless(os.name == "posix", "PTY prompt requires POSIX")
+    def test_first_install_names_the_board_key_setup_actually_bound(self):
+        self.archive(record_setup=True)
+        self.command("rex", "#!/bin/sh\nexit 0\n")
+        for shortcuts, closing in [
+            ("ctrl+b>t board, alt+a quick capture", "or press ctrl+b>t in Rex."),
+            ("alt+a quick capture", "Done. Run tsk in a project directory to open the board.\r\n"),
+        ]:
+            with self.subTest(shortcuts=shortcuts):
+                result = self.run_install_with_answer(
+                    b"y\n",
+                    TSK_SETUP_LOG=str(self.setup_log),
+                    TSK_REX_SHORTCUTS=shortcuts,
+                    PATH=f"{self.bin}:/usr/bin:/bin",
+                )
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn(f"Shortcuts:      {shortcuts}", result.stdout)
+                self.assertIn(closing, result.stdout)
+                if "board" not in shortcuts:
+                    self.assertNotIn("in Rex.", result.stdout)
+
+    def test_an_old_binary_leaves_rex_alone(self):
+        # A release from before `tsk setup rex`: its probe prints nothing.
+        self.archive(legacy=True)
+        self.command("rex", "#!/bin/sh\nexit 0\n")
+        for env in ({}, {"TSK_REX_BOUND": "1"}):
+            with self.subTest(env=env):
+                result = self.run_update(TSK_SETUP_LOG=str(self.setup_log), **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("setup rex", self.setup_calls())
+                self.assertNotIn("Rex", result.stdout + result.stderr)
+                self.assertNotIn("[y/N]", result.stdout + result.stderr)
 
     def test_update_refreshes_outdated_skills_unattended(self):
         self.archive(record_setup=True)

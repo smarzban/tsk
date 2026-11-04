@@ -44,6 +44,8 @@ struct Fake {
     late: Vec<(&'static str, &'static str, &'static str)>,
     served: Option<PathBuf>,
     error_marker: Option<&'static str>,
+    /// Like `error_marker`, but only for the merged config (`init.lua` plus `tsk.lua`).
+    merged_error_marker: Option<&'static str>,
     calls: RefCell<Vec<String>>,
 }
 
@@ -55,6 +57,7 @@ impl Fake {
             late: Vec::new(),
             served: None,
             error_marker: None,
+            merged_error_marker: None,
             calls: RefCell::new(Vec::new()),
         }
     }
@@ -126,7 +129,9 @@ impl Fake {
                     if path.ends_with("init.lua") {
                         text.push_str(&fs::read_to_string(dir.join(MANAGED)).unwrap_or_default());
                     }
-                    let failed = self.error_marker.is_some_and(|m| text.contains(m));
+                    let merged = path.ends_with("init.lua");
+                    let failed = self.error_marker.is_some_and(|m| text.contains(m))
+                        || (merged && self.merged_error_marker.is_some_and(|m| text.contains(m)));
                     let diagnostics = if failed {
                         serde_json::json!([{ "severity": "error", "source": "init.lua:1", "message": "boom" }])
                     } else {
@@ -502,4 +507,119 @@ fn a_key_a_later_binding_still_takes_is_reported_not_claimed() {
         result.shadowed,
         vec![("alt+t".to_string(), "board", "mine.lua:1".to_string())]
     );
+}
+
+fn leftovers(dir: &Path) -> Vec<String> {
+    fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".tsk-rex"))
+        .collect()
+}
+
+#[test]
+fn a_rerun_keeps_a_key_the_user_handed_over() {
+    let temp = Temp::new();
+    temp.write_init("rex.bind(\"alt+t\", \"pane.send_key\")\n");
+    let mut fake = Fake::new();
+    fake.user = vec![("alt+t", "pane.send_key", "init.lua:1")];
+    run(&temp, &fake, Options::default(), true, "y\n")
+        .0
+        .unwrap();
+    let managed = fs::read_to_string(temp.managed()).unwrap();
+    assert!(managed.contains("rex.unbind(\"alt+t\")\n"));
+    // `tsk update`: no terminal, no flags. The keymap no longer shows the user's binding.
+    let (again, prompt) = run(&temp, &fake, Options::default(), false, "");
+    let again = again.unwrap();
+    assert!(prompt.is_empty());
+    assert_eq!(fs::read_to_string(temp.managed()).unwrap(), managed);
+    assert!(again.shortcuts.contains(&("alt+t".to_string(), "board")));
+    // Moving the board elsewhere gives the user's key back.
+    run(&temp, &fake, keys("alt+y", "alt+a"), false, "")
+        .0
+        .unwrap();
+    assert!(!fs::read_to_string(temp.managed())
+        .unwrap()
+        .contains("rex.unbind"));
+}
+
+#[test]
+fn a_rejected_refresh_restores_the_existing_managed_file() {
+    let temp = Temp::new();
+    temp.write_init("-- mine\n");
+    let mut fake = Fake::new();
+    run(&temp, &fake, Options::default(), false, "").0.unwrap();
+    let init = fs::read_to_string(temp.config()).unwrap();
+    let managed = fs::read_to_string(temp.managed()).unwrap();
+    let entries = fs::read_dir(temp.0.join("rex")).unwrap().count();
+    fake.calls.borrow_mut().clear();
+    // The update case: init.lua is unchanged, only the module changes, and Rex rejects
+    // the merged result.
+    fake.merged_error_marker = Some("rex.bind(\"ctrl+b>t\"");
+    let error = run(&temp, &fake, keys("ctrl+b>t", "alt+a"), false, "")
+        .0
+        .err()
+        .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("previous Rex config was restored"),
+        "{error}"
+    );
+    assert_eq!(fs::read_to_string(temp.managed()).unwrap(), managed);
+    assert_eq!(fs::read_to_string(temp.config()).unwrap(), init);
+    assert!(leftovers(&temp.0.join("rex")).is_empty());
+    assert_eq!(fs::read_dir(temp.0.join("rex")).unwrap().count(), entries);
+    assert!(!fake.calls.borrow().contains(&"config reload".to_string()));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_init_lua_is_edited_through_the_link() {
+    let temp = Temp::new();
+    let dotfiles = temp.0.join("dotfiles");
+    fs::create_dir_all(&dotfiles).unwrap();
+    fs::create_dir_all(temp.0.join("rex")).unwrap();
+    let target = dotfiles.join("init.lua");
+    fs::write(&target, "-- dotfiles\n").unwrap();
+    std::os::unix::fs::symlink(&target, temp.config()).unwrap();
+
+    let fake = Fake::new();
+    let result = run(&temp, &fake, Options::default(), false, "").0.unwrap();
+    assert!(fs::symlink_metadata(temp.config())
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(requires_tsk(&fs::read_to_string(&target).unwrap()));
+    let backup = result.backup.expect("backup");
+    assert_eq!(backup.parent(), Some(dotfiles.as_path()));
+    assert_eq!(fs::read_to_string(&backup).unwrap(), "-- dotfiles\n");
+    assert!(temp.managed().exists());
+    assert!(!dotfiles.join(MANAGED).exists());
+    let (dir, init) = resolve_config(&temp.config()).unwrap();
+    assert_eq!(dir, temp.0.join("rex"));
+    assert_eq!(init, target);
+
+    let merged = fs::read_to_string(&target).unwrap();
+    let again = run(&temp, &fake, Options::default(), false, "").0.unwrap();
+    assert!(again.backup.is_none());
+    assert_eq!(fs::read_to_string(&target).unwrap(), merged);
+
+    // A rejected merge restores the link's target and leaves the link alone.
+    fs::write(&target, "-- dotfiles v2\n").unwrap();
+    let mut rejecting = Fake::new();
+    rejecting.error_marker = Some("-- dotfiles v2\n\nrequire(\"tsk\")");
+    let managed = fs::read_to_string(temp.managed()).unwrap();
+    let error = run(&temp, &rejecting, Options::default(), false, "")
+        .0
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("restored"), "{error}");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "-- dotfiles v2\n");
+    assert_eq!(fs::read_to_string(temp.managed()).unwrap(), managed);
+    assert!(fs::symlink_metadata(temp.config())
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(leftovers(&dotfiles).is_empty() && leftovers(&temp.0.join("rex")).is_empty());
 }

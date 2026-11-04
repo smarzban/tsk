@@ -157,10 +157,13 @@ esac
 herdr_wrap=board
 # rex_wrap mirrors herdr_wrap for Rex (macOS app or Linux server, `rex` on PATH):
 #   none       — Rex absent
-#   keys       — first setup ran successfully (alt+t is available)
-#   refreshed  — update path refreshed a bound setup (the user's own keys stay)
+#   keys       — first setup bound the board to $rex_board_key
+#   refreshed  — setup ran but bound no board key, or the update path refreshed a bound
+#                setup (the user's own keys stay): no key in the closing line
 #   rex_setup  — declined, CI/no-TTY skip, or setup failed (nudge tsk setup rex)
 rex_wrap=none
+rex_state=
+rex_board_key=
 # skills_wrap: empty | nudge — close with an `Agent skills:  tsk setup` row when agents were
 # detected but the batch ask was declined, skipped (CI/no-TTY), or agents --yes failed.
 skills_wrap=
@@ -247,7 +250,7 @@ maybe_setup_herdr() {
 # Update path: a Rex config that already loads tsk's managed file is refreshed without
 # asking, so the file follows the new binary and keeps the user's keys.
 refresh_rex() {
-    [ "$("$tsk_bin" setup rex --check 2>/dev/null)" = bound ] || return 1
+    [ "$rex_state" = bound ] || return 1
     if setup_error=$("$tsk_bin" setup rex </dev/null 2>&1 >/dev/null); then
         printf '\nRex keys refreshed.\n'
         rex_wrap=refreshed
@@ -263,6 +266,13 @@ maybe_setup_rex() {
     command -v rex >/dev/null 2>&1 || return 0
     [ "$post_install_setup" = 1 ] || { rex_wrap=rex_setup; return 0; }
     [ -x "$tsk_bin" ] || return 0
+    # A binary from before `tsk setup rex` prints nothing here: leave Rex out entirely
+    # rather than run or recommend a verb it does not have.
+    rex_state=$("$tsk_bin" setup rex --check 2>/dev/null) || rex_state=
+    case $rex_state in
+        bound|unbound) ;;
+        *) return 0 ;;
+    esac
     if [ -n "$update_mode" ] && refresh_rex; then
         return 0
     fi
@@ -290,15 +300,23 @@ maybe_setup_rex() {
             printf '\nRunning tsk setup rex...\n\n'
             setup_status=0
             if [ -n "$setup_stdin" ]; then
-                "$tsk_bin" setup rex <"$setup_stdin" || setup_status=$?
+                setup_out=$("$tsk_bin" setup rex <"$setup_stdin") || setup_status=$?
             else
-                "$tsk_bin" setup rex || setup_status=$?
+                setup_out=$("$tsk_bin" setup rex) || setup_status=$?
             fi
+            [ -z "$setup_out" ] || printf '%s\n' "$setup_out"
             if [ "$setup_status" -ne 0 ]; then
                 printf '\ntsk setup rex failed; install succeeded.\n' >&2
                 rex_wrap=rex_setup
             else
-                rex_wrap=keys
+                # The closing line names the board key setup actually bound: a declined
+                # conflict or the user's own binding leaves alt+t free.
+                rex_board_key=$(printf '%s\n' "$setup_out" | sed -n 's/^ *Shortcuts: *//p' | tr ',' '\n' | sed -n 's/^ *\(.*\) board$/\1/p' | head -n 1)
+                if [ -n "$rex_board_key" ]; then
+                    rex_wrap=keys
+                else
+                    rex_wrap=refreshed
+                fi
             fi
             ;;
         *)
@@ -438,7 +456,7 @@ printf '\nDone. Run tsk in a project directory to open the board'
 if [ "$herdr_wrap" = board_prefix ]; then
     printf ', or press prefix+t in Herdr.\n'
 elif [ "$rex_wrap" = keys ]; then
-    printf ', or press alt+t in Rex.\n'
+    printf ', or press %s in Rex.\n' "$rex_board_key"
 else
     printf '.\n'
 fi

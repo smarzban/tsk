@@ -29,6 +29,20 @@ local function url_path(s)
   return (s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end))
 end
 
+-- The block the action runs for: the caller's, else the focused block of the session's
+-- active window (`rex do` from a script has no block), else nil.
+local function target_block(ctx)
+  if ctx.block_id ~= nil then return ctx.block_id end
+  local view = rex.session.view{}
+  if not view or not view.windows then return nil end
+  for _, w in ipairs(view.windows) do
+    if w.window_id == view.active_window_id and w.focused_block_id then
+      return w.focused_block_id
+    end
+  end
+  return nil
+end
+
 -- Working directory of the focused pane: its foreground process, then the
 -- directory the shell reported, then $HOME.
 local function block_cwd(block_id)
@@ -82,12 +96,13 @@ rex.action{
       must(rex.session.focus_block{ block_id = existing.block_id })
       return { block_id = existing.block_id, opened = false }
     end
+    local block_id = target_block(ctx)
     local r = must(rex.session.new_split{
-      anchor_id = ctx.block_id,
+      anchor_id = block_id,
       direction = "horizontal",
       side = "after",
       focus = true,
-      layout = tsk_block(BOARD_LABEL, block_cwd(ctx.block_id), { TSK_BIN }),
+      layout = tsk_block(BOARD_LABEL, block_cwd(block_id), { TSK_BIN }),
     })
     return { block_id = r.block_ids and r.block_ids[1], opened = true }
   end,
@@ -105,13 +120,14 @@ rex.action{
       must(rex.session.focus_block{ block_id = existing.block_id })
       return { block_id = existing.block_id, opened = false }
     end
-    local cols, rows = window_cells(ctx.block_id)
+    local block_id = target_block(ctx)
+    local cols, rows = window_cells(block_id)
     local w = cols and math.min(0.9, 82 / cols) or 0.6
     local h = rows and math.min(0.9, 19 / rows) or 0.4
     local r = must(rex.session.new_layer{
       bounds = { (1 - w) / 2, (1 - h) / 2, w, h },
       focus = true,
-      layout = tsk_block(CAPTURE_LABEL, block_cwd(ctx.block_id), { TSK_BIN, "capture" }),
+      layout = tsk_block(CAPTURE_LABEL, block_cwd(block_id), { TSK_BIN, "capture" }),
     })
     return { block_id = r.block_ids and r.block_ids[1], opened = true }
   end,

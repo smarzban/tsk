@@ -712,6 +712,7 @@ tsk setup --detected-ids | --skill-states
 - `--board-key <key>` and `--capture-key <key>` pick other keys, in Rex notation: `--board-key ctrl+b>t` is `ctrl+b`, then `t`. `none` leaves the action without a key.
 - A rerun without these flags keeps the keys the last setup chose.
 - A key that clashes with yours asks first. Without a terminal to ask in, setup stops before writing anything.
+- Setup reads your keys from the running Rex. After editing `init.lua` by hand, run `rex config reload` before setup.
 
 For the skill:
 

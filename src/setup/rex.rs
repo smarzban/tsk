@@ -167,6 +167,16 @@ fn recorded_keys(managed: &str) -> (Option<String>, Option<String>) {
     (find(BOARD_KEY_HEADER), find(CAPTURE_KEY_HEADER))
 }
 
+/// The keys a managed file takes away from the user's config, from its `rex.unbind` lines.
+fn recorded_unbinds(managed: &str) -> Vec<String> {
+    managed
+        .lines()
+        .filter_map(|line| line.strip_prefix("rex.unbind(\"")?.strip_suffix("\")"))
+        .filter(|key| !key.is_empty() && !key.contains(['\\', '"']))
+        .map(|key| key.to_ascii_lowercase())
+        .collect()
+}
+
 fn is_managed(text: &str) -> bool {
     text.starts_with(MARKER)
 }
@@ -597,6 +607,23 @@ pub(crate) fn run_at(
     };
     let board = resolve(board)?;
     let capture = resolve(capture)?;
+    // A key the user agreed to hand over earlier is hidden from the keymap by the managed
+    // file's own unbind, so it is no conflict now: carry that unbind forward while tsk
+    // still binds a key it would swallow.
+    for previous in before_managed
+        .as_deref()
+        .map(recorded_unbinds)
+        .unwrap_or_default()
+    {
+        let chords: Vec<String> = previous.split('>').map(str::to_string).collect();
+        let still_needed = [&board, &capture]
+            .into_iter()
+            .flatten()
+            .any(|key| chords.len() <= key.len() && prefix_related(&chords, key));
+        if still_needed && !unbind.contains(&previous) {
+            unbind.push(previous);
+        }
+    }
 
     let managed = managed_file(binary, board.as_deref(), capture.as_deref(), &unbind);
     let init = with_require(before_init.as_deref());

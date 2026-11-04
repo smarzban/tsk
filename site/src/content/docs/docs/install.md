@@ -199,7 +199,7 @@ Done. Run tsk in a project directory to open the board.
     Agent skills:  tsk setup
 ```
 
-- After Herdr setup ran, the first line ends `, or press prefix+t in Herdr.` instead. After only Rex setup ran, it ends `, or press alt+t in Rex.`
+- After Herdr setup ran, the first line ends `, or press prefix+t in Herdr.` instead. After only Rex setup ran, it names the board key setup bound, such as `, or press alt+t in Rex.`
 - `Herdr plugin:` appears when Herdr is installed but its setup was declined, skipped, or failed.
 - `Rex keys:` appears the same way for Rex.
 - `Agent skills:` appears when agents were found but the skill prompt was declined or skipped.
@@ -233,7 +233,8 @@ Installing a new tsk does not refresh the registration by itself. `tsk update` r
 - **Backup:** before changing `init.lua`, setup saves a copy beside it, `init.lua.tsk-backup-<YYYYMMDD-HHMMSS>` in UTC.
 - **Checks:** a config Rex reports errors in is refused before any change. After the change, Rex checks the merged config. If it reports errors, setup puts both files back.
 - **Shortcut conflicts:** setup asks before taking a key that one of your bindings uses, or that starts or extends one of your key sequences. Declining leaves that action without a key. Without a terminal, a conflict stops setup before it writes anything.
-- **Your own keys:** an action you already bound in `init.lua` gets no default key. A rerun without key flags keeps the keys the last setup chose.
+- **Edited `init.lua` by hand?** Rex does not watch its config, and setup checks keys against the config Rex has loaded. Run `rex config reload` first, or setup cannot see your new bindings.
+- **Your own keys:** an action you already bound in `init.lua` gets no default key. A rerun without key flags keeps the keys the last setup chose, and keeps any key you agreed to hand over.
 - **Binary path:** `tsk.lua` launches the `tsk` you ran by its full path, so it works when Rex's shell has a different PATH.
 - **Selected text:** Rex quick capture opens with an empty title. Herdr's popup prefills the selected text; Rex has no way to pass it yet.
 - **Windows:** Rex does not run on Windows, so `tsk setup rex` refuses there.
