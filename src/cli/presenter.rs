@@ -1615,7 +1615,7 @@ pub fn dispatch_help() -> CliOutput {
 pub fn clean_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(CLEAN_USAGE),
-        purpose: "Remove a dispatched task's worktree, and inside Herdr its workspace, without changing its status. The branch is deleted only when it is merged into the recorded base; with gh, a pull request merged at the branch tip counts.".into(),
+        purpose: "Remove a dispatched task's worktree, and inside Herdr or Rex its workspace or session, without changing its status. The branch is deleted only when it is merged into the recorded base; with gh, a pull request merged at the branch tip counts.".into(),
         groups: vec![
             group("Arguments", &[("<task>", "a task number or UUID")]),
             group(
@@ -1761,12 +1761,13 @@ pub fn cleaned_merged(
             .map(|warning| format!("warning: {}\n", terminal_text(warning)))
             .unwrap_or_default();
         format!(
-            "{warning}cleaned T{}: worktree {} ({}), branch {} ({}), workspace {} ({})\n",
+            "{warning}cleaned T{}: worktree {} ({}), branch {} ({}), {} {} ({})\n",
             result.number,
             terminal_text(&result.worktree_path),
             worktree_detail,
             terminal_text(&result.branch_name),
             branch_detail,
+            crate::domain::AgentHost::noun_of(&result.workspace_id),
             terminal_text(&result.workspace_id),
             workspace_detail,
         )

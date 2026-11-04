@@ -20,6 +20,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 ### Added
 
 - `[dispatch] worktrees` in `config.toml` sets where dispatch puts new worktrees ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
+- Dispatch works in Rex: each task gets its own Rex session, and relaunch, reply delivery, cleanup, and `--merge` work as in Herdr ([dispatch](https://gettsk.sh/docs/dispatch/)).
 - `tsk setup rex` binds the board to `alt+t` and quick capture to `alt+a` in Rex; `--board-key` and `--capture-key` pick others. The installer and `tsk update` offer or refresh it.
 
 ### Changed
