@@ -29,7 +29,7 @@ tsk list
 | [`tsk trash`](#trash) | Restore a deleted task |
 | [`tsk backup`](#backup) | Back the store up to git repositories |
 | [`tsk restore`](#restore) | Put a backed-up version of the store back |
-| [`tsk setup`](#setup) | Register Herdr, or install the agent skill |
+| [`tsk setup`](#setup) | Register Herdr or Rex, or install the agent skill |
 | [`tsk update`](#update) | Install the latest stable release |
 | [`tsk guide`](#guide) | Print the agent workflow |
 
@@ -668,11 +668,12 @@ tsk restore 3f9a1c2e
 
 ## setup
 
-Registers tsk with Herdr, or installs the agent skills: `tsk-cli` and the [coordinator skill](/docs/coordinator/).
+Registers tsk with Herdr or Rex, or installs the agent skills: `tsk-cli` and the [coordinator skill](/docs/coordinator/).
 
 ```text
 tsk setup [--json]
 tsk setup herdr [--check]
+tsk setup rex [--check] [--board-key <key>] [--capture-key <key>]
 tsk setup agents [--yes [--force]] [--json]
 tsk setup <agent> [--force] [--json]
 tsk setup --skill-dir <path> [--force] [--json]
@@ -684,6 +685,8 @@ tsk setup --detected-ids | --skill-states
 | none | In a terminal, offers the skill to every detected agent. Otherwise prints the targets |
 | `herdr` | Registers the plugin and its shortcuts with Herdr 0.9 or later. [Herdr setup details](/docs/install/#herdr-setup-details) |
 | `herdr --check` | Prints `bound` when both plugin commands are in the Herdr config, otherwise `unbound`. Changes nothing |
+| `rex` | Adds the board and quick-capture actions and keys to the Rex config, then reloads it. [Rex setup details](/docs/install/#rex-setup-details) |
+| `rex --check` | Prints `bound` when the Rex config loads tsk's actions, otherwise `unbound`. Changes nothing |
 | `agents` | Installs or updates both skills for every detected agent. `--yes` skips the question |
 | `<agent>` | Installs both skills for one agent, below |
 | `--skill-dir <path>` | Installs the skills as `<path>/tsk-cli/SKILL.md` and `<path>/tsk-coordinator/SKILL.md` |
@@ -703,6 +706,13 @@ tsk setup --detected-ids | --skill-states
 - The config is `HERDR_CONFIG_PATH`, else `$XDG_CONFIG_HOME/herdr/config.toml`, else `~/.config/herdr/config.toml`. On Windows it is `%APPDATA%\herdr\config.toml`.
 - A plugin command you already bound to another key keeps that key.
 - A shortcut that clashes with yours asks first. Without a terminal to ask in, setup stops before writing anything.
+
+`tsk setup rex` adds `alt+t` (board) and `alt+a` (quick capture) to the Rex config:
+
+- `--board-key <key>` and `--capture-key <key>` pick other keys, in Rex notation: `--board-key ctrl+b>t` is `ctrl+b`, then `t`. `none` leaves the action without a key.
+- A rerun without these flags keeps the keys the last setup chose.
+- A key that clashes with yours asks first. Without a terminal to ask in, setup stops before writing anything.
+- Setup reads your keys from the running Rex. After editing `init.lua` by hand, run `rex config reload` before setup.
 
 For the skill:
 

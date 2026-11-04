@@ -15,6 +15,7 @@ use dir_unix::{Dir, TempFile};
 mod dir_windows;
 #[cfg(windows)]
 use dir_windows::{Dir, TempFile};
+pub mod rex;
 
 use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table};
 
@@ -402,7 +403,16 @@ fn backup_file_name(
     now: std::time::SystemTime,
     taken: &mut impl FnMut(&str) -> io::Result<bool>,
 ) -> io::Result<String> {
-    let base = format!("config.toml.tsk-backup-{}", utc_timestamp(now));
+    backup_name_for("config.toml", now, taken)
+}
+
+/// `<file>.tsk-backup-YYYYMMDD-HHMMSS`, with the same collision suffixes.
+fn backup_name_for(
+    file: &str,
+    now: std::time::SystemTime,
+    taken: &mut impl FnMut(&str) -> io::Result<bool>,
+) -> io::Result<String> {
+    let base = format!("{file}.tsk-backup-{}", utc_timestamp(now));
     let mut candidate = base.clone();
     let mut collisions = 0_u32;
     while taken(&candidate)? {
@@ -514,13 +524,13 @@ fn no_symlink(path: &Path) -> io::Result<()> {
 fn follow_links(path: &Path, config: &Path) -> io::Result<PathBuf> {
     let loops = || {
         error(format!(
-            "Herdr config symlink {} loops; fix the link",
+            "config symlink {} loops; fix the link",
             config.display()
         ))
     };
     let missing = |at: &Path| {
         error(format!(
-            "Herdr config symlink {} points at missing {}; create the target or remove the link",
+            "config symlink {} points at missing {}; create the target or remove the link",
             config.display(),
             at.display()
         ))
@@ -582,7 +592,7 @@ fn resolve_config(config: &Path) -> io::Result<(PathBuf, PathBuf)> {
     let file = follow_links(&home.join(filename), config)?;
     let (Some(dir), Some(name)) = (file.parent(), file.file_name()) else {
         return Err(error(format!(
-            "Herdr config symlink {} must point at a file",
+            "config symlink {} must point at a file",
             config.display()
         )));
     };

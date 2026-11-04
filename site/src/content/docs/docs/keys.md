@@ -199,7 +199,7 @@ Some terminals send a plain line feed for `shift+Enter`, such as Ghostty with `k
 | Open notes and details | `Tab` |
 | Cancel the line, or return from details | `Esc` |
 
-In the Herdr popup, `shift+Enter` saves and closes it. `Esc` or `ctrl+c` discards the popup, after first closing an open step editor or picker. [Capture](/docs/capture/).
+In the Herdr or Rex popup, `shift+Enter` saves and closes it. `Esc` or `ctrl+c` discards the popup, after first closing an open step editor or picker. [Capture](/docs/capture/).
 
 ## Pickers, search, palette, help
 

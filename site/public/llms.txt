@@ -8,7 +8,7 @@ The human works the board in a TUI; agents read and write the same tasks with th
 
 - macOS and Linux: `curl -fsSL https://gettsk.sh/install.sh | sh`, or `brew install smarzban/tap/tsk`.
 - Windows 10/11, ARM64 or x86-64: `irm https://www.gettsk.sh/install.ps1 | iex` in PowerShell.
-- `tsk setup herdr` adds the board to Herdr, `tsk setup` installs the agent skill, and `tsk update` upgrades. Details: https://gettsk.sh/docs/install.md
+- `tsk setup herdr` adds the board to Herdr, `tsk setup rex` binds it to `alt+t` (and quick capture to `alt+a`) in Rex, `tsk setup` installs the agent skill, and `tsk update` upgrades. Details: https://gettsk.sh/docs/install.md
 
 ## Concepts
 
