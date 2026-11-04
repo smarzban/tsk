@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use crate::domain::AgentHost;
+
 use serde_json::Value;
 
 use super::{
@@ -60,20 +62,27 @@ impl HostKind {
         self != Self::Standalone
     }
 
+    /// The host a dispatch from here records, `None` outside any host.
+    pub fn agent_host(self) -> Option<AgentHost> {
+        match self {
+            Self::Herdr => Some(AgentHost::Herdr),
+            Self::Rex => Some(AgentHost::Rex),
+            Self::Standalone => None,
+        }
+    }
+
     /// Whether the workspace `workspace_id` is still open on `worktree`, a checkout already
     /// deleted. No host: never open.
+    ///
+    /// Cleanup refuses a record another host owns before asking, so each arm sees only its own
+    /// host's records.
     pub(super) fn workspace_open_on(self, workspace_id: &str, worktree: &Path) -> bool {
         match self {
-            // A Rex session recorded on this board (T412 gives it its own field) is not
-            // Herdr's to answer for: it reads as open, never closed, so nothing is removed
-            // under an agent that may still run there.
-            Self::Herdr if super::rex::is_session_id(workspace_id) => true,
             Self::Herdr => herdr_workspace_open_on(workspace_id, worktree),
             // T413: until Rex cleanup lands, a recorded Rex session reads as open. With its
             // worktree already gone, cleanup then closes that session (the task's own, as
-            // Herdr closes the task's workspace). Any other record (a Herdr workspace) is
-            // treated as outside a host, as before.
-            Self::Rex => super::rex::is_session_id(workspace_id),
+            // Herdr closes the task's workspace).
+            Self::Rex => true,
             Self::Standalone => false,
         }
     }
@@ -87,12 +96,8 @@ impl HostKind {
         worktree: &Path,
     ) -> Result<(bool, bool), String> {
         match self {
-            Self::Herdr if super::rex::is_session_id(workspace_id) => Err(format!(
-                "{workspace_id} was dispatched in Rex; clean it up from Rex"
-            )),
             Self::Herdr => herdr_worktree_workspace(project, workspace_id, worktree),
-            Self::Rex if super::rex::is_session_id(workspace_id) => Err(REX_CLEANUP_PENDING.into()),
-            Self::Rex => Ok((false, true)),
+            Self::Rex => Err(REX_CLEANUP_PENDING.into()),
             Self::Standalone => Ok((false, true)),
         }
     }

@@ -35,7 +35,8 @@ fn record(number: u64) -> Dispatch {
         base_ref: Some("refs/remotes/origin/main".into()),
         base_commit: None,
         base_remote: Some("origin".into()),
-        herdr_workspace_id: "w1".into(),
+        host: tsk_tui::domain::AgentHost::Herdr,
+        session: "w1".into(),
         at: std::time::SystemTime::UNIX_EPOCH,
         cleaned: false,
     }

@@ -26,10 +26,11 @@ const REX_NOT_FOUND: i32 = 3;
 /// Prefix of the provisional workspace id a Rex worktree carries until its session exists.
 pub(super) const PENDING_PREFIX: &str = "rex-pending:";
 
-/// Whether a recorded workspace id names a Rex session rather than a Herdr workspace. T412
-/// gives the record its own host field; until then the id's shape tells them apart.
-pub fn is_session_id(workspace_id: &str) -> bool {
-    workspace_id.starts_with("session:") || workspace_id.starts_with(PENDING_PREFIX)
+/// Whether `id` has the shape of a Rex session id. The dispatch record's host decides which
+/// host owns a dispatch; this only keeps text that is not a session id (which Rex could
+/// resolve as a session label) out of a Rex target argument.
+fn is_session_id(id: &str) -> bool {
+    id.starts_with("session:") || id.starts_with(PENDING_PREFIX)
 }
 
 /// What Rex reports about the agent in a dispatched block.
@@ -193,10 +194,9 @@ pub fn agent_block(program: &Path, session: &str) -> Result<String, RootPaneErro
         )));
     }
     if !is_session_id(session) {
-        // A Herdr workspace id: Rex cannot answer for it, and a lookup by that text could
-        // match a Rex session's label.
+        // Not a session id: a lookup by that text could match a Rex session's label.
         return Err(RootPaneError::Failed(format!(
-            "{session} is not a Rex session; it was dispatched in another host"
+            "{session} is not a Rex session"
         )));
     }
     let blocks = session_blocks(program, session)

@@ -123,6 +123,24 @@ impl DispatchHost for FakeHost {
     }
 }
 
+/// Run `tsk` as its own process outside any host: a test in a Herdr pane or a Rex terminal
+/// would otherwise talk to that host, and refuse another host's dispatch.
+fn run_outside_any_host<const N: usize>(args: [&str; N]) -> tsk_tui::cli::CliOutput {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tsk"))
+        .args(&args[1..])
+        .env_remove("HERDR_ENV")
+        .env_remove("REX_SESSION")
+        .env_remove("TSK_AGENT")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run tsk");
+    tsk_tui::cli::CliOutput {
+        stdout: String::from_utf8(output.stdout).expect("utf-8 stdout"),
+        stderr: String::from_utf8(output.stderr).expect("utf-8 stderr"),
+        code: u8::try_from(output.status.code().expect("exit code")).expect("u8 exit"),
+    }
+}
+
 #[test]
 fn dispatch_requires_a_task_and_accepts_again() {
     let missing = run_with(["tsk", "dispatch"], Cursor::new(Vec::<u8>::new()), true);
@@ -181,7 +199,7 @@ fn successful_cli_dispatch_persists_record_and_started_together() {
     let task = saved.tasks().first().expect("task");
     assert_eq!(task.status, HumanStatus::Started);
     let record = task.dispatch.as_ref().expect("record");
-    assert_eq!(record.herdr_workspace_id, "workspace-1");
+    assert_eq!(record.session, "workspace-1");
     assert_eq!(record.base.as_deref(), Some("main"));
     assert_eq!(record.base_commit, None);
     assert_eq!(record.base_ref.as_deref(), Some("refs/heads/main"));
@@ -1359,7 +1377,8 @@ impl CleanupRepo {
                     )),
                     base_commit: None,
                     base_remote: remote.map(str::to_string),
-                    herdr_workspace_id: "w1".into(),
+                    host: tsk_tui::domain::AgentHost::Herdr,
+                    session: "w1".into(),
                     at: std::time::SystemTime::now(),
                     cleaned: false,
                 },
@@ -1535,19 +1554,15 @@ fn status_done_clean_keeps_the_branch_when_the_remote_is_unreachable() {
     let (state, _) = repo.state("origin/main", Some("origin"));
     let dir = repo.root.join("state");
     TaskStore::new(dir.clone()).save(&state).unwrap();
-    let output = run_with(
-        [
-            "tsk",
-            "status",
-            "T1",
-            "done",
-            "--clean",
-            "--state-dir",
-            dir.to_str().unwrap(),
-        ],
-        Cursor::new(Vec::<u8>::new()),
-        true,
-    );
+    let output = run_outside_any_host([
+        "tsk",
+        "status",
+        "T1",
+        "done",
+        "--clean",
+        "--state-dir",
+        dir.to_str().unwrap(),
+    ]);
     assert_eq!(output.code, 0, "{}", output.stderr);
     assert!(
         output
@@ -1605,19 +1620,15 @@ fn status_done_clean_still_refuses_a_dirty_worktree_after_done_persists() {
     let dir = repo.root.join("state");
     TaskStore::new(dir.clone()).save(&state).unwrap();
     fs::write(repo.worktree.join("wip.txt"), "unsaved").unwrap();
-    let output = run_with(
-        [
-            "tsk",
-            "status",
-            "T1",
-            "done",
-            "--clean",
-            "--state-dir",
-            dir.to_str().unwrap(),
-        ],
-        Cursor::new(Vec::<u8>::new()),
-        true,
-    );
+    let output = run_outside_any_host([
+        "tsk",
+        "status",
+        "T1",
+        "done",
+        "--clean",
+        "--state-dir",
+        dir.to_str().unwrap(),
+    ]);
     assert_eq!(output.code, 1);
     assert!(
         output.stderr.starts_with("tsk status: dirty-worktree:"),

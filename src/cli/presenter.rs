@@ -465,6 +465,26 @@ pub fn list(result: ListResult, json: bool, terminal_width: Option<usize>) -> Cl
     }
 }
 
+/// A dispatch record in `tsk list T12 --json`: the record as stored, plus the Herdr workspace
+/// id under its original key for a Herdr dispatch, so scripts reading it keep working.
+#[derive(serde::Serialize)]
+struct DispatchJson<'a> {
+    #[serde(flatten)]
+    record: &'a crate::domain::Dispatch,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    herdr_workspace_id: Option<&'a str>,
+}
+
+impl<'a> From<&'a crate::domain::Dispatch> for DispatchJson<'a> {
+    fn from(record: &'a crate::domain::Dispatch) -> Self {
+        Self {
+            record,
+            herdr_workspace_id: (record.host == crate::domain::AgentHost::Herdr)
+                .then_some(record.session.as_str()),
+        }
+    }
+}
+
 /// Filtered listings keep the compact row schema. A directly addressed task
 /// carries its complete readable content in a stable field order.
 fn list_json(result: &ListResult) -> String {
@@ -489,7 +509,7 @@ fn list_json(result: &ListResult) -> String {
             after: &'a [crate::cli::list::AfterLink],
             before: &'a [u64],
             #[serde(skip_serializing_if = "Option::is_none")]
-            dispatch: Option<&'a crate::domain::Dispatch>,
+            dispatch: Option<DispatchJson<'a>>,
             #[serde(skip_serializing_if = "Option::is_none")]
             block: Option<BlockJson<'a>>,
             #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -516,7 +536,7 @@ fn list_json(result: &ListResult) -> String {
             thread: &row.thread,
             after: &row.after,
             before: &row.before,
-            dispatch: direct.dispatch.as_ref(),
+            dispatch: direct.dispatch.as_ref().map(DispatchJson::from),
             block: direct.block.as_ref().filter(blocks).map(BlockJson::from),
             past_blocks: direct
                 .past_blocks
@@ -1577,7 +1597,7 @@ pub fn dispatch_help() -> CliOutput {
         ],
         refusals: vec![
             "unknown-task, soft-deleted-task, done-task, archived-task".into(),
-            "no-assignee, unknown-agent, agent-config, already-dispatched".into(),
+            "no-assignee, unknown-agent, agent-config, already-dispatched, other-host".into(),
             "no-host, needs-git-project, unknown-base, no-default-base, host-failed".into(),
             "unsafe-state-dir; Windows: unsupported-platform".into(),
         ],
@@ -1617,7 +1637,7 @@ pub fn clean_help() -> CliOutput {
         ],
         refusals: vec![
             "unknown-task, not-dispatched, already-cleaned, dirty-worktree".into(),
-            "worktree-mismatch, host-failed".into(),
+            "worktree-mismatch, other-host, host-failed".into(),
             "Windows: files-in-use, path-too-long, removal-timed-out, partly-removed".into(),
             "--merge: gh-unavailable, no-pr, pr-not-open, pr-base-mismatch, merge-failed, merge-config".into(),
         ],
@@ -1932,8 +1952,8 @@ pub fn status_help() -> CliOutput {
         ],
         refusals: vec![
             "unknown-task, soft-deleted-task, text-too-long, invalid-blocker".into(),
-            "started: after-not-done, agent-gone, needs-git-project, unknown-agent, agent-config, unknown-base, no-default-base, host-failed, unsafe-state-dir, and on Windows unsupported-platform".into(),
-            "done --clean: dirty-worktree, worktree-mismatch, host-failed, and on Windows files-in-use, path-too-long, removal-timed-out, partly-removed".into(),
+            "started: after-not-done, agent-gone, other-host, needs-git-project, unknown-agent, agent-config, unknown-base, no-default-base, host-failed, unsafe-state-dir, and on Windows unsupported-platform".into(),
+            "done --clean: the clean codes except not-dispatched and already-cleaned".into(),
             "done --merge: the --clean codes, not-dispatched, already-cleaned, gh-unavailable, no-pr, pr-not-open, pr-base-mismatch, merge-failed, merge-config".into(),
         ],
         exit: exit_line(

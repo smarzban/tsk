@@ -321,7 +321,7 @@ tsk restore
 
 ## Store version
 
-This version writes store format 6. tsk 0.12 and older refuse a format 6 store, as older tsk refuses any newer store. tsk keeps a `tsk.json.v<N>` copy when it upgrades the file.
+This version writes store format 16. tsk 0.13 and older refuse a format 16 store, as older tsk refuses any newer store. tsk keeps a `tsk.json.v<N>` copy when it upgrades the file.
 
 To roll back: quit every board, then copy `tsk.json.v<N>` over `tsk.json`. Changes made since the upgrade are lost.
 
