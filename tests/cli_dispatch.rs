@@ -343,7 +343,7 @@ fn clean_cli_help_and_success_report_each_removed_resource() {
         "not-dispatched",
         "already-cleaned",
         "dirty-worktree",
-        "herdr-failed",
+        "host-failed",
         "store-error",
         "gh-unavailable",
         "no-pr",

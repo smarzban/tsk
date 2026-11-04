@@ -45,7 +45,7 @@ fn cleanup_inspection_error(operation: &str, error: String) -> String {
 pub const NO_ASSIGNEE: &str = "no agent assigned, use tsk edit T<n> --assignee <name>";
 /// The board's wording of the same refusal: there `@` assigns, and with no profile it opens nothing.
 pub const BOARD_NO_ASSIGNEE: &str = "no agent assigned: press @ or add a profile to config.toml";
-pub const NOT_IN_HERDR: &str = "dispatch works inside herdr for now";
+pub const NO_HOST: &str = "dispatch works inside Herdr or Rex";
 pub const NEEDS_GIT_PROJECT: &str = "dispatch needs a project in a git repo";
 pub const UNSUPPORTED_PLATFORM: &str = "dispatch on Windows needs Windows PowerShell";
 /// Said once per Windows dispatch whose repository leaves Git's long-path support off.
@@ -163,7 +163,7 @@ pub enum WorktreeCleanup {
 pub enum WorkspaceCleanup {
     /// Closed by this cleanup.
     Removed,
-    /// Left open: cleanup ran outside Herdr, or Herdr refused to close it (the cleanup's
+    /// Left open: cleanup ran outside a host, or the host refused to close it (the cleanup's
     /// warning says why).
     Kept,
     /// Already closed when cleanup looked, for example by an earlier refused Windows cleanup.
@@ -324,7 +324,8 @@ pub enum CleanupError {
     /// Windows: git's removal stopped partway. The message says what is left and how to
     /// finish by hand; the branch keeps every commit.
     PartlyRemoved(String),
-    Herdr(String),
+    /// A host (Herdr or Rex), git, or gh call failed (`host-failed`).
+    Host(String),
     Store(String),
 }
 
@@ -342,7 +343,7 @@ impl CleanupError {
             Self::PathTooLong => "path too long",
             Self::RemovalTimedOut => "removal timed out",
             Self::PartlyRemoved(_) => "partly removed",
-            Self::Herdr(_) => "removal failed",
+            Self::Host(_) => "removal failed",
             Self::Store(_) => "save failed",
         }
     }
@@ -359,7 +360,7 @@ impl CleanupError {
             Self::PathTooLong => "path-too-long",
             Self::RemovalTimedOut => "removal-timed-out",
             Self::PartlyRemoved(_) => "partly-removed",
-            Self::Herdr(_) => "herdr-failed",
+            Self::Host(_) => "host-failed",
             Self::Store(_) => "store-error",
         }
     }
@@ -388,7 +389,7 @@ impl CleanupError {
                 "removal timed out after {} minutes (retry when the disk is less busy)",
                 WINDOWS_REMOVAL_TIMEOUT.as_secs() / 60
             ),
-            Self::PartlyRemoved(reason) | Self::Herdr(reason) | Self::Store(reason) => {
+            Self::PartlyRemoved(reason) | Self::Host(reason) | Self::Store(reason) => {
                 reason.clone()
             }
         }
@@ -433,7 +434,7 @@ pub struct AgentNaming {
 pub enum DispatchError {
     UnknownTask,
     NoAssignee,
-    NotInHerdr,
+    NoHost,
     /// Windows cannot launch here: no Windows PowerShell, or a path the pane's shell would
     /// rewrite.
     UnsupportedPlatform(String),
@@ -450,7 +451,8 @@ pub enum DispatchError {
     /// No base was given and the repository's default branch (`origin/HEAD`) is unresolved.
     NoDefaultBase(String),
     AgentConfig(String),
-    Herdr(String),
+    /// A host (Herdr or Rex), git, or gh call failed (`host-failed`).
+    Host(String),
     Store(String),
 }
 
@@ -459,7 +461,7 @@ impl DispatchError {
         match self {
             Self::UnknownTask => "unknown-task",
             Self::NoAssignee => "no-assignee",
-            Self::NotInHerdr => "not-in-herdr",
+            Self::NoHost => "no-host",
             Self::UnsupportedPlatform(_) => "unsupported-platform",
             Self::UnsafeStateDir(_) => "unsafe-state-dir",
             Self::NeedsGitProject => "needs-git-project",
@@ -471,7 +473,7 @@ impl DispatchError {
             Self::UnknownBase(_) => "unknown-base",
             Self::NoDefaultBase(_) => "no-default-base",
             Self::AgentConfig(_) => "agent-config",
-            Self::Herdr(_) => "herdr-failed",
+            Self::Host(_) => "host-failed",
             Self::Store(_) => "store-error",
         }
     }
@@ -483,9 +485,9 @@ impl DispatchError {
             Self::UnsupportedPlatform(reason) => Self::UnsupportedPlatform(note(reason)),
             Self::UnsafeStateDir(reason) => Self::UnsafeStateDir(note(reason)),
             Self::AgentConfig(reason) => Self::AgentConfig(note(reason)),
-            Self::Herdr(reason) => Self::Herdr(note(reason)),
+            Self::Host(reason) => Self::Host(note(reason)),
             Self::Store(reason) => Self::Store(note(reason)),
-            other => Self::Herdr(note(other.to_string())),
+            other => Self::Host(note(other.to_string())),
         }
     }
 }
@@ -495,7 +497,7 @@ impl std::fmt::Display for DispatchError {
         match self {
             Self::UnknownTask => write!(formatter, "task is not on the board"),
             Self::NoAssignee => write!(formatter, "{NO_ASSIGNEE}"),
-            Self::NotInHerdr => write!(formatter, "{NOT_IN_HERDR}"),
+            Self::NoHost => write!(formatter, "{NO_HOST}"),
             Self::NeedsGitProject => write!(formatter, "{NEEDS_GIT_PROJECT}"),
             Self::DoneTask => write!(formatter, "completed tasks cannot be dispatched"),
             Self::ArchivedTask => write!(formatter, "archived tasks cannot be dispatched"),
@@ -510,7 +512,7 @@ impl std::fmt::Display for DispatchError {
             | Self::UnsupportedPlatform(reason)
             | Self::UnsafeStateDir(reason)
             | Self::AgentConfig(reason)
-            | Self::Herdr(reason)
+            | Self::Host(reason)
             | Self::Store(reason) => {
                 write!(formatter, "{reason}")
             }
@@ -659,7 +661,7 @@ pub trait DispatchHost {
         None
     }
     fn remove_host_worktree(&mut self, _workspace_id: &str) -> Result<(), String> {
-        Err("Herdr worktree removal is not supported".into())
+        Err("host worktree removal is not supported".into())
     }
     fn remove_git_worktree(&mut self, _project: &Path, _worktree: &Path) -> Result<(), String> {
         Err("git worktree removal is not supported".into())
@@ -804,7 +806,7 @@ pub trait DispatchHost {
     /// Close a Herdr workspace without touching its checkout (Windows cleanup closes before it
     /// checks and removes).
     fn close_workspace(&mut self, _workspace_id: &str) -> Result<(), String> {
-        Err("Herdr workspace close is not supported".into())
+        Err("workspace close is not supported by this host".into())
     }
     /// Record that a Windows removal of the worktree in `workspace_id` is under way (`true`)
     /// or settled (`false`). The mark outlives tsk.
@@ -1164,7 +1166,7 @@ pub fn powershell_launch_line(powershell: &Path, launcher: &Path) -> Result<Stri
     }
     let launcher = launcher.to_string_lossy().replace('\\', "/");
     if !windows_absolute(&launcher) {
-        return Err(DispatchError::Herdr(format!(
+        return Err(DispatchError::Host(format!(
             "launcher path {launcher} is not absolute"
         )));
     }
@@ -1191,7 +1193,7 @@ pub fn powershell_launch_line(powershell: &Path, launcher: &Path) -> Result<Stri
 pub fn sh_launch_line(launcher: &Path) -> Result<String, DispatchError> {
     let launcher = launcher.to_string_lossy();
     if !launcher.starts_with('/') {
-        return Err(DispatchError::Herdr(format!(
+        return Err(DispatchError::Host(format!(
             "launcher path {launcher} is not absolute"
         )));
     }
@@ -2400,7 +2402,7 @@ fn inspect_planned(
             Path::new(&record.worktree),
             &record.herdr_workspace_id,
         )
-        .map_err(CleanupError::Herdr)?
+        .map_err(CleanupError::Host)?
     {
         return Err(partly_removed(record, registered));
     }
@@ -2409,7 +2411,7 @@ fn inspect_planned(
     } else {
         host.inspect_cleanup(project, record, host_kind)
     }
-    .map_err(CleanupError::Herdr)?;
+    .map_err(CleanupError::Host)?;
     if !inspection.target_matches {
         return Err(CleanupError::WorktreeMismatch);
     }
@@ -2470,10 +2472,10 @@ pub fn clean_planned_with_host(
             remove_windows_worktree(host, &preview, workspace_removed)?;
         } else if workspace_removed {
             host.remove_host_worktree(&preview.record.herdr_workspace_id)
-                .map_err(CleanupError::Herdr)?;
+                .map_err(CleanupError::Host)?;
         } else {
             host.remove_git_worktree(&preview.project, worktree)
-                .map_err(CleanupError::Herdr)?;
+                .map_err(CleanupError::Host)?;
         }
         let deletion = if preview.record.base_ref.is_none() {
             BranchDeletion::Kept(BranchRetentionReason::NoRecordedBase)
@@ -2486,10 +2488,10 @@ pub fn clean_planned_with_host(
         } else if preview.inspection.branch_merged {
             let base = preview.record.base_ref.as_deref().expect("recorded base");
             host.delete_merged_branch(&preview.project, &preview.record.branch, base)
-                .map_err(CleanupError::Herdr)?
+                .map_err(CleanupError::Host)?
         } else {
             let (deletion, into) = pr::pr_merged_deletion(host, &preview.project, &preview.record)
-                .map_err(CleanupError::Herdr)?;
+                .map_err(CleanupError::Host)?;
             merged_into = into;
             deletion
         };
@@ -2547,7 +2549,7 @@ pub fn clean_planned_with_host(
 }
 
 /// The outcome for a workspace this cleanup did not close: inside Herdr, one the inspection
-/// did not find was already closed; outside Herdr, tsk never looks, so it is kept.
+/// did not find was already closed; outside a host, tsk never looks, so it is kept.
 pub fn untouched_workspace(
     host_kind: HostKind,
     inspection: &CleanupInspection,
@@ -2605,16 +2607,16 @@ fn remove_windows_worktree(
     let (project, worktree) = (&preview.project, Path::new(&preview.record.worktree));
     if close_workspace {
         host.close_workspace(&preview.record.herdr_workspace_id)
-            .map_err(CleanupError::Herdr)?;
+            .map_err(CleanupError::Host)?;
     }
     let mut blocked = host
         .removal_blocker(project, worktree)
-        .map_err(CleanupError::Herdr)?;
+        .map_err(CleanupError::Host)?;
     if blocked == Some(RemovalBlock::FilesInUse) {
         host.wait_before_retry();
         blocked = host
             .removal_blocker(project, worktree)
-            .map_err(CleanupError::Herdr)?;
+            .map_err(CleanupError::Host)?;
     }
     match blocked {
         Some(RemovalBlock::FilesInUse) => return Err(CleanupError::FilesInUse),
@@ -2623,7 +2625,7 @@ fn remove_windows_worktree(
     }
     // The agent ran until the workspace closed and may have written after the inspection:
     // check again now that nothing else writes, before anything is marked or deleted.
-    if host.worktree_dirty(worktree).map_err(CleanupError::Herdr)? {
+    if host.worktree_dirty(worktree).map_err(CleanupError::Host)? {
         return Err(CleanupError::DirtyWorktree);
     }
     // Marked once git starts and until the removal is known to have finished or touched
@@ -2643,7 +2645,7 @@ fn remove_windows_worktree(
     // have deleted part of the checkout and unregistered it: report what is actually left.
     match host
         .removal_state(project, worktree)
-        .map_err(CleanupError::Herdr)?
+        .map_err(CleanupError::Host)?
     {
         RemovalState::Gone => Ok(()),
         RemovalState::Intact => {
@@ -2652,7 +2654,7 @@ fn remove_windows_worktree(
                 _ if error == "git timed out" => CleanupError::RemovalTimedOut,
                 Some(RemovalBlock::FilesInUse) => CleanupError::FilesInUse,
                 Some(RemovalBlock::PathTooLong) => CleanupError::PathTooLong,
-                None => CleanupError::Herdr(error),
+                None => CleanupError::Host(error),
             })
         }
         RemovalState::Dirty => {
@@ -2969,17 +2971,17 @@ pub enum StartRoute {
     NoLaunch { reason: &'static str },
 }
 
-/// The no-launch reason when tsk runs outside Herdr.
-pub const NO_LAUNCH_NOT_IN_HERDR: &str = "not in Herdr";
+/// The no-launch reason when tsk runs outside any host (Herdr or Rex).
+pub const NO_LAUNCH_NO_HOST: &str = "outside Herdr or Rex";
 /// The no-launch reason for a desk task.
 pub const NO_LAUNCH_DESK: &str = "desk task has no repository";
 
 /// Why an assigned task's start cannot launch at all, so it is a plain start instead of a
-/// refusal: tsk is outside Herdr, or the task is on the desk. Every other launch refusal
+/// refusal: tsk is outside any host, or the task is on the desk. Every other launch refusal
 /// (profile, base, git, Herdr failures) still leaves the task unstarted.
 pub fn launch_unavailable(task: &Task, host_kind: HostKind) -> Option<&'static str> {
     if !host_kind.is_hosted() {
-        Some(NO_LAUNCH_NOT_IN_HERDR)
+        Some(NO_LAUNCH_NO_HOST)
     } else if task.scope == TaskScope::Global {
         Some(NO_LAUNCH_DESK)
     } else {
@@ -3013,8 +3015,8 @@ pub enum AgentCheck {
     /// No live dispatched agent was asked about: unassigned, never dispatched, gone, or the
     /// assignee's own start.
     NotChecked,
-    /// A live dispatch record, but tsk runs outside Herdr, so its agent cannot be asked.
-    NotInHerdr,
+    /// A live dispatch record, but tsk runs outside any host, so its agent cannot be asked.
+    NoHost,
     /// Herdr reports an agent in the recorded workspace's root pane, under its live name
     /// (`None` when the agent is unnamed). Whether it is the dispatched agent is checked
     /// before anything is sent.
@@ -3057,7 +3059,7 @@ pub fn start_route_checked(
         return gone;
     }
     if !host_kind.is_hosted() {
-        return (StartRoute::Plain, AgentCheck::NotInHerdr);
+        return (StartRoute::Plain, AgentCheck::NoHost);
     }
     let pane = match host.root_pane(&record.herdr_workspace_id) {
         Ok(pane) => pane,
@@ -3365,8 +3367,8 @@ pub enum Delivery {
     /// The pane's agent is not the one tsk dispatched (another agent, or one Herdr never
     /// named `t<n>-<profile>`); nothing was sent.
     NotInPane,
-    /// tsk runs outside Herdr; nothing was sent.
-    NotInHerdr,
+    /// tsk runs outside any host; nothing was sent.
+    NoHost,
 }
 
 /// The message a reply delivery submits: `[tsk T<n> <label>]`, then the reply this action
@@ -3394,7 +3396,7 @@ pub fn deliver_reply(
     let expected = agent_name(number, task.agent_assignee()?);
     match check {
         AgentCheck::NotChecked => None,
-        AgentCheck::NotInHerdr => Some(Delivery::NotInHerdr),
+        AgentCheck::NoHost => Some(Delivery::NoHost),
         AgentCheck::Unreachable { reason } => Some(Delivery::Unreachable(reason.clone())),
         AgentCheck::Running { name, .. } if name.as_deref() != Some(expected.as_str()) => {
             Some(Delivery::NotInPane)
@@ -3432,7 +3434,7 @@ pub fn delivery_message(status: &str, assignee: &str, noun: &str, delivery: &Del
         Delivery::NotInPane => format!(
             "{status} · {noun} not sent: @{assignee} is not in its pane; {noun} kept on the task"
         ),
-        Delivery::NotInHerdr => format!("{status} · {noun} not sent: {NO_LAUNCH_NOT_IN_HERDR}"),
+        Delivery::NoHost => format!("{status} · {noun} not sent: {NO_LAUNCH_NO_HOST}"),
     }
 }
 
@@ -3803,7 +3805,7 @@ fn check_inner(
         .map(str::to_string)
         .ok_or(DispatchError::NoAssignee)?;
     if !host_kind.is_hosted() {
-        return Err(DispatchError::NotInHerdr);
+        return Err(DispatchError::NoHost);
     }
     if task.soft_deleted {
         return Err(DispatchError::SoftDeletedTask);
@@ -3990,7 +3992,7 @@ pub fn launch_with_host(
             ));
         }
         if eligible.again && task.dispatch.is_some() {
-            return Err(DispatchError::Herdr(
+            return Err(DispatchError::Host(
                 "relaunch in Rex is not built yet (T413)".into(),
             ));
         }
@@ -4003,7 +4005,7 @@ pub fn launch_with_host(
         let powershell = host
             .powershell_path()
             .map_err(DispatchError::UnsupportedPlatform)?;
-        let launcher = host.launcher_path("check").map_err(DispatchError::Herdr)?;
+        let launcher = host.launcher_path("check").map_err(DispatchError::Host)?;
         powershell_launch_line(&powershell, &launcher)?;
         // The launcher would refuse in the pane, after the dispatch is recorded. A program
         // name built from a template is left to it.
@@ -4016,7 +4018,7 @@ pub fn launch_with_host(
         }
         Some(powershell)
     } else {
-        let launcher = host.launcher_path("check").map_err(DispatchError::Herdr)?;
+        let launcher = host.launcher_path("check").map_err(DispatchError::Host)?;
         sh_launch_line(&launcher)?;
         if let Some(refusal) = crate::agents::unix_env_refusal(&profile.env) {
             return Err(DispatchError::AgentConfig(refusal));
@@ -4049,7 +4051,7 @@ pub fn launch_with_host(
                     existing.base_commit.as_deref().or(existing.base.as_deref()),
                     &label,
                 )
-                .map_err(DispatchError::Herdr)?;
+                .map_err(DispatchError::Host)?;
             (
                 recreated.path.to_string_lossy().into_owned(),
                 recreated.branch,
@@ -4068,7 +4070,7 @@ pub fn launch_with_host(
             // Only a workspace Herdr says is gone is reopened; any other failure may leave
             // the agent running there, so nothing launches.
             Err(RootPaneError::WorkspaceGone(_)) => None,
-            Err(RootPaneError::Failed(reason)) => return Err(DispatchError::Herdr(reason)),
+            Err(RootPaneError::Failed(reason)) => return Err(DispatchError::Host(reason)),
         } {
             (
                 existing.worktree.clone(),
@@ -4086,7 +4088,7 @@ pub fn launch_with_host(
             let label = workspace_label(number, &task.title);
             let reopened = host
                 .open_worktree(project, Path::new(&existing.worktree), &label)
-                .map_err(DispatchError::Herdr)?;
+                .map_err(DispatchError::Host)?;
             (
                 reopened.path.to_string_lossy().into_owned(),
                 existing.branch.clone(),
@@ -4124,7 +4126,7 @@ pub fn launch_with_host(
                 Some(choice.commit.as_deref().unwrap_or(&base)),
                 &label,
             )
-            .map_err(DispatchError::Herdr)?;
+            .map_err(DispatchError::Host)?;
         // `free_branch` found no branch of this name, so Herdr made it at the base.
         let made = Created::Worktree {
             branch_from: choice.commit.clone(),
@@ -4241,11 +4243,11 @@ fn run_launch(
                 &rendered.shell_script(
                     &host
                         .launcher_path(workspace_id)
-                        .map_err(DispatchError::Herdr)?
+                        .map_err(DispatchError::Host)?
                         .to_string_lossy(),
                 ),
             )
-            .map_err(DispatchError::Herdr)?;
+            .map_err(DispatchError::Host)?;
         let command = [
             "/bin/sh".to_string(),
             launcher.to_string_lossy().into_owned(),
@@ -4255,26 +4257,26 @@ fn run_launch(
             .map(Some)
             .map_err(|error| {
                 host.remove_launcher(workspace_id);
-                DispatchError::Herdr(error)
+                DispatchError::Host(error)
             });
     }
     let line = match platform {
         HostPlatform::Unix => {
             let launcher = host
                 .launcher_path(workspace_id)
-                .map_err(DispatchError::Herdr)?;
+                .map_err(DispatchError::Host)?;
             let line = sh_launch_line(&launcher)?;
             host.write_launcher(
                 workspace_id,
                 &rendered.shell_script(&launcher.to_string_lossy()),
             )
-            .map_err(DispatchError::Herdr)?;
+            .map_err(DispatchError::Host)?;
             line
         }
         HostPlatform::Windows => {
             let launcher = host
                 .write_launcher(workspace_id, &rendered.powershell_script())
-                .map_err(DispatchError::Herdr)?;
+                .map_err(DispatchError::Host)?;
             let powershell = powershell.expect("checked before launch");
             powershell_launch_line(powershell, &launcher).inspect_err(|_| {
                 host.remove_launcher(workspace_id);
@@ -4285,7 +4287,7 @@ fn run_launch(
         .map(|()| None)
         .map_err(|error| {
             host.remove_launcher(workspace_id);
-            DispatchError::Herdr(error)
+            DispatchError::Host(error)
         })
 }
 
@@ -4318,7 +4320,7 @@ pub fn spawn_launches<H: DispatchHost>(
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 launch_bulk_job(&job, &mut host)
             }))
-            .unwrap_or_else(|_| Err(DispatchError::Herdr("launch failed unexpectedly".into())));
+            .unwrap_or_else(|_| Err(DispatchError::Host("launch failed unexpectedly".into())));
             landing.land(job, outcome);
         }
     });
@@ -4622,12 +4624,12 @@ fn free_branch(
         let branch = names.branch(number, attempt);
         if !host
             .branch_taken(project, &branch)
-            .map_err(DispatchError::Herdr)?
+            .map_err(DispatchError::Host)?
         {
             return Ok(branch);
         }
     }
-    Err(DispatchError::Herdr(format!(
+    Err(DispatchError::Host(format!(
         "no free branch name: {} through -{MAX_NAME_ATTEMPT} exist",
         names.branch(number, 1)
     )))
@@ -5086,7 +5088,7 @@ mod tests {
         let (base, id) = task();
         let cases = [
             ("no-assignee", DispatchError::NoAssignee),
-            ("not-herdr", DispatchError::NotInHerdr),
+            ("not-herdr", DispatchError::NoHost),
             ("desk", DispatchError::NeedsGitProject),
             ("not-git", DispatchError::NeedsGitProject),
             ("done", DispatchError::DoneTask),
@@ -5498,7 +5500,7 @@ mod tests {
         };
         let error = run_with_host(&mut state, id, &profiles, false, HostKind::Herdr, &mut host)
             .expect_err("launch fails");
-        assert_eq!(error, DispatchError::Herdr("pane gone".into()));
+        assert_eq!(error, DispatchError::Host("pane gone".into()));
         assert_eq!(host.removed_launchers, vec!["w9".to_string()]);
         assert_eq!(
             serde_json::to_value(&state).expect("state"),
@@ -5528,7 +5530,7 @@ mod tests {
         let mut host = failing(unix());
         let error = run_with_host(&mut state, id, &profiles, false, HostKind::Herdr, &mut host)
             .expect_err("launch fails");
-        assert_eq!(error, DispatchError::Herdr("pane gone".into()));
+        assert_eq!(error, DispatchError::Host("pane gone".into()));
         assert_eq!(host.removed_herdr, 1);
         assert_eq!(host.deleted_at_tip, vec!["c0ffee".to_string()]);
         assert_eq!(
@@ -5541,7 +5543,7 @@ mod tests {
         let mut host = failing(windows_host());
         let error = run_with_host(&mut state, id, &profiles, false, HostKind::Herdr, &mut host)
             .expect_err("launch fails");
-        assert_eq!(error, DispatchError::Herdr("pane gone".into()));
+        assert_eq!(error, DispatchError::Host("pane gone".into()));
         assert_eq!(host.closed_ids, vec!["w9".to_string()]);
         assert_eq!((host.removed_herdr, host.removed_git), (0, 1));
         assert_eq!(host.deleted_at_tip, vec!["c0ffee".to_string()]);
@@ -6402,7 +6404,7 @@ mod tests {
         };
         let error =
             clean_with_host(&mut state, id, HostKind::Herdr, &mut host).expect_err("failed");
-        assert_eq!(error, CleanupError::Herdr(IN_USE.into()));
+        assert_eq!(error, CleanupError::Host(IN_USE.into()));
         assert_eq!((host.closed, host.blocker_checks), (0, 0));
         fs::remove_dir_all(path).expect("cleanup");
     }
@@ -6534,11 +6536,7 @@ mod tests {
                 "path-too-long",
             ),
             ("git timed out", RemovalState::Intact, "removal-timed-out"),
-            (
-                "fatal: something else",
-                RemovalState::Intact,
-                "herdr-failed",
-            ),
+            ("fatal: something else", RemovalState::Intact, "host-failed"),
             (
                 "fatal: contains modified or untracked files, use --force to delete it",
                 RemovalState::Dirty,
@@ -6988,7 +6986,7 @@ mod tests {
         }
         assert_eq!(
             sh_launch_line(Path::new("tsk/launchers/x.sh")),
-            Err(DispatchError::Herdr(
+            Err(DispatchError::Host(
                 "launcher path tsk/launchers/x.sh is not absolute".into()
             ))
         );
@@ -7060,7 +7058,7 @@ mod tests {
         }
         assert_eq!(
             powershell_launch_line(Path::new(POWERSHELL), Path::new(r"tsk\launchers\x.ps1")),
-            Err(DispatchError::Herdr(
+            Err(DispatchError::Host(
                 "launcher path tsk/launchers/x.ps1 is not absolute".into()
             ))
         );
@@ -7181,12 +7179,25 @@ mod tests {
     }
 
     #[test]
+    fn no_host_refusal_names_both_hosts() {
+        assert_eq!(
+            DispatchError::NoHost.to_string(),
+            "dispatch works inside Herdr or Rex"
+        );
+        assert_eq!(NO_LAUNCH_NO_HOST, "outside Herdr or Rex");
+        assert_eq!(
+            no_launch_message(NO_LAUNCH_NO_HOST),
+            "started · no launch: outside Herdr or Rex"
+        );
+    }
+
+    #[test]
     fn refusal_codes_are_stable() {
         let cases = [
             (DispatchError::UnknownTask, "unknown-task"),
             (DispatchError::SoftDeletedTask, "soft-deleted-task"),
             (DispatchError::NoAssignee, "no-assignee"),
-            (DispatchError::NotInHerdr, "not-in-herdr"),
+            (DispatchError::NoHost, "no-host"),
             (
                 DispatchError::UnsupportedPlatform(UNSUPPORTED_PLATFORM.into()),
                 "unsupported-platform",
@@ -7214,7 +7225,7 @@ mod tests {
                 DispatchError::NoDefaultBase("no origin/HEAD".into()),
                 "no-default-base",
             ),
-            (DispatchError::Herdr("failed".into()), "herdr-failed"),
+            (DispatchError::Host("failed".into()), "host-failed"),
             (DispatchError::Store("failed".into()), "store-error"),
         ];
         for (error, code) in cases {
@@ -7323,7 +7334,7 @@ mod tests {
             };
             let error = run_with_host(&mut state, id, &profiles, false, HostKind::Herdr, &mut host)
                 .expect_err("host failure");
-            assert!(matches!(error, DispatchError::Herdr(_)), "{label}: {error}");
+            assert!(matches!(error, DispatchError::Host(_)), "{label}: {error}");
             assert_eq!(
                 serde_json::to_value(&state).expect("state json"),
                 serde_json::to_value(&before).expect("before json"),
@@ -8602,7 +8613,7 @@ mod tests {
         assert_eq!(CleanupError::DirtyWorktree.code(), "dirty-worktree");
         assert_eq!(CleanupError::WorktreeMismatch.code(), "worktree-mismatch");
         assert_eq!(CleanupError::DispatchChanged.code(), "dispatch-changed");
-        assert_eq!(CleanupError::Herdr("failed".into()).code(), "herdr-failed");
+        assert_eq!(CleanupError::Host("failed".into()).code(), "host-failed");
     }
 
     fn names(title: &str) -> (String, String) {
@@ -8951,7 +8962,7 @@ mod tests {
         };
         let error = run_with_host(&mut state, id, &profiles, false, HostKind::Herdr, &mut host)
             .expect_err("unanswered name check refuses");
-        assert!(matches!(error, DispatchError::Herdr(_)), "{error}");
+        assert!(matches!(error, DispatchError::Host(_)), "{error}");
         assert_eq!(host.creates, 0);
         assert!(state.get(id).expect("task").dispatch.is_none());
         fs::remove_dir_all(path).expect("cleanup");

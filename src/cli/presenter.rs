@@ -217,7 +217,7 @@ pub fn top_level_help() -> String {
         "  backup     back the store up to one or more git repositories\n",
         "  restore    put a backed-up version of the store back\n\n",
         "Setup\n",
-        "  setup    register Herdr, or install the agent skill\n",
+        "  setup    register with Herdr or Rex, or install the agent skill\n",
         "  update   install the latest stable release\n",
         "  guide    print the agent workflow\n\n",
         "Statuses\n",
@@ -1547,7 +1547,7 @@ pub(crate) fn status_name(status: HumanStatus) -> &'static str {
 pub fn dispatch_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(DISPATCH_USAGE),
-        purpose: "Launch the task's assigned agent in its own worktree and Herdr workspace, then set the task started.".into(),
+        purpose: "Launch the task's assigned agent in its own worktree and a Herdr workspace or Rex session, then set the task started.".into(),
         groups: vec![
             group("Arguments", &[("<task>", "a task number or UUID")]),
             group(
@@ -1578,7 +1578,7 @@ pub fn dispatch_help() -> CliOutput {
         refusals: vec![
             "unknown-task, soft-deleted-task, done-task, archived-task".into(),
             "no-assignee, unknown-agent, agent-config, already-dispatched".into(),
-            "not-in-herdr, needs-git-project, unknown-base, no-default-base, herdr-failed".into(),
+            "no-host, needs-git-project, unknown-base, no-default-base, host-failed".into(),
             "unsafe-state-dir; Windows: unsupported-platform".into(),
         ],
         exit: format!(
@@ -1617,7 +1617,7 @@ pub fn clean_help() -> CliOutput {
         ],
         refusals: vec![
             "unknown-task, not-dispatched, already-cleaned, dirty-worktree".into(),
-            "worktree-mismatch, herdr-failed".into(),
+            "worktree-mismatch, host-failed".into(),
             "Windows: files-in-use, path-too-long, removal-timed-out, partly-removed".into(),
             "--merge: gh-unavailable, no-pr, pr-not-open, pr-base-mismatch, merge-failed, merge-config".into(),
         ],
@@ -1932,8 +1932,8 @@ pub fn status_help() -> CliOutput {
         ],
         refusals: vec![
             "unknown-task, soft-deleted-task, text-too-long, invalid-blocker".into(),
-            "started: after-not-done, agent-gone, needs-git-project, unknown-agent, agent-config, unknown-base, no-default-base, herdr-failed, unsafe-state-dir, and on Windows unsupported-platform".into(),
-            "done --clean: dirty-worktree, worktree-mismatch, herdr-failed, and on Windows files-in-use, path-too-long, removal-timed-out, partly-removed".into(),
+            "started: after-not-done, agent-gone, needs-git-project, unknown-agent, agent-config, unknown-base, no-default-base, host-failed, unsafe-state-dir, and on Windows unsupported-platform".into(),
+            "done --clean: dirty-worktree, worktree-mismatch, host-failed, and on Windows files-in-use, path-too-long, removal-timed-out, partly-removed".into(),
             "done --merge: the --clean codes, not-dispatched, already-cleaned, gh-unavailable, no-pr, pr-not-open, pr-base-mismatch, merge-failed, merge-config".into(),
         ],
         exit: exit_line(
@@ -2980,6 +2980,26 @@ pub fn setup_rex(result: crate::setup::rex::RexSetupResult) -> CliOutput {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn dispatch_refusal_lists_use_host_neutral_codes() {
+        for (verb, output, codes) in [
+            ("dispatch", dispatch_help(), &["no-host", "host-failed"][..]),
+            ("status", status_help(), &["host-failed"][..]),
+            ("clean", clean_help(), &["host-failed"][..]),
+        ] {
+            let text = output.stdout;
+            for code in codes {
+                assert!(text.contains(code), "{verb} help lacks {code}:\n{text}");
+            }
+            for old in ["not-in-herdr", "herdr-failed"] {
+                assert!(
+                    !text.contains(old),
+                    "{verb} help still lists {old}:\n{text}"
+                );
+            }
+        }
+    }
 
     #[cfg(windows)]
     #[test]

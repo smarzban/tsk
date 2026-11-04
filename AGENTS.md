@@ -379,10 +379,10 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   through `dispatch::start_route`:
   - unassigned, a running agent, or the assignee's own start (`TSK_AGENT`) is a plain
     status change;
-  - uncertainty (Herdr cannot answer, not in Herdr) never launches;
+  - uncertainty (the host cannot answer, outside Herdr or Rex) never launches;
   - a gone agent asks (board) or refuses `agent-gone` (CLI).
 
-  Outside `HERDR_ENV=1` `tsk dispatch` refuses; a start there, or on a desk task, is plain
+  Outside Herdr (`HERDR_ENV=1`) or Rex (`REX_SESSION`) `tsk dispatch` refuses; a start there, or on a desk task, is plain
   and says why (`dispatch::launch_unavailable`).
 - Dispatch sets `started` in the same save as the record; a failed launch leaves the task
   unstarted. Only a single-task start that dispatched is undoable (`UndoEntry::Start`:
