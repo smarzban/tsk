@@ -576,6 +576,8 @@ pub enum PaneAgent {
 pub enum PromptError {
     /// The agent waits on a permission prompt or question (`agent_blocked`); nothing was sent.
     AgentBlocked,
+    /// The pane no longer holds the named agent; nothing was sent.
+    NotInPane,
     /// Anything else: Herdr could not run, the agent was not found, or Herdr failed.
     Failed(String),
 }
@@ -762,8 +764,15 @@ pub trait DispatchHost {
     fn reusable_pane(
         &mut self,
         workspace_id: &str,
+        _agent: &str,
         _worktree: &Path,
     ) -> Result<String, RootPaneError> {
+        self.root_pane(workspace_id)
+    }
+    /// The pane of the agent named `agent` (`t<n>-<assignee>`) in the recorded workspace. Hosts
+    /// with one agent pane per workspace answer [`Self::root_pane`]; Rex matches the block by
+    /// its label, never another task's.
+    fn agent_pane(&mut self, workspace_id: &str, _agent: &str) -> Result<String, RootPaneError> {
         self.root_pane(workspace_id)
     }
     /// Label the agent's pane `label` before a relaunch types into it (Rex: the block label
@@ -888,6 +897,11 @@ pub trait DispatchHost {
     }
     /// Submit `text` to the agent in `pane_id` (`herdr agent prompt`), as one message. Herdr
     /// queues it behind a working turn; it refuses an agent waiting on a prompt.
+    /// [`Self::prompt_agent`] for the agent named `name`, which a host that reads the name
+    /// together with the agent's state checks once more right before it sends.
+    fn prompt_named(&mut self, pane_id: &str, _name: &str, text: &str) -> Result<(), PromptError> {
+        self.prompt_agent(pane_id, text)
+    }
     fn prompt_agent(&mut self, _pane_id: &str, _text: &str) -> Result<(), PromptError> {
         Err(PromptError::Failed(
             "agent prompts are not supported".into(),
@@ -1562,7 +1576,7 @@ impl DispatchHost for SystemDispatchHost {
 
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, RootPaneError> {
         if self.rex() {
-            return rex::agent_block(&self.rex, workspace_id);
+            return rex::agent_block(&self.rex, workspace_id, None);
         }
         let output = Command::new("herdr")
             .args(["pane", "list", "--workspace", workspace_id])
@@ -1588,10 +1602,18 @@ impl DispatchHost for SystemDispatchHost {
     fn reusable_pane(
         &mut self,
         workspace_id: &str,
+        agent: &str,
         worktree: &Path,
     ) -> Result<String, RootPaneError> {
         if self.rex() {
-            return rex::reusable_pane(&self.rex, workspace_id, worktree);
+            return rex::reusable_pane(&self.rex, workspace_id, Some(agent), worktree);
+        }
+        self.root_pane(workspace_id)
+    }
+
+    fn agent_pane(&mut self, workspace_id: &str, agent: &str) -> Result<String, RootPaneError> {
+        if self.rex() {
+            return rex::agent_block(&self.rex, workspace_id, Some(agent));
         }
         self.root_pane(workspace_id)
     }
@@ -1632,9 +1654,18 @@ impl DispatchHost for SystemDispatchHost {
         pane_agent_outcome(output.status.success(), &output.stdout, &output.stderr)
     }
 
+    fn prompt_named(&mut self, pane_id: &str, name: &str, text: &str) -> Result<(), PromptError> {
+        if self.rex() {
+            return rex::prompt(&self.rex, pane_id, name, text);
+        }
+        self.prompt_agent(pane_id, text)
+    }
+
     fn prompt_agent(&mut self, pane_id: &str, text: &str) -> Result<(), PromptError> {
         if self.rex() {
-            return rex::prompt(&self.rex, pane_id, text);
+            return Err(PromptError::Failed(
+                "a Rex agent is prompted by name only".into(),
+            ));
         }
         let output = Command::new("herdr")
             .args(["agent", "prompt", pane_id])
@@ -3139,7 +3170,11 @@ pub fn start_route_checked(
     if owned_elsewhere(record, host_kind) {
         return (StartRoute::Plain, AgentCheck::OtherHost(record.host));
     }
-    let pane = match host.root_pane(&record.session) {
+    let pane = match task.number {
+        Some(number) => host.agent_pane(&record.session, &agent_name(number, assignee)),
+        None => host.root_pane(&record.session),
+    };
+    let pane = match pane {
         Ok(pane) => pane,
         Err(RootPaneError::WorkspaceGone(_)) => return gone,
         Err(RootPaneError::Failed(reason)) => {
@@ -3490,9 +3525,10 @@ pub fn deliver_reply(
                 Err(reason) => return Some(Delivery::Unreachable(reason)),
             }
             let text = delivery_text(number, label, reply);
-            Some(match host.prompt_agent(pane, &text) {
+            Some(match host.prompt_named(pane, &expected, &text) {
                 Ok(()) => Delivery::Sent,
                 Err(PromptError::AgentBlocked) => Delivery::AgentWaiting,
+                Err(PromptError::NotInPane) => Delivery::NotInPane,
                 Err(PromptError::Failed(reason)) => Delivery::Unreachable(reason),
             })
         }
@@ -4153,15 +4189,17 @@ pub fn launch_with_host(
                 // the recorded one and stays.
                 Created::Worktree { branch_from: None },
             )
-        } else if let Some(pane) =
-            match host.reusable_pane(&existing.session, Path::new(&existing.worktree)) {
-                Ok(pane) => Some(pane),
-                // Only a workspace Herdr says is gone is reopened; any other failure may leave
-                // the agent running there, so nothing launches.
-                Err(RootPaneError::WorkspaceGone(_)) => None,
-                Err(RootPaneError::Failed(reason)) => return Err(DispatchError::Host(reason)),
-            }
-        {
+        } else if let Some(pane) = match host.reusable_pane(
+            &existing.session,
+            &agent_name(number, assignee),
+            Path::new(&existing.worktree),
+        ) {
+            Ok(pane) => Some(pane),
+            // Only a workspace Herdr says is gone is reopened; any other failure may leave
+            // the agent running there, so nothing launches.
+            Err(RootPaneError::WorkspaceGone(_)) => None,
+            Err(RootPaneError::Failed(reason)) => return Err(DispatchError::Host(reason)),
+        } {
             (
                 existing.worktree.clone(),
                 existing.branch.clone(),
@@ -4856,6 +4894,8 @@ mod tests {
         sessions: Vec<(String, PathBuf, Vec<String>)>,
         /// Every pane labelled before a relaunch typed into it: pane, label.
         labels: Vec<(String, String)>,
+        /// Workspace closes and git worktree removals, in the order they ran.
+        events: Vec<&'static str>,
     }
 
     impl DispatchHost for FakeHost {
@@ -4988,6 +5028,7 @@ mod tests {
         }
 
         fn remove_git_worktree(&mut self, _: &Path, _: &Path) -> Result<(), String> {
+            self.events.push("git-remove");
             self.removed_git += 1;
             match self.git_remove_errors.is_empty() {
                 true => Ok(()),
@@ -5058,6 +5099,7 @@ mod tests {
             if let Some(error) = self.close_error.clone() {
                 return Err(error);
             }
+            self.events.push("close");
             self.closed += 1;
             self.closed_ids.push(workspace_id.into());
             Ok(())
@@ -7621,8 +7663,10 @@ mod tests {
 
     /// A stub `rex` in `root` answering from files beside it: `blocks.json` (`block ls`),
     /// `status.json` (`program_status`), `process.json` (`process`); `session.create` opens
-    /// `session:stub` with `block:b`. With a `gone` file, `block` calls say not found. Every
-    /// call is logged to `rex.log`, one per line.
+    /// `session:stub` with `block:b`. A `<name>.next` file replaces `<name>.json` once it was
+    /// answered, so the next call sees a change. With a `gone` file, `block` calls say not
+    /// found; with `kill-fails`, `session kill` fails. Every call is logged to `rex.log`, one
+    /// per line.
     #[cfg(unix)]
     fn rex_stub(root: &Path, label: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -7630,15 +7674,19 @@ mod tests {
         fs::write(
             &stub,
             "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\nprintf '%s\\n' \"$*\" >> \"$dir/rex.log\"\n\
+             serve() { cat \"$dir/$1.json\"; if [ -e \"$dir/$1.next\" ]; then \
+             mv \"$dir/$1.next\" \"$dir/$1.json\"; fi; }\n\
              if [ -e \"$dir/gone\" ] && [ \"$1\" = block ]; then\n\
              echo 'Error: session target session:stub not found' >&2; exit 3\nfi\n\
+             if [ -e \"$dir/kill-fails\" ] && [ \"$1 $2\" = 'session kill' ]; then\n\
+             echo 'Error: server busy' >&2; exit 1\nfi\n\
              case \"$1 $2\" in\n\
              'api call') case \"$3\" in session.create) printf '%s' \
              '{\"session_id\":\"session:stub\",\"initial_windows\":[{\"window_id\":\"window:w\",\
              \"block_ids\":[\"block:b\"],\"revision\":1}]}' ;; *) printf '{}' ;; esac ;;\n\
-             'block ls') cat \"$dir/blocks.json\" ;;\n\
-             'block call') case \"$7\" in program_status) cat \"$dir/status.json\" ;;\n\
-             process) cat \"$dir/process.json\" ;; *) printf '{}' ;; esac ;;\n\
+             'block ls') serve blocks ;;\n\
+             'block call') case \"$7\" in program_status) serve status ;;\n\
+             process) serve process ;; *) printf '{}' ;; esac ;;\n\
              esac\n",
         )
         .expect("stub");
@@ -7924,6 +7972,229 @@ mod tests {
         fs::remove_dir_all(path).expect("cleanup");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_renamed_agent_block_or_another_tasks_block_is_never_this_tasks_agent() {
+        let (path, profiles) = profiles();
+        let (mut state, id, mut host, root, _) = rex_dispatched("renamed", &profiles);
+        let number = state.get(id).and_then(|task| task.number).expect("number");
+        let task = state.get(id).expect("task").clone();
+        let ours = format!("t{number}-implementer");
+        let blocks = |entries: &[(&str, &str)]| {
+            let blocks = entries
+                .iter()
+                .map(|(id, label)| serde_json::json!({"block_id": id, "label": label}))
+                .collect::<Vec<_>>();
+            fs::write(
+                root.join("blocks.json"),
+                serde_json::json!({ "blocks": blocks }).to_string(),
+            )
+            .expect("blocks");
+        };
+        // The agent exited, so a relaunch would replace a session it could find.
+        rex_reports(&root, &[], "", None);
+
+        for case in [
+            vec![("block:b", "renamed by hand")],
+            vec![("block:x", "t99-other")],
+        ] {
+            blocks(&case);
+            fs::write(root.join("rex.log"), "").expect("log");
+            // The session is open: uncertain, so the start is plain and asks for no relaunch.
+            let (route, check) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
+            assert_eq!(route, StartRoute::Plain, "{case:?}");
+            assert!(
+                matches!(check, AgentCheck::Unreachable { .. }),
+                "{case:?}: {check:?}"
+            );
+            // A relaunch launches nothing beside it.
+            let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+                .expect_err("no second agent session");
+            assert!(error.to_string().contains("no block labelled"), "{error}");
+            let log = rex_log(&root);
+            assert!(!log.contains("session.create"), "{case:?}: {log}");
+            assert!(!log.contains("session kill"), "{case:?}: {log}");
+        }
+
+        // Beside another task's block, this task's own is found.
+        blocks(&[("block:x", "t99-other"), ("block:b", &ours)]);
+        assert_eq!(
+            host.agent_pane("session:stub", &ours),
+            Ok("session:stub/block:b".into())
+        );
+        // A block this task's earlier assignee labelled is still this task's.
+        blocks(&[
+            ("block:x", "t99-other"),
+            ("block:b", &format!("t{number}-old")),
+        ]);
+        assert_eq!(
+            host.agent_pane("session:stub", &ours),
+            Ok("session:stub/block:b".into())
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rex_reply_checks_the_block_label_again_right_before_it_sends() {
+        let (path, profiles) = profiles();
+        let (state, id, mut host, root, _) = rex_dispatched("relabel", &profiles);
+        let task = state.get(id).expect("task").clone();
+        rex_reports(&root, &["idle"], "2.1.318", None);
+        let (_, check) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
+        assert!(
+            matches!(&check, AgentCheck::Running { name: Some(_), .. }),
+            "{check:?}"
+        );
+        // The route's check and the delivery's first check see this task's agent; another
+        // agent takes the block over before the send.
+        fs::write(
+            root.join("blocks.next"),
+            r#"{"blocks":[{"block_id":"block:b","label":"t99-other"}]}"#,
+        )
+        .expect("next");
+        fs::write(root.join("rex.log"), "").expect("log");
+        let delivery = deliver_reply(&task, &check, "unblocked", Some("yes"), &mut host);
+        assert_eq!(delivery, Some(Delivery::NotInPane));
+        let log = rex_log(&root);
+        assert_eq!(log.matches("block ls").count(), 2, "checked twice: {log}");
+        assert!(!log.contains("block.event"), "{log}");
+        assert!(!log.contains("send-key"), "{log}");
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rex_relaunch_after_cleanup_checks_out_the_kept_branch_under_the_worktree_root() {
+        let (path, profiles) = profiles();
+        let (_, _, mut host, root, project) = rex_dispatched("kept-branch", &profiles);
+        // A branch that survived a cleanup, with work on it.
+        let git = |dir: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        git(&project, &["branch", "tsk/t7-kept"]);
+        git(
+            &project,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "main moves on",
+            ],
+        );
+        let tip = git(&project, &["rev-parse", "tsk/t7-kept"]);
+        let created = host
+            .create_worktree(&project, "tsk/t7-kept", Some("main"), "T7 Kept")
+            .expect("checks out the existing branch");
+        let expected = root.join("state/worktrees/repo/tsk-t7-kept");
+        assert_eq!(
+            created.path.canonicalize().expect("path"),
+            expected.canonicalize().expect("expected")
+        );
+        assert_eq!(created.branch, "tsk/t7-kept");
+        assert_eq!(
+            git(&created.path, &["rev-parse", "HEAD"]),
+            tip,
+            "not the base"
+        );
+        assert_eq!(
+            git(&created.path, &["symbolic-ref", "--short", "HEAD"]),
+            "tsk/t7-kept"
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rex_cleanup_never_removes_a_worktree_off_the_dispatch_path_rule() {
+        let (path, profiles) = profiles();
+        let (state, id, mut host, root, project) = rex_dispatched("off-rule", &profiles);
+        let task = state.get(id).expect("task");
+        let mut record = task.dispatch.clone().expect("record");
+        // Registered with git at the recorded path, but not where dispatch puts this branch.
+        let moved = root.join("state/worktrees/repo/somewhere-else");
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&project)
+            .args(["worktree", "move", &record.worktree])
+            .arg(&moved)
+            .output()
+            .expect("git");
+        assert!(output.status.success(), "{output:?}");
+        record.worktree = moved.to_string_lossy().into_owned();
+        let inspection = host
+            .inspect_cleanup_cached(&project, &record, HostKind::Rex)
+            .expect("inspect");
+        assert!(inspection.workspace_exists);
+        assert!(!inspection.target_matches, "{inspection:?}");
+        let plan = CleanupPlanRow {
+            task_id: id,
+            number: task.number.expect("number"),
+            title: task.title.clone(),
+            project: project.clone(),
+            record,
+            refs: CleanupRefs::Cached,
+        };
+        fs::write(root.join("rex.log"), "").expect("log");
+        let error = clean_planned_with_host(&plan, HostKind::Rex, &mut host).expect_err("refused");
+        assert_eq!(error, CleanupError::WorktreeMismatch);
+        assert!(moved.is_dir(), "the worktree stays");
+        assert!(!rex_log(&root).contains("session kill"));
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rex_session_that_will_not_close_keeps_its_worktree() {
+        let (path, profiles) = profiles();
+        let (mut state, id, mut host, root, _) = rex_dispatched("kill-fails", &profiles);
+        let worktree = PathBuf::from(&state.get(id).unwrap().dispatch.clone().unwrap().worktree);
+        fs::write(root.join("kill-fails"), "").expect("kill-fails");
+        let error = clean_with_host(&mut state, id, HostKind::Rex, &mut host).expect_err("kept");
+        assert!(error.to_string().contains("server busy"), "{error}");
+        assert!(worktree.is_dir(), "no removal under a running agent");
+        assert!(!state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_relaunch_types_nothing_into_a_shell_that_started_a_program_after_the_first_check() {
+        let (path, profiles) = profiles();
+        let (mut state, id, mut host, root, _) = rex_dispatched("turned-busy", &profiles);
+        let worktree = PathBuf::from(&state.get(id).unwrap().dispatch.clone().unwrap().worktree);
+        // The relaunch's first look finds the bare shell; by the send, a program runs there.
+        rex_reports(&root, &[], "vim", Some(&worktree));
+        fs::rename(root.join("process.json"), root.join("process.next")).expect("next");
+        rex_reports(&root, &[], "zsh", Some(&worktree));
+        fs::write(root.join("rex.log"), "").expect("log");
+        let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+            .expect_err("nothing typed");
+        assert!(error.to_string().contains("vim runs in"), "{error}");
+        let log = rex_log(&root);
+        assert_eq!(log.matches(" process").count(), 2, "checked twice: {log}");
+        assert!(!log.contains(" write "), "{log}");
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
     #[test]
     fn rex_worktrees_follow_the_dispatch_path_rule() {
         use super::host::follows_path_rule as rule;
@@ -8169,6 +8440,11 @@ mod tests {
         };
         let result = clean_with_host(&mut state, id, HostKind::Rex, &mut host).expect("clean");
         assert_eq!(host.closed_ids, vec!["session:s1".to_string()]);
+        assert_eq!(
+            host.events,
+            vec!["close", "git-remove"],
+            "the session closes first"
+        );
         assert_eq!((host.removed_git, host.removed_herdr), (1, 0));
         assert_eq!(result.workspace, WorkspaceCleanup::Removed);
         assert!(state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);

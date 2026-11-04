@@ -202,9 +202,20 @@ fn label_of(block: &Value) -> Option<&str> {
     block.get("label").and_then(Value::as_str)
 }
 
-/// The dispatched agent's pane in `session`: the block labelled `t<n>-…`. A missing session, or
-/// one whose agent block closed, is gone.
-pub fn agent_block(program: &Path, session: &str) -> Result<String, RootPaneError> {
+/// The dispatched agent's pane in `session`. With `agent` (`t<n>-<assignee>`), the block
+/// labelled exactly that, else one labelled for the same task under an earlier assignee
+/// (`t<n>-…`, a reassigned task); without it, any `t<n>-<profile>` block. Another task's
+/// block is never this task's agent.
+///
+/// Only a session Rex says is gone, or one that never opened, is
+/// [`RootPaneError::WorkspaceGone`]. An open session with no such block (someone renamed it)
+/// is uncertain: [`RootPaneError::Failed`], so nothing launches beside an agent that may
+/// still run there.
+pub fn agent_block(
+    program: &Path,
+    session: &str,
+    agent: Option<&str>,
+) -> Result<String, RootPaneError> {
     if session.starts_with(PENDING_PREFIX) {
         return Err(RootPaneError::WorkspaceGone(format!(
             "rex session for {session} never opened"
@@ -219,14 +230,31 @@ pub fn agent_block(program: &Path, session: &str) -> Result<String, RootPaneErro
     let blocks = session_blocks(program, session)
         .map_err(RootPaneError::Failed)?
         .ok_or_else(|| RootPaneError::WorkspaceGone(format!("rex session {session} not found")))?;
-    blocks
-        .iter()
-        .find(|block| label_of(block).is_some_and(is_agent_label))
-        .and_then(|block| block.get("block_id").and_then(Value::as_str))
-        .map(|block| pane_id(session, block))
-        .ok_or_else(|| {
-            RootPaneError::WorkspaceGone(format!("rex session {session} has no agent block"))
-        })
+    let labelled = |wanted: &dyn Fn(&str) -> bool| {
+        blocks
+            .iter()
+            .find(|block| label_of(block).is_some_and(wanted))
+            .and_then(|block| block.get("block_id").and_then(Value::as_str))
+            .map(|block| pane_id(session, block))
+    };
+    let found = match agent {
+        Some(agent) => {
+            let task = agent.split_once('-').map(|(task, _)| format!("{task}-"));
+            labelled(&|label| label == agent).or_else(|| {
+                labelled(&|label| {
+                    is_agent_label(label)
+                        && task.as_deref().is_some_and(|task| label.starts_with(task))
+                })
+            })
+        }
+        None => labelled(&is_agent_label),
+    };
+    found.ok_or_else(|| {
+        let whose = agent.map_or_else(|| "an agent".to_string(), |agent| format!("{agent}'s"));
+        RootPaneError::Failed(format!(
+            "rex session {session} has no block labelled as {whose}; it may have been renamed"
+        ))
+    })
 }
 
 /// `t<digits>-<profile>`: the label [`super::agent_name`] gives.
@@ -417,9 +445,10 @@ pub fn pane_program(program: &Path, pane: &str) -> Result<BlockProgram, RootPane
 pub fn reusable_pane(
     program: &Path,
     session: &str,
+    agent: Option<&str>,
     worktree: &Path,
 ) -> Result<String, RootPaneError> {
-    let pane = agent_block(program, session)?;
+    let pane = agent_block(program, session, agent)?;
     match pane_program(program, &pane)? {
         BlockProgram::Shell { cwd } => {
             let here = cwd.as_deref().is_some_and(|cwd| {
@@ -479,20 +508,23 @@ pub fn type_line(program: &Path, pane: &str, line: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
-/// Submit `text` to the agent in `pane` as one message: a paste, then Enter. Only an agent
-/// whose current report is not `blocked` receives it; one with no report (at a first-run
-/// dialog, or a program that never reports) is not typed into, since Enter could answer a
-/// prompt nobody saw.
-pub fn prompt(program: &Path, pane: &str, text: &str) -> Result<(), PromptError> {
-    match agent(program, pane).map_err(PromptError::Failed)? {
-        (RexAgent::Gone, _) => {
-            return Err(PromptError::Failed(format!("the agent in {pane} is gone")))
-        }
-        (RexAgent::Reported { state, .. }, _) if state == "blocked" => {
+/// Submit `text` to the agent in `pane` as one message: a paste, then Enter. Only the block
+/// still labelled `name` receives it, read in the same check as its status, right before the
+/// send; and only an agent whose current report is not `blocked`. One with no report (at a
+/// first-run dialog, or a program that never reports) is not typed into, since Enter could
+/// answer a prompt nobody saw.
+pub fn prompt(program: &Path, pane: &str, name: &str, text: &str) -> Result<(), PromptError> {
+    let (found, label) = agent(program, pane).map_err(PromptError::Failed)?;
+    if !matches!(found, RexAgent::Gone) && label.as_deref() != Some(name) {
+        return Err(PromptError::NotInPane);
+    }
+    match found {
+        RexAgent::Gone => return Err(PromptError::Failed(format!("the agent in {pane} is gone"))),
+        RexAgent::Reported { state, .. } if state == "blocked" => {
             return Err(PromptError::AgentBlocked)
         }
-        (RexAgent::Reported { .. }, _) => {}
-        (RexAgent::Running { process }, _) => {
+        RexAgent::Reported { .. } => {}
+        RexAgent::Running { process } => {
             return Err(PromptError::Failed(format!(
                 "{process} has not reported its status, so tsk cannot tell it is ready for input"
             )))
@@ -683,7 +715,7 @@ mod tests {
         assert!(!is_session_id("w9"));
         assert!(!is_session_id("t12-claude"));
         assert!(matches!(
-            agent_block(Path::new("rex"), "w9"),
+            agent_block(Path::new("rex"), "w9", None),
             Err(RootPaneError::Failed(_))
         ));
         assert!(kill_session(Path::new("rex"), "w9").is_err());

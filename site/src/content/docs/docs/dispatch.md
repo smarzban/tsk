@@ -162,6 +162,7 @@ In Rex, a relaunch picks where the agent runs from what is left in its session:
 | The agent exited and its pane stayed open | Closes the session and opens a new one |
 | Gone | Opens a new session |
 | Something else runs there, or the shell left the worktree | Refuses and launches nothing |
+| Open, but no pane carries the task's agent name | Refuses and launches nothing |
 
 ## Decision cards
 
@@ -192,7 +193,7 @@ branch    tsk/t12-fix-login-timeout
                                                      esc cancel
 ```
 
-On the card, **agent pane** means the dispatch's Herdr workspace or Rex session.
+On the card, **agent pane** means the dispatch's Herdr workspace. For a Rex dispatch the card says **agent session**.
 
 | Where the branch stands | Options |
 | --- | --- |
