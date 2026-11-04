@@ -40,6 +40,8 @@ impl Drop for Temp {
 struct Fake {
     revision: u64,
     user: Vec<(&'static str, &'static str, &'static str)>,
+    /// Bindings loaded after tsk.lua: on top of every stack, and out of reach of its unbinds.
+    late: Vec<(&'static str, &'static str, &'static str)>,
     served: Option<PathBuf>,
     error_marker: Option<&'static str>,
     calls: RefCell<Vec<String>>,
@@ -50,6 +52,7 @@ impl Fake {
         Self {
             revision: MIN_REX_API_REVISION,
             user: Vec::new(),
+            late: Vec::new(),
             served: None,
             error_marker: None,
             calls: RefCell::new(Vec::new()),
@@ -62,18 +65,30 @@ impl Fake {
             .filter_map(|l| l.strip_prefix("rex.unbind(\""))
             .map(|l| l.trim_end_matches("\")").to_string())
             .collect();
-        let mut bindings: Vec<serde_json::Value> = managed
-            .lines()
-            .filter_map(|l| l.strip_prefix("rex.bind(\""))
-            .map(|l| {
-                let (key, rest) = l.split_once("\", \"").unwrap();
+        let mut bindings: Vec<serde_json::Value> = self
+            .late
+            .iter()
+            .map(|(key, action, source)| {
                 serde_json::json!({
                     "keys": key.split('>').collect::<Vec<_>>(),
-                    "action": rest.trim_end_matches("\")"),
-                    "source": "tsk.lua:1",
+                    "action": action,
+                    "source": source,
                 })
             })
             .collect();
+        bindings.extend(
+            managed
+                .lines()
+                .filter_map(|l| l.strip_prefix("rex.bind(\""))
+                .map(|l| {
+                    let (key, rest) = l.split_once("\", \"").unwrap();
+                    serde_json::json!({
+                        "keys": key.split('>').collect::<Vec<_>>(),
+                        "action": rest.trim_end_matches("\")"),
+                        "source": "tsk.lua:1",
+                    })
+                }),
+        );
         for (key, action, source) in &self.user {
             if !unbound.iter().any(|u| u == key) {
                 bindings.push(serde_json::json!({
@@ -455,4 +470,36 @@ fn rex_version_parsing_reads_the_api_revision() {
     require_min_rex("api: revision 11\n").unwrap();
     assert!(require_min_rex("api: revision 9 (supports 0 to 9)\n").is_err());
     assert!(require_min_rex("rex 0.0.1\n").is_err());
+}
+
+#[test]
+fn tsks_own_require_line_moves_back_to_the_end() {
+    let source = format!("-- mine\n{REQUIRE_LINE}\nrequire(\"later\")\n");
+    assert_eq!(
+        with_require(Some(&source)),
+        format!("-- mine\nrequire(\"later\")\n\n{REQUIRE_LINE}\n")
+    );
+    let settled = with_require(Some(&source));
+    assert_eq!(with_require(Some(&settled)), settled);
+    // A require the user wrote stays where they put it.
+    let theirs = "require(\"tsk\")\nrequire(\"later\")\n";
+    assert_eq!(with_require(Some(theirs)), theirs);
+}
+
+#[test]
+fn a_key_a_later_binding_still_takes_is_reported_not_claimed() {
+    let temp = Temp::new();
+    let mut fake = Fake::new();
+    fake.late = vec![("alt+t", "pane.send_key", "mine.lua:1")];
+    let result = run(&temp, &fake, Options::default(), true, "y\n")
+        .0
+        .unwrap();
+    assert_eq!(
+        result.shortcuts,
+        vec![("alt+a".to_string(), "quick capture")]
+    );
+    assert_eq!(
+        result.shadowed,
+        vec![("alt+t".to_string(), "board", "mine.lua:1".to_string())]
+    );
 }

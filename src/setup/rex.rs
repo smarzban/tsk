@@ -47,8 +47,11 @@ pub struct RexSetupResult {
     pub config: PathBuf,
     pub backup: Option<PathBuf>,
     pub declined_conflicts: bool,
-    /// The keys each tsk action is on after the reload, `(keys, label)`.
+    /// The keys each tsk action is on after the reload, `(keys, label)`: only keys where it
+    /// is the binding Rex tries first.
     pub shortcuts: Vec<(String, &'static str)>,
+    /// Keys setup bound that a later binding of the user's still takes, `(key, label, source)`.
+    pub shadowed: Vec<(String, &'static str, String)>,
 }
 
 /// `REX_CONFIG`, else `rex/init.lua` under `XDG_CONFIG_HOME` or `~/.config`.
@@ -326,7 +329,17 @@ fn managed_file(
     out
 }
 
+/// `init.lua` with tsk's require line last, so its bindings stack over the user's. tsk's own
+/// marked line moves to the end when the user added lines after it; a require the user
+/// wrote themselves stays where it is.
 fn with_require(init: Option<&str>) -> String {
+    if let Some(text) = init {
+        let last = text.lines().rev().find(|l| !l.trim().is_empty());
+        if last != Some(REQUIRE_LINE) && text.lines().any(|l| l == REQUIRE_LINE) {
+            let kept: Vec<&str> = text.lines().filter(|l| *l != REQUIRE_LINE).collect();
+            return with_require(Some(&format!("{}\n", kept.join("\n").trim_end())));
+        }
+    }
     match init {
         Some(text) if requires_tsk(text) => text.to_string(),
         Some("") => format!("{REQUIRE_LINE}\n"),
@@ -731,16 +744,28 @@ pub(crate) fn run_at(
         ))
     })?;
     let after = parse_keymap(&rex_ok(host, &["keymap", "--json"])?)?;
-    let shortcuts = [(BOARD_ACTION, "board"), (CAPTURE_ACTION, "quick capture")]
+    // The keymap lists each key's stack top first: a key counts only where tsk is on top.
+    let top = |keys: &[String]| after.bindings.iter().find(|b| b.keys == keys);
+    let labels = [(BOARD_ACTION, "board"), (CAPTURE_ACTION, "quick capture")];
+    let shortcuts = labels
         .into_iter()
         .filter_map(|(action, label)| {
             let keys: Vec<String> = after
                 .bindings
                 .iter()
                 .filter(|b| b.action == action)
+                .filter(|b| top(&b.keys).is_some_and(|t| t.action == action))
                 .map(|b| key_text(&b.keys))
                 .collect();
             (!keys.is_empty()).then(|| (keys.join(" / "), label))
+        })
+        .collect();
+    let shadowed = [(board, labels[0]), (capture, labels[1])]
+        .into_iter()
+        .filter_map(|(key, (action, label))| {
+            let key = key?;
+            let winner = top(&key)?;
+            (winner.action != action).then(|| (key_text(&key), label, winner.source.clone()))
         })
         .collect();
     Ok(RexSetupResult {
@@ -748,6 +773,7 @@ pub(crate) fn run_at(
         backup,
         declined_conflicts: declined,
         shortcuts,
+        shadowed,
     })
 }
 

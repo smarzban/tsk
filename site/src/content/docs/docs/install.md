@@ -228,6 +228,7 @@ Installing a new tsk does not refresh the registration by itself. `tsk update` r
 - **Version:** Rex with server API revision 10 or newer (`rex version`). An older Rex is refused before anything is written.
 - **Running Rex:** setup reads the keys already in use from the running Rex, so Rex must be running. A Rex server that reads a different config file is refused.
 - **Config files:** `REX_CONFIG`, else `$XDG_CONFIG_HOME/rex/init.lua`, else `~/.config/rex/init.lua`. Setup writes `tsk.lua` beside it and adds one `require("tsk")` line to the end of `init.lua`, creating it if needed. Your other lines are never changed.
+- **Load order:** setup keeps its `require` line last in `init.lua`, moving it back on a rerun, so its keys win. If a later binding still takes one, setup names it.
 - **`tsk.lua` is tsk's:** reruns rewrite it, so put your own changes in `init.lua`. Setup refuses a `tsk.lua` it did not write.
 - **Backup:** before changing `init.lua`, setup saves a copy beside it, `init.lua.tsk-backup-<YYYYMMDD-HHMMSS>` in UTC.
 - **Checks:** a config Rex reports errors in is refused before any change. After the change, Rex checks the merged config. If it reports errors, setup puts both files back.

@@ -2961,6 +2961,13 @@ pub fn setup_rex(result: crate::setup::rex::RexSetupResult) -> CliOutput {
     if result.declined_conflicts {
         stdout.push_str("Declined conflicts were left unchanged.\n");
     }
+    for (key, label, source) in &result.shadowed {
+        stdout.push_str(&format!(
+            "{} {label} is taken by a later binding at {}. Move require(\"tsk\") to the end of init.lua, then run tsk setup rex again.\n",
+            terminal_text(key),
+            terminal_text(source)
+        ));
+    }
     stdout.push_str("\nRex reloaded its config; the shortcuts work in every Rex pane.\n");
     CliOutput {
         stdout,
