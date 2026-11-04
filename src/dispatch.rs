@@ -14,7 +14,7 @@ mod host;
 pub mod pr;
 
 pub use host::HostKind;
-use host::{herdr_default_worktree, herdr_home, herdr_worktree_directory};
+use host::{herdr_worktree_directory, worktree_path};
 
 pub use pr::{MergeError, MergeOutcome, MergeRow, PrLookup, PrLookupError, PrProbe, PullRequest};
 
@@ -608,16 +608,15 @@ pub trait DispatchHost {
         self.resolve_base_choice(project, explicit)
     }
     /// Whether a first dispatch must not take `branch`: a local or remote-tracking branch of that
-    /// name, or a registered worktree in the directory Herdr would derive from it, exists.
+    /// name, or a registered worktree in the directory dispatch would derive from it, exists.
     fn branch_taken(&mut self, _project: &Path, _branch: &str) -> Result<bool, String> {
         Ok(false)
     }
-    /// Where the host checks out a new worktree for `branch`: the path `--show-prompt`
-    /// predicts. `None` when it cannot tell. Herdr's layout under the user's home by default.
-    fn default_worktree(&self, project: &Path, branch: &str) -> Option<PathBuf> {
-        herdr_home()
-            .filter(|home| !home.as_os_str().is_empty())
-            .and_then(|home| herdr_default_worktree(&home, project, branch))
+    /// The root a new worktree of `project` checks out under, as `<root>/<repo>/<directory>`:
+    /// what `--show-prompt` predicts from. `None` when the host cannot tell; an error is a
+    /// `config.toml` fault, checked before anything is created.
+    fn worktree_root(&self, _project: &Path) -> Result<Option<PathBuf>, String> {
+        Ok(None)
     }
     fn create_worktree(
         &mut self,
@@ -1201,11 +1200,15 @@ impl DispatchHost for SystemDispatchHost {
         base: Option<&str>,
         label: &str,
     ) -> Result<CreatedWorktree, String> {
+        let root = host::worktree_root(&self.state_dir, project)?;
         let mut command = Command::new("herdr");
         command
             .args(["worktree", "create", "--cwd"])
             .arg(project)
             .args(["--branch", branch]);
+        if let Some(path) = worktree_path(&root, project, branch) {
+            command.arg("--path").arg(path);
+        }
         if let Some(base) = base {
             command.args(["--base", base]);
         }
@@ -1234,7 +1237,12 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn branch_taken(&mut self, project: &Path, branch: &str) -> Result<bool, String> {
-        system_branch_taken(project, branch, herdr_home().as_deref())
+        let root = host::worktree_root(&self.state_dir, project)?;
+        system_branch_taken(project, branch, Some(&root))
+    }
+
+    fn worktree_root(&self, project: &Path) -> Result<Option<PathBuf>, String> {
+        host::worktree_root(&self.state_dir, project).map(Some)
     }
 
     fn inspect_cleanup(
@@ -3794,10 +3802,13 @@ pub fn preview_prompt(
                     &choice.reference,
                     choice.remote.as_deref(),
                 );
+                let root = host
+                    .worktree_root(project)
+                    .map_err(DispatchError::AgentConfig)?;
                 let names = DispatchNames::new(number, &task.title);
                 let branch = free_branch(host, project, &names, number)?;
-                let worktree = host
-                    .default_worktree(project, &branch)
+                let worktree = root
+                    .and_then(|root| worktree_path(&root, project, &branch))
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "{worktree}".into());
                 (worktree, branch, base)
@@ -3883,6 +3894,9 @@ pub fn launch_with_host(
         if let Some(existing) = task.dispatch.as_ref().filter(|_| eligible.again) {
             if existing.cleaned {
                 let label = workspace_label(number, &task.title);
+                // The recreated checkout goes under today's root; the record takes its path.
+                host.worktree_root(project)
+                    .map_err(DispatchError::AgentConfig)?;
                 // Herdr's create command deliberately handles both cases: it creates a missing
                 // branch from the recorded base, or checks out an existing retained branch.
                 let recreated = host
@@ -3957,6 +3971,8 @@ pub fn launch_with_host(
                 })?;
             let base = choice.reference;
             warning = choice.warning;
+            host.worktree_root(project)
+                .map_err(DispatchError::AgentConfig)?;
             let requested_branch = free_branch(host, project, &names, number)?;
             let created = host
                 .create_worktree(
@@ -4373,9 +4389,9 @@ fn alphanumeric_words(text: &str) -> Vec<(usize, &str)> {
 }
 
 /// Real-host name check: a local or remote-tracking branch, a registered worktree in the
-/// directory Herdr derives from `branch`, or any entry already at Herdr's default checkout path
-/// (`~/.herdr/worktrees/<repo>/<directory>`), registered or not.
-fn system_branch_taken(project: &Path, branch: &str, home: Option<&Path>) -> Result<bool, String> {
+/// directory dispatch derives from `branch`, or any entry already at the checkout path a
+/// dispatch would take (`<root>/<repo>/<directory>`), registered or not.
+fn system_branch_taken(project: &Path, branch: &str, root: Option<&Path>) -> Result<bool, String> {
     let local = format!("refs/heads/{branch}");
     let remote = format!("refs/remotes/*/{branch}");
     let output = crate::git_base::git_process_output_timeout(
@@ -4398,7 +4414,7 @@ fn system_branch_taken(project: &Path, branch: &str, home: Option<&Path>) -> Res
         return Err(command_failure("git worktree list", &output));
     }
     let directory = herdr_worktree_directory(branch);
-    if let Some(default) = home.and_then(|home| herdr_default_worktree(home, project, branch)) {
+    if let Some(default) = root.and_then(|root| worktree_path(root, project, branch)) {
         if default.symlink_metadata().is_ok() {
             return Ok(true);
         }
@@ -4491,6 +4507,8 @@ mod tests {
         git: bool,
         taken: Vec<String>,
         fail_taken: Option<String>,
+        /// What `worktree_root` refuses with: a bad `[dispatch] worktrees`.
+        fail_root: Option<String>,
         created_labels: Vec<String>,
         fail_create: Option<String>,
         fail_run: Option<String>,
@@ -4607,6 +4625,13 @@ mod tests {
             _: &std::collections::BTreeMap<String, String>,
         ) -> Option<PathBuf> {
             self.batch_only.clone()
+        }
+
+        fn worktree_root(&self, _: &Path) -> Result<Option<PathBuf>, String> {
+            match &self.fail_root {
+                Some(error) => Err(error.clone()),
+                None => Ok(Some(PathBuf::from("/worktrees"))),
+            }
         }
 
         fn branch_taken(&mut self, _: &Path, branch: &str) -> Result<bool, String> {
@@ -8344,9 +8369,9 @@ mod tests {
             worktree.to_str().unwrap(),
         ]);
 
-        // Left behind at Herdr's default checkout path with no registration and no branch.
-        let home = root.join("home");
-        fs::create_dir_all(home.join(".herdr/worktrees/repo/tsk-t4-leftover")).expect("mkdir");
+        // Left behind at the checkout path a dispatch would take, unregistered and branchless.
+        let worktrees = root.join("state/worktrees");
+        fs::create_dir_all(worktrees.join("repo/tsk-t4-leftover")).expect("mkdir");
 
         for (branch, taken) in [
             ("tsk/t1-local", true),
@@ -8358,21 +8383,21 @@ mod tests {
             ("tsk/t4-leftover-2", false),
         ] {
             assert_eq!(
-                system_branch_taken(&project, branch, Some(&home)),
+                system_branch_taken(&project, branch, Some(&worktrees)),
                 Ok(taken),
                 "{branch}"
             );
         }
-        assert!(system_branch_taken(&root, "tsk/t1", Some(&home)).is_err());
+        assert!(system_branch_taken(&root, "tsk/t1", Some(&worktrees)).is_err());
 
-        // Herdr checks a Unicode branch out in an ASCII directory, which can collide.
+        // A Unicode branch checks out in an ASCII directory, which can collide.
         assert_eq!(
             herdr_worktree_directory("tsk/t6-café-東京-x"),
             "tsk-t6-caf-x"
         );
-        fs::create_dir_all(home.join(".herdr/worktrees/repo/tsk-t6-caf-x")).expect("mkdir");
+        fs::create_dir_all(worktrees.join("repo/tsk-t6-caf-x")).expect("mkdir");
         assert_eq!(
-            system_branch_taken(&project, "tsk/t6-café-東京-x", Some(&home)),
+            system_branch_taken(&project, "tsk/t6-café-東京-x", Some(&worktrees)),
             Ok(true)
         );
 
@@ -8518,6 +8543,69 @@ mod tests {
         assert!(matches!(error, DispatchError::Herdr(_)), "{error}");
         assert_eq!(host.creates, 0);
         assert!(state.get(id).expect("task").dispatch.is_none());
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn a_bad_worktree_root_refuses_as_agent_config_before_anything_is_created() {
+        let (path, profiles) = profiles();
+        let bad_root = || FakeHost {
+            git: true,
+            fail_root: Some("config.toml: [dispatch] worktrees must be a string".into()),
+            ..FakeHost::default()
+        };
+        let refused = |error: &DispatchError| {
+            matches!(error, DispatchError::AgentConfig(reason)
+                if reason == "config.toml: [dispatch] worktrees must be a string")
+        };
+
+        // A first dispatch.
+        let (mut state, id) = task();
+        let before = serde_json::to_string(&state).expect("state");
+        let mut host = bad_root();
+        let error = run_with_host(&mut state, id, &profiles, false, HostKind::Herdr, &mut host)
+            .expect_err("bad root refuses");
+        assert!(refused(&error), "{error}");
+        assert_eq!(host.creates, 0);
+        assert!(host.runs.is_empty() && host.launchers.is_empty());
+        assert_eq!(serde_json::to_string(&state).expect("state"), before);
+
+        // The preview.
+        let error = preview_prompt(&state, id, &profiles, None, &mut bad_root())
+            .expect_err("bad root refuses the preview");
+        assert!(refused(&error), "{error}");
+
+        // A relaunch after cleanup recreates the worktree, so it refuses too.
+        let mut host = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, HostKind::Herdr, &mut host)
+            .expect("dispatch");
+        let mut clean = FakeHost {
+            cleanup: Some(CleanupInspection {
+                unreachable_remote: None,
+                warning: None,
+                base_available: true,
+                worktree_exists: false,
+                dirty: false,
+                dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
+                branch_merged: false,
+                workspace_exists: false,
+                target_matches: true,
+            }),
+            ..FakeHost::default()
+        };
+        clean_with_host(&mut state, id, HostKind::Herdr, &mut clean).expect("clean");
+        let cleaned = serde_json::to_string(&state).expect("state");
+        let mut host = bad_root();
+        let error = run_with_host(&mut state, id, &profiles, true, HostKind::Herdr, &mut host)
+            .expect_err("bad root refuses the recreate");
+        assert!(refused(&error), "{error}");
+        assert_eq!(host.creates, 0);
+        assert!(host.runs.is_empty() && host.launchers.is_empty());
+        assert_eq!(serde_json::to_string(&state).expect("state"), cleaned);
         fs::remove_dir_all(path).expect("cleanup");
     }
 

@@ -619,8 +619,13 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
         "{stdout}"
     );
     // The default base, and the next free branch name: origin already has the first one.
+    // The worktree goes under the state dir's `worktrees/<repo>`.
+    let default_worktree = dir.join("worktrees").join("app").join("tsk-t1-ship-it-2");
     assert!(
-        stdout.contains("tsk-t1-ship-it-2 on branch tsk/t1-ship-it-2, based on main.\n"),
+        stdout.contains(&format!(
+            "in worktree {} on branch tsk/t1-ship-it-2, based on main.\n",
+            default_worktree.display()
+        )),
         "{stdout}"
     );
     assert!(
@@ -698,6 +703,51 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
     assert!(again
         .stderr
         .contains("--show-prompt and --again cannot be combined"));
+
+    // `[dispatch] worktrees` moves the root; one inside the project refuses as a config error.
+    let config = fs::read_to_string(dir.join("config.toml")).expect("config");
+    let preview = |worktrees: &Path| {
+        fs::write(
+            dir.join("config.toml"),
+            format!(
+                "[dispatch]\nworktrees = '{}'\n{config}",
+                worktrees.display()
+            ),
+        )
+        .expect("config");
+        run_with(
+            [
+                "tsk",
+                "dispatch",
+                "T1",
+                "--show-prompt",
+                "--state-dir",
+                dir.to_str().expect("utf-8 path"),
+            ],
+            Cursor::new(Vec::<u8>::new()),
+            true,
+        )
+    };
+    let elsewhere = repos.join("elsewhere");
+    let moved = preview(&elsewhere);
+    assert_eq!(moved.code, 0, "{}", moved.stderr);
+    assert!(
+        moved.stdout.contains(&format!(
+            "in worktree {} on branch",
+            elsewhere.join("app").join("tsk-t1-ship-it-2").display()
+        )),
+        "{}",
+        moved.stdout
+    );
+    assert!(!elsewhere.exists(), "a preview creates no folder");
+    let inside = preview(&clone.join("worktrees"));
+    assert_eq!(inside.code, 1, "{}", inside.stdout);
+    assert!(
+        inside.stderr.starts_with("tsk dispatch: agent-config:")
+            && inside.stderr.contains("puts worktrees inside the project"),
+        "{}",
+        inside.stderr
+    );
     fs::remove_dir_all(dir).expect("cleanup");
     fs::remove_dir_all(repos).expect("cleanup repos");
 }

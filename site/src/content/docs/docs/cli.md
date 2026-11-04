@@ -497,7 +497,7 @@ tsk dispatch T12 --base main
 
 - A dispatched task shows its recorded worktree, branch, and base. `--base` does not change them.
 - Any other task shows the branch, worktree, and base a first dispatch would pick, and says so. It picks them the same way, skipping branch names already taken, but from what was last fetched: the preview never fetches.
-- The worktree path assumes Herdr keeps worktrees in its default folder.
+- The worktree path follows the [worktree location](/docs/storage/#worktree-location).
 - A desk task keeps `{worktree}`, `{branch}`, and `{base}` as written, and says so.
 - `env` values never print, only their names.
 
