@@ -80,6 +80,20 @@ impl AgentHost {
         }
     }
 
+    /// What users call the place an agent of this host runs: a Herdr `workspace` or a Rex
+    /// `session`.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Herdr => "workspace",
+            Self::Rex => "session",
+        }
+    }
+
+    /// [`Self::noun`] for a recorded workspace or session id.
+    pub fn noun_of(id: &str) -> &'static str {
+        Self::of_legacy_id(id).noun()
+    }
+
     /// The host's name as users see it: `Herdr` or `Rex`.
     pub fn label(self) -> &'static str {
         match self {

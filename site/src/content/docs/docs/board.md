@@ -211,7 +211,7 @@ Two or more entries are numbered, one per line. Each reply goes out once: one al
 
 tsk sends only to the agent it dispatched, named like `t12-claude`. The status row says how it went, for example `started · reply sent to @claude`.
 
-When nothing was sent, the status row says why: the agent is waiting on a prompt, cannot be reached, or is not in its pane. Outside Herdr nothing is sent. Your reply stays on the task either way, and nothing relaunches or retries.
+When nothing was sent, the status row says why: the agent is waiting on a prompt, cannot be reached, or is not in its pane. Outside Herdr or Rex nothing is sent. In Rex, tsk sends only to an agent that reports its status and is not waiting on a prompt. Your reply stays on the task either way, and nothing relaunches or retries.
 
 ## After
 

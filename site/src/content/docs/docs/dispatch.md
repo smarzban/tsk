@@ -88,13 +88,15 @@ Names come from the task number and title. For T12 `Fix login timeout`, assigned
 | Branch | `tsk/t12-fix-login-timeout` |
 | Worktree directory | `tsk-t12-fix-login-timeout` |
 | Herdr workspace | `T12 Fix login timeout` |
-| Herdr agent | `t12-claude` |
+| Herdr agent, Rex session and pane | `t12-claude` |
 
 - The title part keeps whole words within 30 characters.
 - The worktree directory keeps only ASCII letters and digits.
 - When a name is taken, tsk appends `-2`, `-3`, and so on.
 - The worktree goes under `<worktrees>/<repo>/`, such as `~/.tsk/worktrees/app/tsk-t12-fix-login-timeout`. `<worktrees>` is the `worktrees` folder in the [state directory](/docs/storage/#location), or the folder set in [`[dispatch]`](/docs/storage/#worktree-location).
 - tsk names the agent once Herdr detects it, so `herdr agent get t12-claude` finds it. If Herdr detects no agent within 30 seconds, it stays unnamed.
+- In Rex, the session and its pane carry the agent name from the start. tsk finds the agent by its pane name, so renaming the session is safe.
+- In Rex, the pane stays open after the agent exits, so an error it printed stays readable. Cleanup closes the session.
 
 The task page shows the worktree, the branch, and where the dispatch started, such as `from origin/main @ 3333b79`.
 
@@ -135,9 +137,7 @@ A launch row reads like `@claude  from default (main)`, with `checking…` while
 
 ## Relaunch
 
-In Rex, relaunch is not built yet: it refuses with `host-failed`.
-
-Starting a dispatched task whose agent is gone opens a card. The agent is gone when its workspace was closed, its pane has no agent, or its worktree was cleaned up.
+Starting a dispatched task whose agent is gone opens a card. The agent is gone when its workspace or Rex session was closed, its pane has no agent, or its worktree was cleaned up.
 
 ```text
 @claude is no longer running.
@@ -154,6 +154,16 @@ worktree  ~/.tsk/worktrees/app/tsk-t12-fix-login-timeout
 
 A relaunch keeps the recorded base and names, even if the task's base changed since. It opens a new workspace on the kept worktree. After a cleanup, it recreates the worktree from the kept branch, or from the original starting commit when the branch was deleted.
 
+In Rex, a relaunch picks where the agent runs from what is left in its session:
+
+| Session | Relaunch |
+| --- | --- |
+| Holds a bare shell in the worktree, as after a Rex restart | Runs the agent in that shell |
+| The agent exited and its pane stayed open | Closes the session and opens a new one |
+| Gone | Opens a new session |
+| Something else runs there, or the shell left the worktree | Refuses and launches nothing |
+| Open, but no pane carries the task's agent name | Refuses and launches nothing |
+
 ## Decision cards
 
 The relaunch, start-anyway, and marked-set start cards, the [cleanup card](#complete-and-clean-up), and the [archived-project prompt](/docs/board/#done-drawer-and-archive) work the same way:
@@ -167,8 +177,6 @@ The relaunch, start-anyway, and marked-set start cards, the [cleanup card](#comp
 Every card key is listed under [Keys](/docs/keys/#cards).
 
 ## Complete and clean up
-
-In Rex, cleanup is not built yet: it refuses with `host-failed` and keeps the worktree and branch.
 
 `ctrl+d` on a task with a live dispatch opens the cleanup card, titled `Done T12`. It says where the branch stands, then offers what to do with the pull request, the branch, and the local checkout. With an open pull request:
 
@@ -185,7 +193,7 @@ branch    tsk/t12-fix-login-timeout
                                                      esc cancel
 ```
 
-On the card, **agent pane** means the dispatch's Herdr workspace.
+On the card, **agent pane** means the dispatch's Herdr workspace. For a Rex dispatch the card says **agent session**.
 
 | Where the branch stands | Options |
 | --- | --- |
@@ -202,14 +210,14 @@ The task is marked done at once. Cleanup runs in the background while the board 
 
 - `ctrl+d` refuses while a cleanup runs.
 - Quitting waits for a running cleanup, up to 30 seconds.
-- A worktree that is already gone is marked cleaned without a card, and its branch is kept. Inside Herdr, its workspace closes.
+- A worktree that is already gone is marked cleaned without a card, and its branch is kept. Inside Herdr or Rex, its workspace or session closes.
 - Done tasks, archived tasks, and archived project views complete without a card.
 
 Completion is one save and one undo step, saved before any worktree is touched. `ctrl+u` reverts the status. It cannot un-merge a pull request or restore a removed worktree.
 
 ### What cleanup removes
 
-Cleanup closes the dispatch's Herdr workspace and removes its worktree. It deletes the branch only when the branch is merged into the recorded base:
+Cleanup closes the dispatch's Herdr workspace or Rex session and removes its worktree. In Rex, it removes only a worktree Git lists at the recorded path, in the folder dispatch names for the branch. It deletes the branch only when the branch is merged into the recorded base:
 
 - It fetches the base first, so a merge on GitHub counts without a local pull.
 - A squash or rebase merge leaves no Git ancestry, so with `gh` logged in, cleanup asks GitHub. It deletes the branch only when the pull request merged into the recorded base and its head is exactly the local branch tip.

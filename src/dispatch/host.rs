@@ -4,9 +4,10 @@
 //! cleanup, or a start needs to know whether a host can answer. Each host-specific call below
 //! matches on the kind, so a host adds an arm here instead of a flag through every caller.
 //!
-//! Rex (T411 spike) dispatches without a host worktree feature: tsk runs `git worktree add`
-//! itself and opens one Rex session per task whose only block runs the launcher as its
-//! command. Cleanup, relaunch, and reply in Rex are T413's; their arms refuse here.
+//! Rex dispatches without a host worktree feature: tsk runs `git worktree add` itself and opens
+//! one Rex session per task whose only block runs the launcher as its command. Cleanup closes
+//! that session and removes the worktree with git, only when `git worktree list` registers it
+//! at the recorded path and the path follows tsk's own rule for the task's branch.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -76,28 +77,37 @@ impl HostKind {
     ///
     /// Cleanup refuses a record another host owns before asking, so each arm sees only its own
     /// host's records.
-    pub(super) fn workspace_open_on(self, workspace_id: &str, worktree: &Path) -> bool {
+    ///
+    /// Rex sessions never change checkout, so the recorded session is open while Rex lists it.
+    /// A Rex that cannot answer leaves it open, for the close to fail and say why. `rex` is the
+    /// Rex CLI to ask.
+    pub(super) fn workspace_open_on(self, rex: &Path, workspace_id: &str, worktree: &Path) -> bool {
         match self {
             Self::Herdr => herdr_workspace_open_on(workspace_id, worktree),
-            // T413: until Rex cleanup lands, a recorded Rex session reads as open. With its
-            // worktree already gone, cleanup then closes that session (the task's own, as
-            // Herdr closes the task's workspace).
-            Self::Rex => true,
+            Self::Rex => super::rex::session_exists(rex, workspace_id).unwrap_or(true),
             Self::Standalone => false,
         }
     }
 
     /// Whether a workspace `workspace_id` is open on one of `project`'s worktrees, and if so
     /// whether that checkout is `worktree`: `(exists, matches)`. No host: `(false, true)`.
+    ///
+    /// Rex knows no worktrees: the session is looked up by its recorded id, and `worktree`
+    /// (already registered with git at the recorded path) must sit where tsk puts a checkout of
+    /// `branch`, `<root>/<repo>/<directory>`, whether or not the session is still open.
     pub(super) fn worktree_workspace(
         self,
+        rex: &Path,
         project: &Path,
-        workspace_id: &str,
+        (workspace_id, branch): (&str, &str),
         worktree: &Path,
     ) -> Result<(bool, bool), String> {
         match self {
             Self::Herdr => herdr_worktree_workspace(project, workspace_id, worktree),
-            Self::Rex => Err(REX_CLEANUP_PENDING.into()),
+            Self::Rex => Ok((
+                super::rex::session_exists(rex, workspace_id)?,
+                follows_path_rule(project, branch, worktree),
+            )),
             Self::Standalone => Ok((false, true)),
         }
     }
@@ -113,8 +123,17 @@ impl HostKind {
     }
 }
 
-/// Why cleanup refuses a Rex dispatch for now.
-pub(super) const REX_CLEANUP_PENDING: &str = "cleanup of a Rex dispatch is not built yet (T413)";
+/// Whether `worktree` is where dispatch checks out `branch` of `project`: a folder named for
+/// the branch ([`herdr_worktree_directory`]) inside one named for the repository, under any
+/// root (the configured root may have moved since).
+pub(super) fn follows_path_rule(project: &Path, branch: &str, worktree: &Path) -> bool {
+    let directory = herdr_worktree_directory(branch);
+    let repo = worktree.parent().and_then(Path::file_name);
+    !directory.is_empty()
+        && worktree.file_name() == Some(std::ffi::OsStr::new(&directory))
+        && repo.is_some()
+        && repo == project.file_name()
+}
 
 /// Whether the recorded workspace is still open on `worktree`, a checkout already deleted.
 /// Herdr keeps a workspace's checkout path after the directory goes (and after a `git

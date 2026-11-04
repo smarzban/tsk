@@ -514,7 +514,7 @@ You were dispatched to T12 (Fix the parser) in worktree …
 
 ## clean
 
-Removes a dispatched task's worktree, and inside Herdr its workspace, without changing its status. To finish and clean in one step, use `tsk status T12 done --clean`.
+Removes a dispatched task's worktree, and inside Herdr or Rex its workspace or session, without changing its status. To finish and clean in one step, use `tsk status T12 done --clean`.
 
 ```text
 tsk clean <task> [--merge] [--json] [--state-dir <dir>]

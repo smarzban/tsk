@@ -2334,7 +2334,10 @@ fn close_converged_workspace(
         "worktree already gone".to_string(),
     ];
     if workspace == dispatch::WorkspaceCleanup::Removed {
-        parts.push("workspace closed".into());
+        parts.push(format!(
+            "{} closed",
+            crate::domain::AgentHost::noun_of(&result.workspace_id)
+        ));
     }
     parts.push("branch kept".into());
     parts.extend(warning);
@@ -4714,7 +4717,10 @@ fn handle_board_intent_with_host(
                     format!("{} already gone", plural(missing, "worktree")),
                 ];
                 if closed > 0 {
-                    parts.push(format!("{} closed", plural(closed, "workspace")));
+                    let noun = workspaces
+                        .first()
+                        .map_or("workspace", |id| crate::domain::AgentHost::noun_of(id));
+                    parts.push(format!("{} closed", plural(closed, noun)));
                 }
                 parts.extend(warnings);
                 model.set_message(with_released(
