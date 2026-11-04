@@ -4503,7 +4503,7 @@ fn board_background_step(
 
 /// The real dispatch host for a board: launchers live beside the board's own store.
 fn board_dispatch_host(store: &TaskStore) -> SystemDispatchHost {
-    SystemDispatchHost::in_state_dir(store.path())
+    SystemDispatchHost::in_state_dir(store.path()).on(dispatch::HostKind::detect())
 }
 
 /// Apply a board intent. Returns `true` when the board loop should quit.

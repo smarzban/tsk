@@ -1,9 +1,12 @@
 //! The terminal host tsk dispatches into, and the host-specific calls that are not git's.
 //!
 //! [`HostKind`] is detected once per invocation and passed by value wherever dispatch,
-//! cleanup, or a start needs to know whether a host can answer. Herdr is the only host today;
-//! each host-specific call below matches on the kind, so a second host adds an arm here
-//! instead of a flag through every caller.
+//! cleanup, or a start needs to know whether a host can answer. Each host-specific call below
+//! matches on the kind, so a host adds an arm here instead of a flag through every caller.
+//!
+//! Rex (T411 spike) dispatches without a host worktree feature: tsk runs `git worktree add`
+//! itself and opens one Rex session per task whose only block runs the launcher as its
+//! command. Cleanup, relaunch, and reply in Rex are T413's; their arms refuse here.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,16 +24,32 @@ use super::{
 pub enum HostKind {
     /// Inside Herdr (`HERDR_ENV=1`): dispatch can open workspaces and launch agents.
     Herdr,
+    /// Inside a Rex terminal (`REX_SESSION` set, outside Herdr): dispatch opens a Rex session.
+    Rex,
     /// No host: dispatch refuses, a start is a plain status change, cleanup leaves
     /// workspaces alone.
     Standalone,
 }
 
 impl HostKind {
-    /// The host of this process, from its environment. The one place tsk reads `HERDR_ENV`.
+    /// The host of this process, from its environment. The one place tsk reads `HERDR_ENV`
+    /// and `REX_SESSION`.
     pub fn detect() -> Self {
-        if std::env::var("HERDR_ENV").as_deref() == Ok("1") {
+        Self::from_env(
+            std::env::var("HERDR_ENV").ok().as_deref(),
+            std::env::var("REX_SESSION").ok().as_deref(),
+        )
+    }
+
+    /// The host named by `HERDR_ENV` and `REX_SESSION`. Rex sets `REX_SESSION` in every
+    /// terminal it opens; `REX_SERVER` and `REX_BIN_DIR` can be exported from a profile, so
+    /// they say nothing about this terminal. Herdr wins when both are set: Herdr running in a
+    /// Rex tab passes `REX_*` down to its panes, and the innermost multiplexer owns the pane.
+    pub fn from_env(herdr_env: Option<&str>, rex_session: Option<&str>) -> Self {
+        if herdr_env == Some("1") {
             Self::Herdr
+        } else if rex_session.is_some_and(|session| !session.trim().is_empty()) {
+            Self::Rex
         } else {
             Self::Standalone
         }
@@ -46,6 +65,10 @@ impl HostKind {
     pub(super) fn workspace_open_on(self, workspace_id: &str, worktree: &Path) -> bool {
         match self {
             Self::Herdr => herdr_workspace_open_on(workspace_id, worktree),
+            // T413: until Rex cleanup lands, a recorded Rex session always reads as open, so
+            // the close is attempted and says why it failed rather than reporting it closed.
+            // Any other record (a Herdr workspace) is treated as outside a host, as before.
+            Self::Rex => super::rex::is_session_id(workspace_id),
             Self::Standalone => false,
         }
     }
@@ -60,6 +83,8 @@ impl HostKind {
     ) -> Result<(bool, bool), String> {
         match self {
             Self::Herdr => herdr_worktree_workspace(project, workspace_id, worktree),
+            Self::Rex if super::rex::is_session_id(workspace_id) => Err(REX_CLEANUP_PENDING.into()),
+            Self::Rex => Ok((false, true)),
             Self::Standalone => Ok((false, true)),
         }
     }
@@ -68,10 +93,15 @@ impl HostKind {
     pub(super) fn rename_agent(self, naming: &AgentNaming, left: Duration) -> Rename {
         match self {
             Self::Herdr => herdr_rename_agent(naming, left),
+            // The Rex block is labelled when the session is created; nothing to wait for.
+            Self::Rex => Rename::Final(Ok(())),
             Self::Standalone => Rename::Final(Err("no host to name the agent in".into())),
         }
     }
 }
+
+/// Why cleanup refuses a Rex dispatch for now.
+pub(super) const REX_CLEANUP_PENDING: &str = "cleanup of a Rex dispatch is not built yet (T413)";
 
 /// Whether the recorded workspace is still open on `worktree`, a checkout already deleted.
 /// Herdr keeps a workspace's checkout path after the directory goes (and after a `git
