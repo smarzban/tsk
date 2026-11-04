@@ -64,10 +64,15 @@ impl HostKind {
     /// deleted. No host: never open.
     pub(super) fn workspace_open_on(self, workspace_id: &str, worktree: &Path) -> bool {
         match self {
+            // A Rex session recorded on this board (T412 gives it its own field) is not
+            // Herdr's to answer for: it reads as open, never closed, so nothing is removed
+            // under an agent that may still run there.
+            Self::Herdr if super::rex::is_session_id(workspace_id) => true,
             Self::Herdr => herdr_workspace_open_on(workspace_id, worktree),
-            // T413: until Rex cleanup lands, a recorded Rex session always reads as open, so
-            // the close is attempted and says why it failed rather than reporting it closed.
-            // Any other record (a Herdr workspace) is treated as outside a host, as before.
+            // T413: until Rex cleanup lands, a recorded Rex session reads as open. With its
+            // worktree already gone, cleanup then closes that session (the task's own, as
+            // Herdr closes the task's workspace). Any other record (a Herdr workspace) is
+            // treated as outside a host, as before.
             Self::Rex => super::rex::is_session_id(workspace_id),
             Self::Standalone => false,
         }
@@ -82,6 +87,9 @@ impl HostKind {
         worktree: &Path,
     ) -> Result<(bool, bool), String> {
         match self {
+            Self::Herdr if super::rex::is_session_id(workspace_id) => Err(format!(
+                "{workspace_id} was dispatched in Rex; clean it up from Rex"
+            )),
             Self::Herdr => herdr_worktree_workspace(project, workspace_id, worktree),
             Self::Rex if super::rex::is_session_id(workspace_id) => Err(REX_CLEANUP_PENDING.into()),
             Self::Rex => Ok((false, true)),

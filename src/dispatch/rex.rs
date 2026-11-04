@@ -136,27 +136,38 @@ fn split_pane(pane: &str) -> Result<(&str, &str), String> {
 
 /// Open the task's session with the agent's block: `(session id, pane id)`.
 pub fn open_session(
+    program: &Path,
     label: &str,
     cwd: &Path,
     command: &[String],
 ) -> Result<(String, String), String> {
     let request = session_request(label, cwd, command, &inherited_path()).to_string();
-    let output = rex(&["api", "call", "session.create", &request])?;
+    let output = rex(program, &["api", "call", "session.create", &request])?;
     let value = rex_json(output)?;
     let session = value
         .get("session_id")
         .and_then(Value::as_str)
         .ok_or("rex session.create returned no session id")?;
-    let block = value
+    let Some(block) = value
         .pointer("/initial_windows/0/block_ids/0")
         .and_then(Value::as_str)
-        .ok_or("rex session.create returned no block")?;
+    else {
+        // The session opened and runs the launcher: close it, or the agent runs in a worktree
+        // the failed launch is about to remove.
+        let closed = kill_session(program, session)
+            .err()
+            .map(|error| format!("; could not close it: {error}"))
+            .unwrap_or_default();
+        return Err(format!(
+            "rex session.create returned no block for {session}{closed}"
+        ));
+    };
     Ok((session.to_string(), pane_id(session, block)))
 }
 
 /// The session's blocks, `None` when the session is gone.
-fn session_blocks(session: &str) -> Result<Option<Vec<Value>>, String> {
-    let output = rex(&["block", "ls", "-s", session, "--json"])?;
+fn session_blocks(program: &Path, session: &str) -> Result<Option<Vec<Value>>, String> {
+    let output = rex(program, &["block", "ls", "-s", session, "--json"])?;
     if not_found(&output) {
         return Ok(None);
     }
@@ -175,7 +186,7 @@ fn label_of(block: &Value) -> Option<&str> {
 
 /// The dispatched agent's pane in `session`: the block labelled `t<n>-…`. A missing session, or
 /// one whose agent block closed, is gone.
-pub fn agent_block(session: &str) -> Result<String, RootPaneError> {
+pub fn agent_block(program: &Path, session: &str) -> Result<String, RootPaneError> {
     if session.starts_with(PENDING_PREFIX) {
         return Err(RootPaneError::WorkspaceGone(format!(
             "rex session for {session} never opened"
@@ -188,7 +199,7 @@ pub fn agent_block(session: &str) -> Result<String, RootPaneError> {
             "{session} is not a Rex session; it was dispatched in another host"
         )));
     }
-    let blocks = session_blocks(session)
+    let blocks = session_blocks(program, session)
         .map_err(RootPaneError::Failed)?
         .ok_or_else(|| RootPaneError::WorkspaceGone(format!("rex session {session} not found")))?;
     blocks
@@ -214,12 +225,12 @@ pub fn is_agent_label(label: &str) -> bool {
 }
 
 /// Ask Rex about the agent in `pane` (`<session>/<block>`), with the block's label.
-pub fn agent(pane: &str) -> Result<(RexAgent, Option<String>), String> {
+pub fn agent(program: &Path, pane: &str) -> Result<(RexAgent, Option<String>), String> {
     let (session, block) = split_pane(pane)?;
     if !is_session_id(session) {
         return Err(format!("{session} is not a Rex session"));
     }
-    let Some(blocks) = session_blocks(session)? else {
+    let Some(blocks) = session_blocks(program, session)? else {
         return Ok((RexAgent::Gone, None));
     };
     let Some(found) = blocks
@@ -229,20 +240,26 @@ pub fn agent(pane: &str) -> Result<(RexAgent, Option<String>), String> {
         return Ok((RexAgent::Gone, None));
     };
     let label = label_of(found).map(str::to_string);
-    let status = rex(&[
-        "block",
-        "call",
-        "-s",
-        session,
-        "-b",
-        block,
-        "program_status",
-    ])?;
+    let status = rex(
+        program,
+        &[
+            "block",
+            "call",
+            "-s",
+            session,
+            "-b",
+            block,
+            "program_status",
+        ],
+    )?;
     if not_found(&status) {
         return Ok((RexAgent::Gone, label));
     }
     let status = rex_json(status)?;
-    let process = rex(&["block", "call", "-s", session, "-b", block, "process"])?;
+    let process = rex(
+        program,
+        &["block", "call", "-s", session, "-b", block, "process"],
+    )?;
     if not_found(&process) {
         return Ok((RexAgent::Gone, label));
     }
@@ -250,8 +267,8 @@ pub fn agent(pane: &str) -> Result<(RexAgent, Option<String>), String> {
 }
 
 /// [`agent`] as the dispatch seam reads it, named by the block's label.
-pub fn pane_agent(pane: &str) -> Result<PaneAgent, String> {
-    Ok(match agent(pane)? {
+pub fn pane_agent(program: &Path, pane: &str) -> Result<PaneAgent, String> {
+    Ok(match agent(program, pane)? {
         (RexAgent::Gone, _) => PaneAgent::Absent,
         (RexAgent::Reported { .. } | RexAgent::Running { .. }, name) => PaneAgent::Present { name },
     })
@@ -318,14 +335,14 @@ fn is_shell(name: &str) -> bool {
 }
 
 /// Close a session tsk opened. A session already gone is closed.
-pub fn kill_session(session: &str) -> Result<(), String> {
+pub fn kill_session(program: &Path, session: &str) -> Result<(), String> {
     if session.starts_with(PENDING_PREFIX) {
         return Ok(());
     }
     if !is_session_id(session) {
         return Err(format!("{session} is not a Rex session"));
     }
-    let output = rex(&["session", "kill", session])?;
+    let output = rex(program, &["session", "kill", session])?;
     if output.status.success() || not_found(&output) {
         Ok(())
     } else {
@@ -333,8 +350,8 @@ pub fn kill_session(session: &str) -> Result<(), String> {
     }
 }
 
-fn rex(args: &[&str]) -> Result<Output, String> {
-    Command::new("rex")
+fn rex(program: &Path, args: &[&str]) -> Result<Output, String> {
+    Command::new(program)
         .args(args)
         .output()
         .map_err(|error| format!("could not run rex: {error}"))
@@ -472,8 +489,11 @@ mod tests {
         assert!(is_session_id("rex-pending:/w/t12"));
         assert!(!is_session_id("w9"));
         assert!(!is_session_id("t12-claude"));
-        assert!(matches!(agent_block("w9"), Err(RootPaneError::Failed(_))));
-        assert!(kill_session("w9").is_err());
+        assert!(matches!(
+            agent_block(Path::new("rex"), "w9"),
+            Err(RootPaneError::Failed(_))
+        ));
+        assert!(kill_session(Path::new("rex"), "w9").is_err());
     }
 
     #[test]

@@ -973,6 +973,8 @@ pub struct SystemDispatchHost {
     /// Rex worktrees this host created whose session has not opened yet, by provisional
     /// workspace id: `(project, worktree)`, so a failed launch can take the worktree back.
     rex_pending: std::collections::HashMap<String, (PathBuf, PathBuf)>,
+    /// The Rex CLI: `rex` from PATH. Tests point it at a stub.
+    rex: PathBuf,
 }
 
 impl SystemDispatchHost {
@@ -982,6 +984,7 @@ impl SystemDispatchHost {
             gh: PathBuf::from("gh"),
             kind: HostKind::Herdr,
             rex_pending: std::collections::HashMap::new(),
+            rex: PathBuf::from("rex"),
         }
     }
 
@@ -989,6 +992,12 @@ impl SystemDispatchHost {
     /// git and Rex; anything else keeps Herdr's.
     pub fn on(mut self, kind: HostKind) -> Self {
         self.kind = kind;
+        self
+    }
+
+    /// Run this `rex` instead of the one on PATH: tests point it at a stub.
+    pub fn with_rex(mut self, program: impl Into<PathBuf>) -> Self {
+        self.rex = program.into();
         self
     }
 
@@ -1304,9 +1313,17 @@ impl DispatchHost for SystemDispatchHost {
         if !self.rex() {
             return Err("this host cannot open an agent session".into());
         }
-        let opened = rex::open_session(label, worktree, command)?;
-        self.rex_pending
-            .retain(|_, (_, pending)| pending.as_path() != worktree);
+        let opened = rex::open_session(&self.rex, label, worktree, command)?;
+        // Re-key the worktree to the session: a record save that fails after this undoes the
+        // launch by the session id, and must still find the worktree to take back.
+        let pending = self
+            .rex_pending
+            .iter()
+            .find(|(_, (_, pending))| pending.as_path() == worktree)
+            .map(|(key, _)| key.clone());
+        if let Some(entry) = pending.and_then(|key| self.rex_pending.remove(&key)) {
+            self.rex_pending.insert(opened.0.clone(), entry);
+        }
         Ok(opened)
     }
 
@@ -1354,13 +1371,18 @@ impl DispatchHost for SystemDispatchHost {
     }
     fn remove_host_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
         if self.rex() {
-            // Only a launch this host started and could not finish is taken back here; a
-            // recorded Rex dispatch's cleanup is T413's.
+            // Only a launch this host started and could not record is taken back here; a
+            // recorded Rex dispatch's cleanup is T413's. Its session closes first, so no agent
+            // is left running in the removed checkout.
             let (project, worktree) = self
                 .rex_pending
-                .remove(workspace_id)
+                .get(workspace_id)
+                .cloned()
                 .ok_or_else(|| host::REX_CLEANUP_PENDING.to_string())?;
-            return system_remove_git_worktree(&project, &worktree, None);
+            rex::kill_session(&self.rex, workspace_id)?;
+            system_remove_git_worktree(&project, &worktree, None)?;
+            self.rex_pending.remove(workspace_id);
+            return Ok(());
         }
         let output = Command::new("herdr")
             .args(["worktree", "remove", "--workspace", workspace_id])
@@ -1503,7 +1525,14 @@ impl DispatchHost for SystemDispatchHost {
 
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, RootPaneError> {
         if self.rex() {
-            return rex::agent_block(workspace_id);
+            return rex::agent_block(&self.rex, workspace_id);
+        }
+        if rex::is_session_id(workspace_id) {
+            // A Rex session recorded on this board: Herdr cannot say it is gone, so the start
+            // stays plain instead of offering a second agent on the same worktree.
+            return Err(RootPaneError::Failed(format!(
+                "{workspace_id} was dispatched in Rex"
+            )));
         }
         let output = Command::new("herdr")
             .args(["pane", "list", "--workspace", workspace_id])
@@ -1546,7 +1575,7 @@ impl DispatchHost for SystemDispatchHost {
 
     fn pane_agent(&mut self, pane_id: &str) -> Result<PaneAgent, String> {
         if self.rex() {
-            return rex::pane_agent(pane_id);
+            return rex::pane_agent(&self.rex, pane_id);
         }
         let output = Command::new("herdr")
             .args(["agent", "get", pane_id])
@@ -1646,7 +1675,7 @@ impl DispatchHost for SystemDispatchHost {
 
     fn close_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
         if self.rex() {
-            return rex::kill_session(workspace_id);
+            return rex::kill_session(&self.rex, workspace_id);
         }
         let output = Command::new("herdr")
             .args(["workspace", "close", workspace_id])
@@ -7355,15 +7384,157 @@ mod tests {
         let (label, worktree, command) = &host.sessions[0];
         assert_eq!(label, &format!("t{number}-implementer"));
         assert_eq!(worktree, Path::new("/tmp/worktree"));
-        let launcher = host.launcher_path("w9").expect("launcher");
-        assert_eq!(command[0], "/bin/sh");
-        assert_eq!(
-            Path::new(&command[1]).parent(),
-            launcher.parent(),
-            "the command runs the launcher it wrote"
-        );
         assert_eq!(host.launchers.len(), 1);
+        let written = host
+            .launcher_path(&host.launchers[0].0)
+            .expect("the path write_launcher returned");
+        assert_eq!(
+            command,
+            &vec![
+                "/bin/sh".to_string(),
+                written.to_string_lossy().into_owned()
+            ],
+            "the command runs exactly the launcher it wrote"
+        );
         assert_eq!(state.get(id).expect("task").status, HumanStatus::Started);
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// A throwaway repository on `main` with one commit, under its own temp root.
+    #[cfg(unix)]
+    fn rex_repo(name: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "tsk-dispatch-rex-{name}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let project = root.join("repo");
+        fs::create_dir_all(&project).expect("mkdir");
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ][..],
+        ] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&project)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "{args:?}: {output:?}");
+        }
+        (root, project)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unrecorded_rex_launch_closes_its_session_and_takes_worktree_and_branch_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let (path, profiles) = profiles();
+        let (root, project) = rex_repo("unrecorded");
+        // A stub `rex`: logs every call, opens a session on `api call session.create`.
+        let stub = root.join("rex");
+        fs::write(
+            &stub,
+            "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/rex.log\"\n\
+             case \"$1\" in api) printf '%s' '{\"session_id\":\"session:stub\",\
+             \"initial_windows\":[{\"window_id\":\"window:w\",\"block_ids\":[\"block:b\"],\
+             \"revision\":1}]}' ;; esac\n",
+        )
+        .expect("stub");
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let mut state = DomainState::new();
+        let id = state
+            .create_assigned(
+                "Rex rollback",
+                None,
+                TaskScope::Project {
+                    path: project.to_string_lossy().into_owned(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+                Some("implementer".into()),
+            )
+            .expect("task");
+        state.assign_numbers_for_persistence();
+        let mut host = SystemDispatchHost::in_state_dir(root.join("state"))
+            .on(HostKind::Rex)
+            .with_rex(&stub);
+        let result = run_with_host_base(
+            &mut state,
+            id,
+            &profiles,
+            false,
+            HostKind::Rex,
+            Some("main"),
+            &mut host,
+        )
+        .expect("dispatch");
+        assert_eq!(result.record.herdr_workspace_id, "session:stub");
+        let worktree = PathBuf::from(&result.record.worktree);
+        assert!(worktree.is_dir(), "{}", worktree.display());
+
+        // The record save fails after the session opened: the launch is taken back.
+        let error = unrecorded(
+            &mut host,
+            &result.record,
+            &result.undo,
+            DispatchError::Store("disk full".into()),
+        );
+        assert!(!error.to_string().contains("left behind"), "{error}");
+        assert!(!worktree.exists(), "the worktree is removed");
+        let branches = Command::new("git")
+            .arg("-C")
+            .arg(&project)
+            .args(["branch", "--list", &result.record.branch])
+            .output()
+            .expect("git");
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "the branch is deleted"
+        );
+        let log = fs::read_to_string(root.join("rex.log")).expect("log");
+        assert!(log.contains("session kill session:stub"), "{log}");
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn herdr_never_reads_a_rex_session_as_gone() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut fake = FakeHost {
+            git: true,
+            command_session: Some(Ok(("session:s1".into(), "session:s1/block:b1".into()))),
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, HostKind::Rex, &mut fake)
+            .expect("dispatch");
+        let task = state.get(id).expect("task").clone();
+        // The real host on Herdr: the guard answers before any `herdr` runs.
+        let mut host = SystemDispatchHost::in_state_dir(path.join("state"));
+        assert!(matches!(
+            host.root_pane("session:s1"),
+            Err(RootPaneError::Failed(_))
+        ));
+        let (route, check) = start_route_checked(&task, "you", HostKind::Herdr, &mut host);
+        assert_eq!(route, StartRoute::Plain, "no relaunch is offered");
+        assert!(matches!(check, AgentCheck::Unreachable { .. }), "{check:?}");
+        let worktree = Path::new("/tmp/worktree");
+        assert!(HostKind::Herdr.workspace_open_on("session:s1", worktree));
+        assert!(HostKind::Herdr.workspace_open_on("rex-pending:/w", worktree));
+        assert!(HostKind::Herdr
+            .worktree_workspace(Path::new("/repos/app"), "session:s1", worktree)
+            .is_err());
         fs::remove_dir_all(path).expect("cleanup");
     }
 
