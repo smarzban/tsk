@@ -41,7 +41,7 @@ With tsk, run `tsk guide` first: the tsk skill owns every command. This skill ne
      `config.toml` yet: ask the user to add one, or start the builder yourself.
    - In neither: create the worktree and start the agent yourself, e.g. one terminal tab per agent.
    - The prompt only points at the brief: "T12: read `tsk list T12 --json`."
-   - After prompting, confirm the agent is working: read its Herdr or Rex pane. A dialog can
+   - After prompting, confirm the agent is working: read its pane or terminal. A dialog can
      swallow a prompt.
 5. **Wait on a completion signal.** Every prompt needs one; never assume you will notice.
    - With tsk, the task status is the signal: the builder sets `review` (with `--on` naming you)

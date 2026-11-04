@@ -116,6 +116,8 @@ Only when the user asks.
   only when the user wants it.
 - `other-host` means the task was dispatched in the other host (Herdr or Rex): relaunch or clean it
   up from there. `no-host` means `tsk dispatch` ran outside Herdr and Rex.
+- `host-failed` means a Herdr, Rex, git, or gh call failed. Report its message; do not retry
+  blindly.
 - A `no launch: <reason>` line after a start means the task started but nothing launched (outside
   Herdr or Rex, or a desk task). Tell the user; do not retry.
 - **Clean up** after review and merge: `tsk clean T12`, or `tsk status T12 done --clean` when the
