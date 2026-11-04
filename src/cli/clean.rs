@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crate::cli::parser::TaskAddress;
-use crate::dispatch::{self, CleanupError, CleanupResult, DispatchHost};
+use crate::dispatch::{self, CleanupError, CleanupResult, DispatchHost, HostKind};
 use crate::store::{default_state_dir, TaskStore};
 
 pub fn run(target: TaskAddress, state_dir: Option<PathBuf>) -> Result<CleanupResult, CleanupError> {
@@ -11,7 +11,7 @@ pub fn run(target: TaskAddress, state_dir: Option<PathBuf>) -> Result<CleanupRes
     run_with_host(
         target,
         Some(state_dir),
-        dispatch::running_inside_herdr(),
+        dispatch::HostKind::detect(),
         &mut host,
     )
 }
@@ -21,7 +21,7 @@ pub fn run(target: TaskAddress, state_dir: Option<PathBuf>) -> Result<CleanupRes
 pub fn run_with_host(
     target: TaskAddress,
     state_dir: Option<PathBuf>,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> Result<CleanupResult, CleanupError> {
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
@@ -35,7 +35,7 @@ pub fn run_with_host(
         .find(|task| target.matches(task))
         .map(|task| task.id)
         .ok_or(CleanupError::UnknownTask)?;
-    let result = dispatch::clean_with_host(&mut state, id, in_herdr, host)?;
+    let result = dispatch::clean_with_host(&mut state, id, host_kind, host)?;
     store
         .reload_merge_save(&mut state)
         .map_err(|error| CleanupError::Store(error.to_string()))?;
@@ -86,7 +86,7 @@ pub struct Merged {
 pub fn merge_with_host(
     target: TaskAddress,
     state_dir: Option<PathBuf>,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> Result<Merged, MergeRefused> {
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
@@ -99,7 +99,7 @@ pub fn merge_with_host(
         .find(|task| target.matches(task))
         .map(|task| task.id)
         .ok_or(MergeRefused::Cleanup(CleanupError::UnknownTask))?;
-    let preview = dispatch::inspect_cleanup_cached_with_host(&state, id, in_herdr, host)
+    let preview = dispatch::inspect_cleanup_cached_with_host(&state, id, host_kind, host)
         .map_err(MergeRefused::Cleanup)?;
     if preview.inspection.dirty {
         return Err(MergeRefused::Cleanup(CleanupError::DirtyWorktree));
