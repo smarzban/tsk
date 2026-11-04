@@ -167,8 +167,10 @@ fn migrate_dev_layout(document: serde_json::Value) -> Result<serde_json::Value, 
     Ok(document)
 }
 
-/// v15 -> v16: every dispatch record names its host. Only Herdr dispatched before v16, so each
-/// record gains `host: herdr`, and its `herdr_workspace_id` becomes the host-neutral `session`.
+/// v15 -> v16: every dispatch record names its host, and its `herdr_workspace_id` becomes the
+/// host-neutral `session`. Released builds dispatched only in Herdr, but Rex dev builds stored
+/// their session there (`session:…`, or `rex-pending:…` while it opened): those records gain
+/// `host: rex`, every other one `host: herdr` ([`crate::domain::AgentHost::of_legacy_id`]).
 fn migrate_v15_to_v16(mut document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
     for task in document
         .get_mut("tasks")
@@ -185,9 +187,15 @@ fn migrate_v15_to_v16(mut document: serde_json::Value) -> Result<serde_json::Val
         if let Some(session) = record.remove("herdr_workspace_id") {
             record.entry("session".to_string()).or_insert(session);
         }
+        let host = crate::domain::AgentHost::of_legacy_id(
+            record
+                .get("session")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default(),
+        );
         record
             .entry("host".to_string())
-            .or_insert_with(|| serde_json::json!("herdr"));
+            .or_insert_with(|| serde_json::json!(host));
     }
     Ok(document)
 }
@@ -4069,6 +4077,11 @@ mod tests {
     /// holding one Herdr dispatch: the current shape with the record's `host` dropped and its
     /// `session` under the old `herdr_workspace_id` key.
     fn pre_host_document(version: u32) -> String {
+        pre_host_document_with(version, "w9")
+    }
+
+    /// [`pre_host_document`] with `session` as the record's `herdr_workspace_id`.
+    fn pre_host_document_with(version: u32, session: &str) -> String {
         let mut state = round_tripped_current_state("Fix the login redirect");
         let id = state.tasks()[0].id;
         state
@@ -4083,7 +4096,7 @@ mod tests {
                     base_commit: None,
                     base_remote: None,
                     host: crate::domain::AgentHost::Herdr,
-                    session: "w9".into(),
+                    session: session.into(),
                     at: UNIX_EPOCH + Duration::from_secs(1_793_817_827),
                     cleaned: false,
                 },
@@ -4144,6 +4157,43 @@ mod tests {
         let record = lines[0].task.dispatch.clone().expect("record");
         assert_eq!(record.host, crate::domain::AgentHost::Herdr);
         assert_eq!(record.session, "w9");
+    }
+
+    /// Rex dev builds (before v16) kept a Rex session, or a session still opening, in
+    /// `herdr_workspace_id`: such a record migrates as a Rex dispatch, from the store and from
+    /// trash alike.
+    #[test]
+    fn a_pre_host_rex_session_migrates_to_a_rex_record() {
+        use crate::domain::AgentHost;
+        for (session, host, wire) in [
+            ("w9", AgentHost::Herdr, "herdr"),
+            ("session:01a1", AgentHost::Rex, "rex"),
+            ("rex-pending:/w/t12", AgentHost::Rex, "rex"),
+        ] {
+            let original = pre_host_document_with(15, session);
+            let dir = temp_dir("migrate-rex-host");
+            let _guard = TempDirGuard(dir.clone());
+            fs::create_dir_all(&dir).expect("mkdir");
+            fs::write(dir.join(STATE_FILE), &original).expect("write");
+            let store = TaskStore::new(&dir);
+            let loaded = store.load().expect("a pre-host store opens");
+            let record = loaded.tasks()[0].dispatch.clone().expect("record");
+            assert_eq!((record.host, record.session.as_str()), (host, session));
+            store.save(&loaded).expect("save");
+            let saved: serde_json::Value =
+                serde_json::from_slice(&fs::read(dir.join(STATE_FILE)).expect("live"))
+                    .expect("json");
+            assert_eq!(saved["tasks"][0]["dispatch"]["host"], wire, "{session}");
+
+            let document: serde_json::Value = serde_json::from_str(&original).expect("json");
+            let line = serde_json::json!({
+                "deleted_at": [1793817827, 0],
+                "task": document["tasks"][0],
+            });
+            let lines = parse_trash_lines(format!("{line}\n").as_bytes());
+            let record = lines[0].task.dispatch.clone().expect("trash record");
+            assert_eq!(record.host, host, "trash line for {session}");
+        }
     }
 
     #[test]

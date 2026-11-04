@@ -59,17 +59,27 @@ pub struct Notice {
 
 /// The terminal host a dispatch launched its agent in. Only that host can ask after the
 /// agent, relaunch it, deliver replies to it, or clean up its workspace.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentHost {
-    /// A Herdr workspace. Records from before the host field (store v6 and older) read as Herdr.
-    #[default]
+    /// A Herdr workspace.
     Herdr,
     /// A Rex session.
     Rex,
 }
 
 impl AgentHost {
+    /// The host of a record from before the host field (store v15 and older), from its
+    /// `herdr_workspace_id`: Rex dev builds stored a Rex session (`session:…`) or a session
+    /// still opening (`rex-pending:…`) there; anything else is a Herdr workspace.
+    pub fn of_legacy_id(id: &str) -> Self {
+        if id.starts_with("session:") || id.starts_with("rex-pending:") {
+            Self::Rex
+        } else {
+            Self::Herdr
+        }
+    }
+
     /// The host's name as users see it: `Herdr` or `Rex`.
     pub fn label(self) -> &'static str {
         match self {
@@ -81,7 +91,7 @@ impl AgentHost {
 
 /// One durable record of an agent launch for a task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "DispatchWire")]
 pub struct Dispatch {
     /// Fully rendered profile argv, retained for inspection after launch.
     pub argv: Vec<String>,
@@ -99,12 +109,9 @@ pub struct Dispatch {
     /// Exact fetch remote, retained so overlapping remote names cannot change provenance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_remote: Option<String>,
-    /// The host the agent was launched in. Absent before store v16 (only Herdr dispatched).
-    #[serde(default)]
+    /// The host the agent was launched in.
     pub host: AgentHost,
     /// The host's handle for the agent's home: a Herdr workspace id, or a Rex session id.
-    /// Stored as `herdr_workspace_id` before store v16; the alias reads trash lines from then.
-    #[serde(alias = "herdr_workspace_id")]
     pub session: String,
     #[serde(with = "super::time_serde")]
     pub at: SystemTime,
@@ -112,6 +119,54 @@ pub struct Dispatch {
     /// available for inspection and a deliberate relaunch.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cleaned: bool,
+}
+
+/// What a [`Dispatch`] reads from. A record from before store v16 has no `host` and keeps its
+/// `session` under `herdr_workspace_id`; trash lines from then never pass through the store
+/// migration, so the record itself reads them, deciding the host as the migration does
+/// ([`AgentHost::of_legacy_id`]).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DispatchWire {
+    argv: Vec<String>,
+    worktree: String,
+    branch: String,
+    #[serde(default)]
+    base: Option<String>,
+    #[serde(default)]
+    base_ref: Option<String>,
+    #[serde(default)]
+    base_commit: Option<String>,
+    #[serde(default)]
+    base_remote: Option<String>,
+    #[serde(default)]
+    host: Option<AgentHost>,
+    #[serde(alias = "herdr_workspace_id")]
+    session: String,
+    #[serde(with = "super::time_serde")]
+    at: SystemTime,
+    #[serde(default)]
+    cleaned: bool,
+}
+
+impl From<DispatchWire> for Dispatch {
+    fn from(wire: DispatchWire) -> Self {
+        Self {
+            host: wire
+                .host
+                .unwrap_or_else(|| AgentHost::of_legacy_id(&wire.session)),
+            argv: wire.argv,
+            worktree: wire.worktree,
+            branch: wire.branch,
+            base: wire.base,
+            base_ref: wire.base_ref,
+            base_commit: wire.base_commit,
+            base_remote: wire.base_remote,
+            session: wire.session,
+            at: wire.at,
+            cleaned: wire.cleaned,
+        }
+    }
 }
 
 /// One unit of intended work.

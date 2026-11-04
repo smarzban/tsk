@@ -598,6 +598,15 @@ mod tests {
                 "not sent: only your replies are sent",
                 0,
             ),
+            // Dispatched in Herdr, replied from Rex: Rex never asks after Herdr's agent.
+            (
+                true,
+                "you",
+                HostKind::Rex,
+                named(),
+                "not sent: dispatched in Herdr; reply from Herdr",
+                0,
+            ),
         ];
         for (dispatched, by, host_kind, mut host, line, sends) in cases {
             let temp = Temp::new("not-sent");
@@ -608,6 +617,27 @@ mod tests {
             assert_eq!(outcome.line(), line);
             assert_eq!(host.prompts.len(), sends, "{line}");
             assert_eq!(temp.status(number), HumanStatus::Blocked);
+            if host_kind == HostKind::Rex {
+                assert!(
+                    matches!(&outcome, SendOutcome::NotDelivered { delivery, .. }
+                    if *delivery == Delivery::OtherHost(crate::domain::AgentHost::Herdr))
+                );
+            }
+            if dispatched && by == "you" {
+                let state = TaskStore::new(&temp.0).load().expect("load");
+                let task = state
+                    .tasks()
+                    .iter()
+                    .find(|task| task.number == Some(number))
+                    .expect("task");
+                let replies = &task.block.as_ref().expect("block").replies;
+                assert!(
+                    replies
+                        .iter()
+                        .any(|reply| reply.text == "use postgres" && !reply.sent),
+                    "{line}: the reply stays unsent"
+                );
+            }
             if sends == 1 {
                 assert!(matches!(outcome, SendOutcome::NotDelivered { delivery, .. }
                     if delivery != Delivery::Sent));
