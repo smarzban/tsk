@@ -144,27 +144,162 @@ fn herdr_rename_agent(naming: &AgentNaming, left: Duration) -> Rename {
     }
 }
 
-/// The checkout Herdr gives a new worktree for `branch`:
-/// `<home>/.herdr/worktrees/<repo>/<directory>`. `None` when `project` has no name.
-pub(super) fn herdr_default_worktree(home: &Path, project: &Path, branch: &str) -> Option<PathBuf> {
-    project.file_name().map(|repo| {
-        home.join(".herdr/worktrees")
-            .join(repo)
-            .join(herdr_worktree_directory(branch))
-    })
+/// Where dispatch checks out a new worktree for `branch`, on any host:
+/// `<root>/<repo>/<directory>`. `None` when `project` has no name.
+pub(super) fn worktree_path(root: &Path, project: &Path, branch: &str) -> Option<PathBuf> {
+    project
+        .file_name()
+        .map(|repo| root.join(repo).join(herdr_worktree_directory(branch)))
 }
 
-/// The user's home, where Herdr keeps worktrees: `%USERPROFILE%` on Windows.
-pub(super) fn herdr_home() -> Option<PathBuf> {
-    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
+/// The root new worktrees of `project` go under: `[dispatch] worktrees` in `config.toml`, or
+/// `<state_dir>/worktrees`, made absolute. A root inside the project refuses: the checkout
+/// would sit in the tree it was cut from.
+pub(super) fn worktree_root(state_dir: &Path, project: &Path) -> Result<PathBuf, String> {
+    let configured = crate::agents::DispatchSettings::load(state_dir)
+        .map_err(|error| error.to_string())?
+        .worktrees;
+    let root = configured.unwrap_or_else(|| state_dir.join("worktrees"));
+    let root = std::path::absolute(&root)
+        .map_err(|error| format!("could not resolve {}: {error}", root.display()))?;
+    let resolved = resolve_existing_prefix(&root);
+    let inside = [
+        project.to_path_buf(),
+        resolve_existing_prefix(project),
+    ]
+    .iter()
+    .any(|project| path_within(&resolved, project) || path_within(&root, project));
+    if inside {
+        return Err(format!(
+            "config.toml: [dispatch] worktrees {} is inside the project {}; pick a folder outside it",
+            root.display(),
+            project.display()
+        ));
+    }
+    Ok(root)
 }
 
-/// Directory Herdr gives a worktree for `branch`: every run of characters other than ASCII
-/// letters and digits becomes one `-`, so `tsk/t1-café-東京` checks out in `tsk-t1-caf`.
+/// `path` with its longest existing ancestor canonicalized, so symlinks and `..` resolve
+/// before a containment check; the rest is appended as written.
+fn resolve_existing_prefix(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(canonical) = current.canonicalize() {
+            return rest
+                .iter()
+                .rev()
+                .fold(canonical, |acc, part: &&std::ffi::OsStr| acc.join(part));
+        }
+        match (current.parent(), current.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// Whether `path` is `ancestor` or below it. Windows compares without case.
+fn path_within(path: &Path, ancestor: &Path) -> bool {
+    if cfg!(windows) {
+        let lower = |path: &Path| PathBuf::from(path.to_string_lossy().to_lowercase());
+        lower(path).starts_with(lower(ancestor))
+    } else {
+        path.starts_with(ancestor)
+    }
+}
+
+/// Directory a worktree for `branch` checks out in, on any host (Herdr's own rule): every run
+/// of characters other than ASCII letters and digits becomes one `-`, so `tsk/t1-café-東京`
+/// checks out in `tsk-t1-caf`.
 pub(super) fn herdr_worktree_directory(branch: &str) -> String {
     branch
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "tsk-host-{name}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).expect("mkdir");
+        root
+    }
+
+    #[test]
+    fn worktrees_go_under_the_state_dir_unless_config_moves_them() {
+        let root = temp_root("worktree-root");
+        let (state, project) = (root.join("state"), root.join("app"));
+        fs::create_dir_all(&state).expect("state");
+        fs::create_dir_all(&project).expect("project");
+        let default = worktree_root(&state, &project).expect("default root");
+        assert_eq!(default, state.join("worktrees"));
+        assert_eq!(
+            worktree_path(&default, &project, "tsk/t12-fix-login-timeout"),
+            Some(state.join("worktrees/app/tsk-t12-fix-login-timeout"))
+        );
+        assert!(!default.exists(), "resolving creates nothing");
+
+        let elsewhere = root.join("elsewhere");
+        let configure = |worktrees: &Path| {
+            fs::write(
+                state.join("config.toml"),
+                format!("[dispatch]\nworktrees = '{}'\n", worktrees.display()),
+            )
+            .expect("config");
+        };
+        configure(&elsewhere);
+        assert_eq!(worktree_root(&state, &project), Ok(elsewhere));
+
+        // Inside the project refuses, also when reached through `..` or a symlink.
+        for inside in [
+            project.join("wt"),
+            project.clone(),
+            root.join("state/../app/wt"),
+        ] {
+            configure(&inside);
+            let error = worktree_root(&state, &project).unwrap_err();
+            assert!(error.contains("is inside the project"), "{error}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&project, root.join("link")).expect("symlink");
+            configure(&root.join("link/wt"));
+            assert!(worktree_root(&state, &project).is_err());
+        }
+        // A sibling whose name starts like the project's is outside it.
+        configure(&root.join("app-worktrees"));
+        assert!(worktree_root(&state, &project).is_ok());
+        // A state dir inside the project puts its default root there too: refused.
+        let nested = project.join(".tsk");
+        fs::create_dir_all(&nested).expect("nested");
+        assert!(worktree_root(&nested, &project).is_err());
+
+        fs::write(state.join("config.toml"), "[dispatch]\nworktrees = 'rel'\n").expect("config");
+        let error = worktree_root(&state, &project).unwrap_err();
+        assert!(error.starts_with("config.toml: [dispatch] "), "{error}");
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn a_relative_state_dir_gives_an_absolute_root() {
+        let root = worktree_root(Path::new("relative-state"), Path::new("/nowhere/app"))
+            .expect("root");
+        assert!(root.is_absolute(), "{}", root.display());
+        assert!(root.ends_with("relative-state/worktrees"));
+    }
 }
