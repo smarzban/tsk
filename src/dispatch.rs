@@ -7926,7 +7926,7 @@ mod tests {
 
     #[test]
     fn rex_worktrees_follow_the_dispatch_path_rule() {
-        use super::host::follows_path_rule_for_tests as rule;
+        use super::host::follows_path_rule as rule;
         let project = Path::new("/repos/app");
         assert!(rule(
             project,

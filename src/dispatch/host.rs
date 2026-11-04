@@ -123,15 +123,10 @@ impl HostKind {
     }
 }
 
-#[cfg(test)]
-pub(super) fn follows_path_rule_for_tests(project: &Path, branch: &str, worktree: &Path) -> bool {
-    follows_path_rule(project, branch, worktree)
-}
-
 /// Whether `worktree` is where dispatch checks out `branch` of `project`: a folder named for
 /// the branch ([`herdr_worktree_directory`]) inside one named for the repository, under any
 /// root (the configured root may have moved since).
-fn follows_path_rule(project: &Path, branch: &str, worktree: &Path) -> bool {
+pub(super) fn follows_path_rule(project: &Path, branch: &str, worktree: &Path) -> bool {
     let directory = herdr_worktree_directory(branch);
     let repo = worktree.parent().and_then(Path::file_name);
     !directory.is_empty()
