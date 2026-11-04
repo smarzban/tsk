@@ -13564,7 +13564,7 @@ mod quick_assign_tests {
         summary.add(
             "ready",
             &message("unblocked", 1),
-            &dispatch::Delivery::NotInHerdr,
+            &dispatch::Delivery::NoHost,
         );
         assert_eq!(
             summary.line(),

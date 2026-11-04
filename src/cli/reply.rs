@@ -73,9 +73,9 @@ impl SendOutcome {
                 delivery: Delivery::NotInPane,
             } => format!("not sent: @{assignee} is not in its pane"),
             Self::NotDelivered {
-                delivery: Delivery::NotInHerdr,
+                delivery: Delivery::NoHost,
                 ..
-            } => format!("not sent: {}", dispatch::NO_LAUNCH_NOT_IN_HERDR),
+            } => format!("not sent: {}", dispatch::NO_LAUNCH_NO_HOST),
             Self::NotDelivered { assignee, .. } => format!("not sent: could not reach @{assignee}"),
             Self::Skipped(reason) => format!("not sent: {reason}"),
         }

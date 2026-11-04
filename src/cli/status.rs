@@ -903,7 +903,7 @@ mod start_tests {
         .expect("plain start");
         assert!(matches!(
             outcome,
-            StartOutcome::NoLaunch(_, crate::dispatch::NO_LAUNCH_NOT_IN_HERDR)
+            StartOutcome::NoLaunch(_, crate::dispatch::NO_LAUNCH_NO_HOST)
         ));
         assert_eq!(temp.status(number), HumanStatus::Started);
         assert_eq!(host.ran, 0);
