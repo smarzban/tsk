@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::agents::AgentProfiles;
 use crate::cli::parser::{BlockFlags, TaskAddress};
-use crate::dispatch::{self, DispatchError, DispatchHost, DispatchResult, StartRoute};
+use crate::dispatch::{self, DispatchError, DispatchHost, DispatchResult, HostKind, StartRoute};
 use crate::domain::{
     actor_from_env, BlockDraft, BlockField, BlockKind, BlockOn, BlockPatch, DomainError,
     DomainState, HumanStatus, ReviewDraft, ReviewPatch, OWNER,
@@ -114,7 +114,7 @@ pub fn run_done(
     let outcome = run_done_with_host(
         target,
         Some(state_dir),
-        dispatch::running_inside_herdr(),
+        dispatch::HostKind::detect(),
         &actor_from_env(),
         &mut host,
     )?;
@@ -144,7 +144,7 @@ pub fn name_released(released: &[dispatch::Released]) {
 pub fn run_done_with_host(
     target: TaskAddress,
     state_dir: Option<PathBuf>,
-    in_herdr: bool,
+    host_kind: HostKind,
     actor: &str,
     host: &mut impl DispatchHost,
 ) -> Result<(StatusResult, Vec<dispatch::Released>), StatusError> {
@@ -174,7 +174,7 @@ pub fn run_done_with_host(
                 actor,
             );
             let released = if changed {
-                dispatch::plan_released_with_host(state, actor, in_herdr, None, host)
+                dispatch::plan_released_with_host(state, actor, host_kind, None, host)
             } else {
                 Vec::new()
             };
@@ -188,7 +188,7 @@ pub fn run_done_with_host(
         released.extend(launch_released_after_done(
             &store,
             &state_dir,
-            in_herdr,
+            host_kind,
             host,
             launches,
             token.as_deref(),
@@ -204,7 +204,7 @@ pub fn run_done_with_host(
 fn launch_released_after_done(
     store: &TaskStore,
     state_dir: &Path,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
     launches: Vec<(Uuid, u64)>,
     token: Option<&str>,
@@ -221,7 +221,7 @@ fn launch_released_after_done(
     for (id, after) in launches {
         state.hold_launch(id, after);
     }
-    let launched = dispatch::launch_released_with_host(&mut state, state_dir, in_herdr, host);
+    let launched = dispatch::launch_released_with_host(&mut state, state_dir, host_kind, host);
     let recorded = store.reload_merge_save(&mut state);
     Ok(launched
         .into_iter()
@@ -270,7 +270,7 @@ pub fn run_started(
         target,
         flags,
         Some(state_dir),
-        dispatch::running_inside_herdr(),
+        dispatch::HostKind::detect(),
         &actor_from_env(),
         &mut host,
     )?;
@@ -295,7 +295,7 @@ pub fn run_started_with_host(
     target: TaskAddress,
     flags: StartFlags,
     state_dir: Option<PathBuf>,
-    in_herdr: bool,
+    host_kind: HostKind,
     actor: &str,
     host: &mut impl DispatchHost,
 ) -> Result<StartOutcome, StatusError> {
@@ -342,12 +342,12 @@ pub fn run_started_with_host(
         return plain(state_dir);
     }
     let closing = Closing::before(task, actor);
-    let again = match dispatch::start_route(task, actor, in_herdr, host) {
+    let again = match dispatch::start_route(task, actor, host_kind, host) {
         StartRoute::Plain => {
             let result = plain(state_dir.clone())?;
             return Ok(match (result, closing) {
                 (StartOutcome::Status(result), Some(closing)) => {
-                    match closing.deliver(&store, target, in_herdr, host) {
+                    match closing.deliver(&store, target, host_kind, host) {
                         Some(line) => StartOutcome::Delivered(result, line),
                         None => StartOutcome::Status(result),
                     }
@@ -365,7 +365,7 @@ pub fn run_started_with_host(
         StartRoute::AgentGone { .. } if flags.again => true,
         StartRoute::AgentGone { assignee } => return Err(StatusError::AgentGone(assignee)),
     };
-    let result = crate::cli::dispatch::run_with_host(target, again, state_dir, in_herdr, host)
+    let result = crate::cli::dispatch::run_with_host(target, again, state_dir, host_kind, host)
         .map_err(|error| match error {
             DispatchError::Store(detail) => StatusError::Store(detail),
             other => StatusError::Dispatch(other),
@@ -389,7 +389,7 @@ pub fn run_ready(
     run_ready_with_host(
         target,
         Some(state_dir),
-        dispatch::running_inside_herdr(),
+        dispatch::HostKind::detect(),
         &actor_from_env(),
         &mut host,
     )
@@ -398,7 +398,7 @@ pub fn run_ready(
 pub fn run_ready_with_host(
     target: TaskAddress,
     state_dir: Option<PathBuf>,
-    in_herdr: bool,
+    host_kind: HostKind,
     actor: &str,
     host: &mut impl DispatchHost,
 ) -> Result<(StatusResult, Option<String>), StatusError> {
@@ -417,7 +417,7 @@ pub fn run_ready_with_host(
         state_dir,
         actor,
     )?;
-    let line = closing.and_then(|closing| closing.deliver(&store, target, in_herdr, host));
+    let line = closing.and_then(|closing| closing.deliver(&store, target, host_kind, host));
     Ok((result, line))
 }
 
@@ -441,7 +441,7 @@ impl Closing {
         self,
         store: &TaskStore,
         target: TaskAddress,
-        in_herdr: bool,
+        host_kind: HostKind,
         host: &mut impl DispatchHost,
     ) -> Option<String> {
         let state = store.load().ok()?;
@@ -455,7 +455,7 @@ impl Closing {
             return None;
         }
         let assignee = task.agent_assignee()?;
-        let (_, check) = dispatch::start_route_checked(task, OWNER, in_herdr, host);
+        let (_, check) = dispatch::start_route_checked(task, OWNER, host_kind, host);
         let delivery =
             dispatch::deliver_reply(task, &check, message.label, message.text.as_deref(), host)?;
         let status = if task.status == HumanStatus::Ready {
@@ -683,7 +683,7 @@ mod start_tests {
                 TaskAddress::Number(number),
                 flags,
                 Some(self.0.clone()),
-                true,
+                HostKind::Herdr,
                 actor,
                 host,
             )
@@ -776,7 +776,7 @@ mod start_tests {
             Ok(())
         }
 
-        fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
+        fn remove_host_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
             self.removed.push(workspace_id.into());
             Ok(())
         }
@@ -896,7 +896,7 @@ mod start_tests {
             TaskAddress::Number(number),
             PLAIN,
             Some(temp.0.clone()),
-            false,
+            HostKind::Standalone,
             "you",
             &mut host,
         )
@@ -1041,7 +1041,7 @@ mod start_tests {
             TaskAddress::Number(number),
             PLAIN,
             Some(temp.0.clone()),
-            false,
+            HostKind::Standalone,
             "you",
             &mut host,
         )
@@ -1129,7 +1129,7 @@ mod start_tests {
         let (result, released) = run_done_with_host(
             TaskAddress::Number(first),
             Some(temp.0.clone()),
-            true,
+            HostKind::Herdr,
             "you",
             &mut host,
         )
@@ -1172,7 +1172,7 @@ mod start_tests {
         let (_, released) = run_done_with_host(
             TaskAddress::Number(first),
             Some(temp.0.clone()),
-            true,
+            HostKind::Herdr,
             "you",
             &mut host,
         )
@@ -1207,7 +1207,7 @@ mod start_tests {
         let (_, released) = run_done_with_host(
             TaskAddress::Number(first),
             Some(temp.0.clone()),
-            true,
+            HostKind::Herdr,
             "you",
             &mut host,
         )
@@ -1241,7 +1241,7 @@ mod start_tests {
         let (result, released) = run_done_with_host(
             TaskAddress::Number(first),
             Some(temp.0.clone()),
-            true,
+            HostKind::Herdr,
             "you",
             &mut host,
         )
@@ -1297,7 +1297,7 @@ mod start_tests {
         let error = launch_released_after_done(
             &store,
             &temp.0,
-            true,
+            HostKind::Herdr,
             &mut host,
             launches,
             token.as_deref(),
@@ -1326,7 +1326,7 @@ mod start_tests {
         let (_, released) = run_done_with_host(
             TaskAddress::Number(first),
             Some(temp.0.clone()),
-            false,
+            HostKind::Standalone,
             "you",
             &mut host,
         )

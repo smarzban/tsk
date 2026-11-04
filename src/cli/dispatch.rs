@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::agents::AgentProfiles;
 use crate::cli::parser::TaskAddress;
 use crate::dispatch::{
-    self, DispatchError, DispatchHost, DispatchResult, PromptPreview, SystemDispatchHost,
+    self, DispatchError, DispatchHost, DispatchResult, HostKind, PromptPreview, SystemDispatchHost,
 };
 use crate::store::{default_state_dir, TaskStore};
 
@@ -21,7 +21,7 @@ pub fn run(
         target,
         again,
         Some(state_dir),
-        dispatch::running_inside_herdr(),
+        dispatch::HostKind::detect(),
         base_override.as_deref(),
         &mut host,
     )?;
@@ -65,17 +65,17 @@ pub fn run_with_host(
     target: TaskAddress,
     again: bool,
     state_dir: Option<PathBuf>,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> Result<DispatchResult, DispatchError> {
-    run_with_host_base(target, again, state_dir, in_herdr, None, host)
+    run_with_host_base(target, again, state_dir, host_kind, None, host)
 }
 
 pub fn run_with_host_base(
     target: TaskAddress,
     again: bool,
     state_dir: Option<PathBuf>,
-    in_herdr: bool,
+    host_kind: HostKind,
     base_override: Option<&str>,
     host: &mut impl DispatchHost,
 ) -> Result<DispatchResult, DispatchError> {
@@ -97,7 +97,7 @@ pub fn run_with_host_base(
         id,
         &profiles,
         again,
-        in_herdr,
+        host_kind,
         base_override,
         host,
     )?;
