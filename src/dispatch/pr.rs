@@ -765,7 +765,8 @@ mod tests {
             base_ref: Some(base_ref.into()),
             base_commit: None,
             base_remote: remote.map(str::to_string),
-            herdr_workspace_id: "w1".into(),
+            host: crate::domain::AgentHost::Herdr,
+            session: "w1".into(),
             at: std::time::SystemTime::UNIX_EPOCH,
             cleaned: false,
         }

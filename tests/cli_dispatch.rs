@@ -181,7 +181,7 @@ fn successful_cli_dispatch_persists_record_and_started_together() {
     let task = saved.tasks().first().expect("task");
     assert_eq!(task.status, HumanStatus::Started);
     let record = task.dispatch.as_ref().expect("record");
-    assert_eq!(record.herdr_workspace_id, "workspace-1");
+    assert_eq!(record.session, "workspace-1");
     assert_eq!(record.base.as_deref(), Some("main"));
     assert_eq!(record.base_commit, None);
     assert_eq!(record.base_ref.as_deref(), Some("refs/heads/main"));
@@ -1359,7 +1359,8 @@ impl CleanupRepo {
                     )),
                     base_commit: None,
                     base_remote: remote.map(str::to_string),
-                    herdr_workspace_id: "w1".into(),
+                    host: tsk_tui::domain::AgentHost::Herdr,
+                    session: "w1".into(),
                     at: std::time::SystemTime::now(),
                     cleaned: false,
                 },

@@ -57,6 +57,28 @@ pub struct Notice {
     pub number: Option<u64>,
 }
 
+/// The terminal host a dispatch launched its agent in. Only that host can ask after the
+/// agent, relaunch it, deliver replies to it, or clean up its workspace.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentHost {
+    /// A Herdr workspace. Records from before the host field (store v6 and older) read as Herdr.
+    #[default]
+    Herdr,
+    /// A Rex session.
+    Rex,
+}
+
+impl AgentHost {
+    /// The host's name as users see it: `Herdr` or `Rex`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Herdr => "Herdr",
+            Self::Rex => "Rex",
+        }
+    }
+}
+
 /// One durable record of an agent launch for a task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,7 +99,13 @@ pub struct Dispatch {
     /// Exact fetch remote, retained so overlapping remote names cannot change provenance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_remote: Option<String>,
-    pub herdr_workspace_id: String,
+    /// The host the agent was launched in. Absent before store v16 (only Herdr dispatched).
+    #[serde(default)]
+    pub host: AgentHost,
+    /// The host's handle for the agent's home: a Herdr workspace id, or a Rex session id.
+    /// Stored as `herdr_workspace_id` before store v16; the alias reads trash lines from then.
+    #[serde(alias = "herdr_workspace_id")]
+    pub session: String,
     #[serde(with = "super::time_serde")]
     pub at: SystemTime,
     /// The recorded worktree has been removed or was already missing. The record stays
@@ -521,7 +549,7 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 6;
+pub const STORE_FORMAT_VERSION: u32 = 16;
 
 fn default_next_notice_number() -> u64 {
     1

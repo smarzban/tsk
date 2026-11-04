@@ -76,6 +76,10 @@ impl SendOutcome {
                 delivery: Delivery::NoHost,
                 ..
             } => format!("not sent: {}", dispatch::NO_LAUNCH_NO_HOST),
+            Self::NotDelivered {
+                delivery: Delivery::OtherHost(host),
+                ..
+            } => format!("not sent: {}", dispatch::other_host(*host, "reply")),
             Self::NotDelivered { assignee, .. } => format!("not sent: could not reach @{assignee}"),
             Self::Skipped(reason) => format!("not sent: {reason}"),
         }
@@ -295,7 +299,8 @@ mod tests {
                             base_ref: None,
                             base_commit: None,
                             base_remote: None,
-                            herdr_workspace_id: "w0".into(),
+                            host: crate::domain::AgentHost::Herdr,
+                            session: "w0".into(),
                             at: std::time::SystemTime::now(),
                             cleaned: false,
                         },

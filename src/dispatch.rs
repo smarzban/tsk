@@ -8,7 +8,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::agents::{AgentProfiles, MergeMethod, RenderContext};
-use crate::domain::{Dispatch, DomainState, HumanStatus, Task, TaskScope};
+use crate::domain::{AgentHost, Dispatch, DomainState, HumanStatus, Task, TaskScope};
 
 mod host;
 pub mod pr;
@@ -324,6 +324,8 @@ pub enum CleanupError {
     /// Windows: git's removal stopped partway. The message says what is left and how to
     /// finish by hand; the branch keeps every commit.
     PartlyRemoved(String),
+    /// The dispatch belongs to another host: only that host can clean it up.
+    OtherHost(AgentHost),
     /// A host (Herdr or Rex), git, or gh call failed (`host-failed`).
     Host(String),
     Store(String),
@@ -343,6 +345,7 @@ impl CleanupError {
             Self::PathTooLong => "path too long",
             Self::RemovalTimedOut => "removal timed out",
             Self::PartlyRemoved(_) => "partly removed",
+            Self::OtherHost(_) => "other host",
             Self::Host(_) => "removal failed",
             Self::Store(_) => "save failed",
         }
@@ -360,6 +363,7 @@ impl CleanupError {
             Self::PathTooLong => "path-too-long",
             Self::RemovalTimedOut => "removal-timed-out",
             Self::PartlyRemoved(_) => "partly-removed",
+            Self::OtherHost(_) => "other-host",
             Self::Host(_) => "host-failed",
             Self::Store(_) => "store-error",
         }
@@ -389,6 +393,7 @@ impl CleanupError {
                 "removal timed out after {} minutes (retry when the disk is less busy)",
                 WINDOWS_REMOVAL_TIMEOUT.as_secs() / 60
             ),
+            Self::OtherHost(host) => other_host(*host, "clean it up"),
             Self::PartlyRemoved(reason) | Self::Host(reason) | Self::Store(reason) => {
                 reason.clone()
             }
@@ -446,6 +451,8 @@ pub enum DispatchError {
     ArchivedTask,
     SoftDeletedTask,
     AlreadyDispatched(String),
+    /// A relaunch of a dispatch another host owns: only that host can relaunch it.
+    OtherHost(AgentHost),
     UnknownAgent(String),
     UnknownBase(String),
     /// No base was given and the repository's default branch (`origin/HEAD`) is unresolved.
@@ -469,6 +476,7 @@ impl DispatchError {
             Self::ArchivedTask => "archived-task",
             Self::SoftDeletedTask => "soft-deleted-task",
             Self::AlreadyDispatched(_) => "already-dispatched",
+            Self::OtherHost(_) => "other-host",
             Self::UnknownAgent(_) => "unknown-agent",
             Self::UnknownBase(_) => "unknown-base",
             Self::NoDefaultBase(_) => "no-default-base",
@@ -506,6 +514,7 @@ impl std::fmt::Display for DispatchError {
                 formatter,
                 "already dispatched in {path}, use --again to relaunch"
             ),
+            Self::OtherHost(host) => write!(formatter, "{}", other_host(*host, "relaunch it")),
             Self::UnknownAgent(name) => write!(formatter, "unknown agent {name}"),
             Self::UnknownBase(reason)
             | Self::NoDefaultBase(reason)
@@ -1529,13 +1538,6 @@ impl DispatchHost for SystemDispatchHost {
         if self.rex() {
             return rex::agent_block(&self.rex, workspace_id);
         }
-        if rex::is_session_id(workspace_id) {
-            // A Rex session recorded on this board: Herdr cannot say it is gone, so the start
-            // stays plain instead of offering a second agent on the same worktree.
-            return Err(RootPaneError::Failed(format!(
-                "{workspace_id} was dispatched in Rex"
-            )));
-        }
         let output = Command::new("herdr")
             .args(["pane", "list", "--workspace", workspace_id])
             .output()
@@ -2064,8 +2066,7 @@ fn system_inspect_cleanup(
         // Nothing to remove, but the workspace it ran in may still be open: cleanup closes it.
         return Ok(CleanupInspection {
             target_matches: true,
-            workspace_exists: host_kind
-                .workspace_open_on(&dispatch.herdr_workspace_id, &worktree_path),
+            workspace_exists: host_kind.workspace_open_on(&dispatch.session, &worktree_path),
             ..CleanupInspection::default()
         });
     }
@@ -2117,7 +2118,7 @@ fn system_inspect_cleanup(
         ..
     } = merge_verdict(project, dispatch, fetch_failure)?;
     let (workspace_exists, workspace_matches) =
-        host_kind.worktree_workspace(project, &dispatch.herdr_workspace_id, &worktree_path)?;
+        host_kind.worktree_workspace(project, &dispatch.session, &worktree_path)?;
     Ok(CleanupInspection {
         warning,
         unreachable_remote,
@@ -2394,14 +2395,13 @@ fn inspect_planned(
     host: &mut impl DispatchHost,
 ) -> Result<CleanupPreview, CleanupError> {
     let (project, record) = (&plan.project, &plan.record);
+    if owned_elsewhere(record, host_kind) {
+        return Err(CleanupError::OtherHost(record.host));
+    }
     // A removal tsk started and never saw finish (tsk exited, or git stopped midway) left
     // deleted files that would otherwise read as uncommitted work, forever.
     if let Some(RemovalState::Partial { registered }) = host
-        .interrupted_removal(
-            project,
-            Path::new(&record.worktree),
-            &record.herdr_workspace_id,
-        )
+        .interrupted_removal(project, Path::new(&record.worktree), &record.session)
         .map_err(CleanupError::Host)?
     {
         return Err(partly_removed(record, registered));
@@ -2471,7 +2471,7 @@ pub fn clean_planned_with_host(
         if host.platform() == HostPlatform::Windows {
             remove_windows_worktree(host, &preview, workspace_removed)?;
         } else if workspace_removed {
-            host.remove_host_worktree(&preview.record.herdr_workspace_id)
+            host.remove_host_worktree(&preview.record.session)
                 .map_err(CleanupError::Host)?;
         } else {
             host.remove_git_worktree(&preview.project, worktree)
@@ -2503,8 +2503,7 @@ pub fn clean_planned_with_host(
         (WorktreeCleanup::Removed, deletion, workspace)
     } else {
         let workspace = if host_kind.is_hosted() && preview.inspection.workspace_exists {
-            let (workspace, warning) =
-                close_orphaned_workspace(host, &preview.record.herdr_workspace_id);
+            let (workspace, warning) = close_orphaned_workspace(host, &preview.record.session);
             close_warning = warning;
             workspace
         } else {
@@ -2516,8 +2515,8 @@ pub fn clean_planned_with_host(
             workspace,
         )
     };
-    host.remove_launcher(&preview.record.herdr_workspace_id);
-    host.mark_removal(&preview.record.herdr_workspace_id, false);
+    host.remove_launcher(&preview.record.session);
+    host.mark_removal(&preview.record.session, false);
     let (branch, branch_reason) = match deletion {
         BranchDeletion::Removed => (BranchCleanup::Removed, None),
         BranchDeletion::Kept(reason) => (BranchCleanup::Kept, Some(reason)),
@@ -2541,7 +2540,7 @@ pub fn clean_planned_with_host(
         worktree_path: preview.record.worktree,
         branch_name: preview.record.branch,
         base: preview.record.base,
-        workspace_id: preview.record.herdr_workspace_id,
+        workspace_id: preview.record.session,
         worktree,
         branch,
         workspace,
@@ -2606,7 +2605,7 @@ fn remove_windows_worktree(
 ) -> Result<(), CleanupError> {
     let (project, worktree) = (&preview.project, Path::new(&preview.record.worktree));
     if close_workspace {
-        host.close_workspace(&preview.record.herdr_workspace_id)
+        host.close_workspace(&preview.record.session)
             .map_err(CleanupError::Host)?;
     }
     let mut blocked = host
@@ -2631,7 +2630,7 @@ fn remove_windows_worktree(
     // Marked once git starts and until the removal is known to have finished or touched
     // nothing: if tsk exits or git stops midway, the next inspection reads git's deletions
     // as a partial removal rather than as uncommitted work.
-    let workspace = &preview.record.herdr_workspace_id;
+    let workspace = &preview.record.session;
     let Err(error) = host.remove_marked_worktree(project, worktree, workspace) else {
         return Ok(());
     };
@@ -2976,6 +2975,23 @@ pub const NO_LAUNCH_NO_HOST: &str = "outside Herdr or Rex";
 /// The no-launch reason for a desk task.
 pub const NO_LAUNCH_DESK: &str = "desk task has no repository";
 
+/// Why `action` refuses on a dispatch `host` owns, run from another host.
+pub fn other_host(host: AgentHost, action: &str) -> String {
+    format!(
+        "dispatched in {}; {action} from {}",
+        host.label(),
+        host.label()
+    )
+}
+
+/// Whether `record` belongs to a host other than the running one. Outside any host nothing
+/// is asked of a host, so no record is another's.
+pub fn owned_elsewhere(record: &Dispatch, host_kind: HostKind) -> bool {
+    host_kind
+        .agent_host()
+        .is_some_and(|running| running != record.host)
+}
+
 /// Why an assigned task's start cannot launch at all, so it is a plain start instead of a
 /// refusal: tsk is outside any host, or the task is on the desk. Every other launch refusal
 /// (profile, base, git, Herdr failures) still leaves the task unstarted.
@@ -3023,6 +3039,9 @@ pub enum AgentCheck {
     Running { pane: String, name: Option<String> },
     /// Herdr could not answer; the start was plain.
     Unreachable { reason: String },
+    /// The dispatch belongs to another host, which alone can ask after its agent; the start
+    /// was plain.
+    OtherHost(AgentHost),
 }
 
 /// [`start_route`], plus what it learned about the agent, so a caller can deliver to the
@@ -3061,7 +3080,10 @@ pub fn start_route_checked(
     if !host_kind.is_hosted() {
         return (StartRoute::Plain, AgentCheck::NoHost);
     }
-    let pane = match host.root_pane(&record.herdr_workspace_id) {
+    if owned_elsewhere(record, host_kind) {
+        return (StartRoute::Plain, AgentCheck::OtherHost(record.host));
+    }
+    let pane = match host.root_pane(&record.session) {
         Ok(pane) => pane,
         Err(RootPaneError::WorkspaceGone(_)) => return gone,
         Err(RootPaneError::Failed(reason)) => {
@@ -3369,6 +3391,8 @@ pub enum Delivery {
     NotInPane,
     /// tsk runs outside any host; nothing was sent.
     NoHost,
+    /// The dispatch belongs to another host; nothing was sent.
+    OtherHost(AgentHost),
 }
 
 /// The message a reply delivery submits: `[tsk T<n> <label>]`, then the reply this action
@@ -3397,6 +3421,7 @@ pub fn deliver_reply(
     match check {
         AgentCheck::NotChecked => None,
         AgentCheck::NoHost => Some(Delivery::NoHost),
+        AgentCheck::OtherHost(host) => Some(Delivery::OtherHost(*host)),
         AgentCheck::Unreachable { reason } => Some(Delivery::Unreachable(reason.clone())),
         AgentCheck::Running { name, .. } if name.as_deref() != Some(expected.as_str()) => {
             Some(Delivery::NotInPane)
@@ -3435,6 +3460,9 @@ pub fn delivery_message(status: &str, assignee: &str, noun: &str, delivery: &Del
             "{status} · {noun} not sent: @{assignee} is not in its pane; {noun} kept on the task"
         ),
         Delivery::NoHost => format!("{status} · {noun} not sent: {NO_LAUNCH_NO_HOST}"),
+        Delivery::OtherHost(host) => {
+            format!("{status} · {noun} not sent: {}", other_host(*host, "reply"))
+        }
     }
 }
 
@@ -3603,6 +3631,8 @@ pub struct EligibleDispatch {
     /// The `[project."<path>"]` settings for `project`, if `config.toml` has them.
     settings: Option<crate::agents::ProjectSettings>,
     again: bool,
+    /// The host the launch runs in, recorded on the dispatch.
+    host: AgentHost,
 }
 
 impl EligibleDispatch {
@@ -3691,7 +3721,7 @@ pub fn undo_launch(
     record: &Dispatch,
     undo: &LaunchUndo,
 ) -> Option<Leftover> {
-    let workspace = &record.herdr_workspace_id;
+    let workspace = &record.session;
     let worktree = Path::new(&record.worktree);
     let branch_from = match &undo.created {
         Created::Nothing => return None,
@@ -3840,7 +3870,12 @@ fn check_inner(
         if !again {
             return Err(DispatchError::AlreadyDispatched(existing.worktree.clone()));
         }
+        // A cleaned record left nothing open on its host, so any host may relaunch it.
+        if !existing.cleaned && owned_elsewhere(existing, host_kind) {
+            return Err(DispatchError::OtherHost(existing.host));
+        }
     }
+    let host = host_kind.agent_host().ok_or(DispatchError::NoHost)?;
     let settings = profiles.project(&project).cloned();
     Ok(EligibleDispatch {
         id,
@@ -3851,6 +3886,7 @@ fn check_inner(
         project,
         settings,
         again,
+        host,
     })
 }
 
@@ -4065,7 +4101,7 @@ pub fn launch_with_host(
                 // the recorded one and stays.
                 Created::Worktree { branch_from: None },
             )
-        } else if let Some(pane) = match host.root_pane(&existing.herdr_workspace_id) {
+        } else if let Some(pane) = match host.root_pane(&existing.session) {
             Ok(pane) => Some(pane),
             // Only a workspace Herdr says is gone is reopened; any other failure may leave
             // the agent running there, so nothing launches.
@@ -4079,7 +4115,7 @@ pub fn launch_with_host(
                 existing.base_ref.clone(),
                 existing.base_commit.clone(),
                 existing.base_remote.clone(),
-                existing.herdr_workspace_id.clone(),
+                existing.session.clone(),
                 pane,
                 Created::Nothing,
             )
@@ -4176,7 +4212,7 @@ pub fn launch_with_host(
         (&agent_name(number, assignee), Path::new(&worktree)),
     );
     if let Ok(Some((session, block))) = &launch {
-        // T412: the record has no Rex field yet; the Herdr workspace id carries the session.
+        // Rex opens the session with the launch: it replaces the provisional id.
         workspace_id = session.clone();
         pane_id = block.clone();
     }
@@ -4188,7 +4224,8 @@ pub fn launch_with_host(
         base_ref,
         base_commit,
         base_remote,
-        herdr_workspace_id: workspace_id,
+        host: eligible.host,
+        session: workspace_id,
         at: SystemTime::now(),
         cleaned: false,
     };
@@ -7389,7 +7426,7 @@ mod tests {
         };
         let result = run_with_host(&mut state, id, &profiles, false, HostKind::Rex, &mut host)
             .expect("dispatch");
-        assert_eq!(result.record.herdr_workspace_id, "session:s1");
+        assert_eq!(result.record.session, "session:s1");
         assert_eq!(result.naming, None, "the session is labelled at launch");
         assert!(host.runs.is_empty(), "nothing is typed into a pane");
         let (label, worktree, command) = &host.sessions[0];
@@ -7490,7 +7527,7 @@ mod tests {
             &mut host,
         )
         .expect("dispatch");
-        assert_eq!(result.record.herdr_workspace_id, "session:stub");
+        assert_eq!(result.record.session, "session:stub");
         let worktree = PathBuf::from(&result.record.worktree);
         assert!(worktree.is_dir(), "{}", worktree.display());
 
@@ -7519,33 +7556,116 @@ mod tests {
         fs::remove_dir_all(path).expect("cleanup");
     }
 
-    #[test]
-    fn herdr_never_reads_a_rex_session_as_gone() {
+    /// A task dispatched on `on`, through the fake host.
+    fn dispatched_on(on: HostKind) -> (PathBuf, AgentProfiles, DomainState, Uuid) {
         let (path, profiles) = profiles();
         let (mut state, id) = task();
         let mut fake = FakeHost {
             git: true,
-            command_session: Some(Ok(("session:s1".into(), "session:s1/block:b1".into()))),
+            command_session: (on == HostKind::Rex)
+                .then(|| Ok(("session:s1".into(), "session:s1/block:b1".into()))),
             ..FakeHost::default()
         };
-        run_with_host(&mut state, id, &profiles, false, HostKind::Rex, &mut fake)
-            .expect("dispatch");
-        let task = state.get(id).expect("task").clone();
-        // The real host on Herdr: the guard answers before any `herdr` runs.
-        let mut host = SystemDispatchHost::in_state_dir(path.join("state"));
-        assert!(matches!(
-            host.root_pane("session:s1"),
-            Err(RootPaneError::Failed(_))
-        ));
-        let (route, check) = start_route_checked(&task, "you", HostKind::Herdr, &mut host);
-        assert_eq!(route, StartRoute::Plain, "no relaunch is offered");
-        assert!(matches!(check, AgentCheck::Unreachable { .. }), "{check:?}");
-        let worktree = Path::new("/tmp/worktree");
-        assert!(HostKind::Herdr.workspace_open_on("session:s1", worktree));
-        assert!(HostKind::Herdr.workspace_open_on("rex-pending:/w", worktree));
-        assert!(HostKind::Herdr
-            .worktree_workspace(Path::new("/repos/app"), "session:s1", worktree)
-            .is_err());
+        run_with_host(&mut state, id, &profiles, false, on, &mut fake).expect("dispatch");
+        (path, profiles, state, id)
+    }
+
+    #[test]
+    fn a_dispatch_records_the_host_it_launched_in() {
+        for (on, host, session) in [
+            (HostKind::Herdr, AgentHost::Herdr, "w9"),
+            (HostKind::Rex, AgentHost::Rex, "session:s1"),
+        ] {
+            let (path, _, state, id) = dispatched_on(on);
+            let record = state
+                .get(id)
+                .expect("task")
+                .dispatch
+                .clone()
+                .expect("record");
+            assert_eq!(record.host, host);
+            assert_eq!(record.session, session);
+            fs::remove_dir_all(path).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn another_hosts_dispatch_is_never_asked_about_relaunched_cleaned_or_replied_to() {
+        for (owner, running, label) in [
+            (HostKind::Rex, HostKind::Herdr, "Rex"),
+            (HostKind::Herdr, HostKind::Rex, "Herdr"),
+        ] {
+            let (path, profiles, mut state, id) = dispatched_on(owner);
+            let owner_host = owner.agent_host().expect("hosted");
+            let task = state.get(id).expect("task").clone();
+            let mut host = FakeHost {
+                git: true,
+                pane_agent: Some(false),
+                cleanup: Some(CleanupInspection {
+                    worktree_exists: true,
+                    target_matches: true,
+                    ..CleanupInspection::default()
+                }),
+                ..FakeHost::default()
+            };
+
+            // A start is plain: the running host never asks after another host's agent.
+            let (route, check) = start_route_checked(&task, "you", running, &mut host);
+            assert_eq!(route, StartRoute::Plain, "{label}: no relaunch is offered");
+            assert_eq!(check, AgentCheck::OtherHost(owner_host));
+            assert_eq!(
+                (host.roots, host.agent_checks),
+                (0, 0),
+                "{label}: nothing asked"
+            );
+
+            // A reply is not sent, and says where the agent runs.
+            let delivery = deliver_reply(&task, &check, "reply", Some("yes"), &mut host);
+            assert_eq!(delivery, Some(Delivery::OtherHost(owner_host)));
+            let message = delivery_message("started", "implementer", "reply", &delivery.unwrap());
+            assert!(
+                message.contains(&format!("dispatched in {label}")),
+                "{message}"
+            );
+
+            // A relaunch refuses before anything is created.
+            let error = run_with_host(&mut state, id, &profiles, true, running, &mut host)
+                .expect_err("relaunch refuses");
+            assert_eq!(error, DispatchError::OtherHost(owner_host));
+            assert_eq!(error.code(), "other-host");
+            assert!(error.to_string().contains(label), "{error}");
+            assert_eq!(host.creates, 0);
+
+            // Cleanup refuses before inspecting, and the record stays live.
+            let error =
+                clean_with_host(&mut state, id, running, &mut host).expect_err("cleanup refuses");
+            assert_eq!(error, CleanupError::OtherHost(owner_host));
+            assert_eq!(error.code(), "other-host");
+            assert!(error.to_string().contains(label), "{error}");
+            assert_eq!((host.removed_git, host.closed), (0, 0));
+            assert!(!state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
+
+            // Outside any host nothing is asked either way: the start stays plain as before.
+            let (_, check) = start_route_checked(&task, "you", HostKind::Standalone, &mut host);
+            assert_eq!(check, AgentCheck::NoHost);
+            fs::remove_dir_all(path).expect("cleanup");
+        }
+    }
+
+    #[test]
+    fn a_cleaned_dispatch_from_another_host_relaunches_here() {
+        let (path, profiles, mut state, id) = dispatched_on(HostKind::Rex);
+        state
+            .record_dispatch_cleaned(id, crate::domain::CleanupOutcome::Removed)
+            .expect("cleaned");
+        let mut host = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        let result = run_with_host(&mut state, id, &profiles, true, HostKind::Herdr, &mut host)
+            .expect("relaunch");
+        assert_eq!(result.record.host, AgentHost::Herdr);
+        assert_eq!(result.record.session, "w9");
         fs::remove_dir_all(path).expect("cleanup");
     }
 
@@ -8452,7 +8572,8 @@ mod tests {
                         base_ref: None,
                         base_commit: None,
                         base_remote: None,
-                        herdr_workspace_id: "w9".into(),
+                        host: crate::domain::AgentHost::Herdr,
+                        session: "w9".into(),
                         at: SystemTime::now(),
                         cleaned: false,
                     },
@@ -8584,8 +8705,7 @@ mod tests {
     }
 
     #[test]
-    fn cleaned_marker_is_optional_and_store_format_stays_v6() {
-        assert_eq!(crate::domain::STORE_FORMAT_VERSION, 6);
+    fn cleaned_marker_is_optional() {
         let record = Dispatch {
             argv: vec!["agent".into()],
             worktree: "/tmp/worktree".into(),
@@ -8594,7 +8714,8 @@ mod tests {
             base_ref: None,
             base_commit: None,
             base_remote: None,
-            herdr_workspace_id: "w1".into(),
+            host: crate::domain::AgentHost::Herdr,
+            session: "w1".into(),
             at: SystemTime::now(),
             cleaned: false,
         };
@@ -9085,7 +9206,8 @@ mod tests {
             base_ref: None,
             base_commit: None,
             base_remote: None,
-            herdr_workspace_id: "w9".into(),
+            host: crate::domain::AgentHost::Herdr,
+            session: "w9".into(),
             at: SystemTime::now(),
             cleaned: false,
         };
@@ -9177,7 +9299,8 @@ mod tests {
             base_ref: None,
             base_commit: None,
             base_remote: None,
-            herdr_workspace_id: "w9".into(),
+            host: crate::domain::AgentHost::Herdr,
+            session: "w9".into(),
             at: SystemTime::now(),
             cleaned: false,
         };

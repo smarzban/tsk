@@ -2297,7 +2297,7 @@ pub fn offer_cleanup_prompt_with_host(
             worktree_path: preview.record.worktree,
             branch_name: preview.record.branch,
             base: preview.record.base.or(preview.record.base_ref),
-            workspace_id: preview.record.herdr_workspace_id,
+            workspace_id: preview.record.session,
             worktree: WorktreeCleanup::Missing,
             branch: BranchCleanup::Kept,
             workspace,
@@ -2536,7 +2536,7 @@ pub fn offer_bulk_cleanup_prompt_with_host(
         match dispatch::inspect_cleanup_cached_with_host(domain, id, host_kind, host) {
             Ok(preview) if !preview.inspection.worktree_exists => {
                 if host_kind.is_hosted() && preview.inspection.workspace_exists {
-                    workspaces.push(preview.record.herdr_workspace_id.clone());
+                    workspaces.push(preview.record.session.clone());
                     bulk.missing_panes.push(identifier.clone());
                 }
                 bulk.missing.push((id, identifier, preview.record));
@@ -2691,7 +2691,7 @@ pub fn confirm_cleanup_with_host(
                 missing += 1;
                 // `n` keeps what the dispatch left, its workspace included.
                 if clean && host_kind.is_hosted() && preview.inspection.workspace_exists {
-                    workspaces.push((identifier.clone(), preview.record.herdr_workspace_id));
+                    workspaces.push((identifier.clone(), preview.record.session));
                 }
             }
         }
@@ -4368,7 +4368,7 @@ pub fn land_bulk_dispatch_with_host(
             settle_saved_launch(&mut run, pending, name_agent);
         } else {
             run.unrecorded
-                .push((pending.identifier, pending.record.herdr_workspace_id));
+                .push((pending.identifier, pending.record.session));
         }
     }
     let landed = run.batch.take_landed();
@@ -12834,7 +12834,8 @@ mod quick_assign_tests {
                     base_ref: None,
                     base_commit: None,
                     base_remote: None,
-                    herdr_workspace_id: workspace.into(),
+                    host: crate::domain::AgentHost::Herdr,
+                    session: workspace.into(),
                     at: std::time::SystemTime::now(),
                     cleaned: false,
                 },
@@ -15653,7 +15654,8 @@ mod quick_assign_tests {
                     base_ref: None,
                     base_commit: None,
                     base_remote: None,
-                    herdr_workspace_id: "w0".into(),
+                    host: crate::domain::AgentHost::Herdr,
+                    session: "w0".into(),
                     at: std::time::SystemTime::now(),
                     cleaned: false,
                 },
@@ -16854,7 +16856,7 @@ mod quick_assign_tests {
                 .get(ids[0])
                 .and_then(|task| task.dispatch.clone())
                 .expect("record");
-            record.herdr_workspace_id = "w5".into();
+            record.session = "w5".into();
             other.record_dispatch(ids[0], record).expect("relaunch");
         });
         let name = host.names.remove("w0:p1").expect("old agent");
@@ -17289,7 +17291,7 @@ mod quick_assign_tests {
             .get(ids[0])
             .and_then(|task| task.dispatch.clone())
             .expect("record");
-        assert_eq!(record.herdr_workspace_id, "w2");
+        assert_eq!(record.session, "w2");
         assert_eq!(record.worktree, "/tmp/tsk-start-earlier");
         assert_eq!(record.branch, "tsk/earlier");
         assert_eq!(
@@ -18459,7 +18461,8 @@ mod quick_assign_tests {
                 base_ref: None,
                 base_commit: None,
                 base_remote: None,
-                herdr_workspace_id: "w0".into(),
+                host: crate::domain::AgentHost::Herdr,
+                session: "w0".into(),
                 at: std::time::SystemTime::now(),
                 cleaned: false,
             }
@@ -22106,7 +22109,8 @@ mod queued_cleanup_tests {
                     base_commit: None,
                     base_remote: Some("origin".into()),
                     base_ref: Some("refs/remotes/origin/main".into()),
-                    herdr_workspace_id: "w1".into(),
+                    host: crate::domain::AgentHost::Herdr,
+                    session: "w1".into(),
                     at: SystemTime::now(),
                     cleaned: false,
                 },
@@ -22888,7 +22892,7 @@ mod queued_cleanup_tests {
         let mut other = store.load().expect("load");
         let mut relaunched = other.get(id).unwrap().dispatch.clone().unwrap();
         relaunched.cleaned = false;
-        relaunched.herdr_workspace_id = "w2".into();
+        relaunched.session = "w2".into();
         relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
         other
             .record_dispatch(id, relaunched.clone())
@@ -23173,7 +23177,7 @@ mod bulk_cleanup_tests {
                 dirty_files: Vec::new(),
                 checked_out_elsewhere: false,
                 branch_merged: self.cached_merged,
-                workspace_exists: !self.gone_workspaces.contains(&record.herdr_workspace_id),
+                workspace_exists: !self.gone_workspaces.contains(&record.session),
                 target_matches: true,
                 warning: None,
                 base_available: true,
@@ -23282,7 +23286,8 @@ mod bulk_cleanup_tests {
             base_commit: None,
             base_remote: Some("origin".into()),
             base_ref: Some("refs/remotes/origin/main".into()),
-            herdr_workspace_id: format!("w-{label}"),
+            host: crate::domain::AgentHost::Herdr,
+            session: format!("w-{label}"),
             at: SystemTime::now(),
             cleaned: false,
         }
@@ -23893,7 +23898,7 @@ mod bulk_cleanup_tests {
             .expect("save cleaned");
         let mut other = board.store.load().expect("load");
         let mut relaunched = dispatched("clean");
-        relaunched.herdr_workspace_id = "w-clean-2".into();
+        relaunched.session = "w-clean-2".into();
         relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
         other
             .record_dispatch(board.ids[0], relaunched.clone())
@@ -24220,7 +24225,7 @@ mod bulk_cleanup_tests {
         // Another process relaunches T1 after `y`, before the worker reaches it.
         let mut other = board.store.load().expect("load");
         let mut relaunched = dispatched("clean");
-        relaunched.herdr_workspace_id = "w-clean-2".into();
+        relaunched.session = "w-clean-2".into();
         relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
         other
             .record_dispatch(board.ids[0], relaunched.clone())
@@ -24668,7 +24673,8 @@ mod merge_cleanup_tests {
                             base_commit: None,
                             base_remote: Some("origin".into()),
                             base_ref: Some("refs/remotes/origin/main".into()),
-                            herdr_workspace_id: format!("w-{title}"),
+                            host: crate::domain::AgentHost::Herdr,
+                            session: format!("w-{title}"),
                             at: SystemTime::now(),
                             cleaned: false,
                         },
