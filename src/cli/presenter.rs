@@ -2981,6 +2981,26 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    #[test]
+    fn dispatch_refusal_lists_use_host_neutral_codes() {
+        for (verb, output, codes) in [
+            ("dispatch", dispatch_help(), &["no-host", "host-failed"][..]),
+            ("status", status_help(), &["host-failed"][..]),
+            ("clean", clean_help(), &["host-failed"][..]),
+        ] {
+            let text = output.stdout;
+            for code in codes {
+                assert!(text.contains(code), "{verb} help lacks {code}:\n{text}");
+            }
+            for old in ["not-in-herdr", "herdr-failed"] {
+                assert!(
+                    !text.contains(old),
+                    "{verb} help still lists {old}:\n{text}"
+                );
+            }
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn path_labels_split_windows_and_unix_separators() {

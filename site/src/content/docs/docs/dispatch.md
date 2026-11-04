@@ -1,9 +1,9 @@
 ---
 title: Dispatch
-description: Hand a task to an agent in its own worktree and Herdr workspace, then merge and clean up.
+description: Hand a task to an agent in its own worktree and a Herdr workspace or Rex session, then merge and clean up.
 ---
 
-Dispatch hands a task to a coding agent. The agent gets its own Git branch, worktree, and Herdr workspace. When you complete the task, tsk tidies them up.
+Dispatch hands a task to a coding agent. The agent gets its own Git branch, worktree, and a Herdr workspace or Rex session. When you complete the task, tsk tidies them up.
 
 Dispatch needs [Herdr](/docs/install/#add-to-herdr) or Rex, a task in a project that is a Git repository, and an agent assignee. Assigning works everywhere. On Windows, dispatch is a [preview](#windows-preview).
 
@@ -51,7 +51,7 @@ The picker lists every person ever assigned, so a typo stays. In the picker, sel
 Start an assigned task to dispatch it: `ctrl+s`, palette **set status: started**, or [`tsk status T12 started`](/docs/cli/#status). A dispatch:
 
 1. creates a branch and worktree from the task's [base branch](#base-branch),
-2. opens a Herdr workspace in the worktree,
+2. opens a Herdr workspace in the worktree, or in Rex a session there,
 3. runs the assignee's profile command there,
 4. records the dispatch on the task and sets it to started, in one save.
 
@@ -135,6 +135,8 @@ A launch row reads like `@claude  from default (main)`, with `checking…` while
 
 ## Relaunch
 
+In Rex, relaunch is not built yet: it refuses with `host-failed`.
+
 Starting a dispatched task whose agent is gone opens a card. The agent is gone when its workspace was closed, its pane has no agent, or its worktree was cleaned up.
 
 ```text
@@ -165,6 +167,8 @@ The relaunch, start-anyway, and marked-set start cards, the [cleanup card](#comp
 Every card key is listed under [Keys](/docs/keys/#cards).
 
 ## Complete and clean up
+
+In Rex, cleanup is not built yet: it refuses with `host-failed` and keeps the worktree and branch.
 
 `ctrl+d` on a task with a live dispatch opens the cleanup card, titled `Done T12`. It says where the branch stands, then offers what to do with the pull request, the branch, and the local checkout. With an open pull request:
 

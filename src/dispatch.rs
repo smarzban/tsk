@@ -7179,6 +7179,19 @@ mod tests {
     }
 
     #[test]
+    fn no_host_refusal_names_both_hosts() {
+        assert_eq!(
+            DispatchError::NoHost.to_string(),
+            "dispatch works inside Herdr or Rex"
+        );
+        assert_eq!(NO_LAUNCH_NO_HOST, "outside Herdr or Rex");
+        assert_eq!(
+            no_launch_message(NO_LAUNCH_NO_HOST),
+            "started · no launch: outside Herdr or Rex"
+        );
+    }
+
+    #[test]
     fn refusal_codes_are_stable() {
         let cases = [
             (DispatchError::UnknownTask, "unknown-task"),
