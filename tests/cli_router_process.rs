@@ -524,7 +524,10 @@ fn an_assigned_start_outside_herdr_starts_plainly_and_says_why() {
     assert_eq!(started.status.code(), Some(0), "{started:?}");
     let stdout = String::from_utf8_lossy(&started.stdout);
     assert!(stdout.starts_with("status T1 started"), "{stdout}");
-    assert!(stdout.contains("no launch: outside Herdr or Rex"), "{stdout}");
+    assert!(
+        stdout.contains("no launch: outside Herdr or Rex"),
+        "{stdout}"
+    );
     assert!(started.stderr.is_empty(), "{started:?}");
     assert_eq!(status(), tsk_tui::domain::HumanStatus::Started);
     let _ = std::fs::remove_dir_all(dir);

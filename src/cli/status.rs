@@ -1335,7 +1335,10 @@ mod start_tests {
         assert_eq!(temp.status(second), HumanStatus::Started);
         assert_eq!(
             dispatch::released_message(&released).as_deref(),
-            Some(format!("T{second} started · no launch: outside Herdr or Rex · T{first} done").as_str())
+            Some(
+                format!("T{second} started · no launch: outside Herdr or Rex · T{first} done")
+                    .as_str()
+            )
         );
     }
 }

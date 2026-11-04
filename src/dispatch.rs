@@ -6536,11 +6536,7 @@ mod tests {
                 "path-too-long",
             ),
             ("git timed out", RemovalState::Intact, "removal-timed-out"),
-            (
-                "fatal: something else",
-                RemovalState::Intact,
-                "host-failed",
-            ),
+            ("fatal: something else", RemovalState::Intact, "host-failed"),
             (
                 "fatal: contains modified or untracked files, use --force to delete it",
                 RemovalState::Dirty,
