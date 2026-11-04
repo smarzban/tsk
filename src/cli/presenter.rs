@@ -1953,7 +1953,7 @@ pub fn status_help() -> CliOutput {
         refusals: vec![
             "unknown-task, soft-deleted-task, text-too-long, invalid-blocker".into(),
             "started: after-not-done, agent-gone, other-host, needs-git-project, unknown-agent, agent-config, unknown-base, no-default-base, host-failed, unsafe-state-dir, and on Windows unsupported-platform".into(),
-            "done --clean: dirty-worktree, worktree-mismatch, other-host, host-failed, and on Windows files-in-use, path-too-long, removal-timed-out, partly-removed".into(),
+            "done --clean: the clean codes except not-dispatched and already-cleaned".into(),
             "done --merge: the --clean codes, not-dispatched, already-cleaned, gh-unavailable, no-pr, pr-not-open, pr-base-mismatch, merge-failed, merge-config".into(),
         ],
         exit: exit_line(
