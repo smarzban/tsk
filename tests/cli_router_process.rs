@@ -494,6 +494,7 @@ fn an_assigned_start_outside_herdr_starts_plainly_and_says_why() {
             .args(["--state-dir", dir.to_str().expect("UTF-8 state dir")])
             .env_remove("TSK_AGENT")
             .env_remove("HERDR_ENV")
+            .env_remove("REX_SESSION")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -580,6 +581,7 @@ fn reply_send(dir: &std::path::Path, text: &str, env: &[(&str, &str)], herdr: bo
         .arg(text)
         .env_remove("TSK_AGENT")
         .env_remove("HERDR_ENV")
+        .env_remove("REX_SESSION")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

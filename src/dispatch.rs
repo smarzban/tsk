@@ -12,6 +12,7 @@ use crate::domain::{Dispatch, DomainState, HumanStatus, Task, TaskScope};
 
 mod host;
 pub mod pr;
+pub mod rex;
 
 pub use host::HostKind;
 use host::{herdr_worktree_directory, worktree_path};
@@ -745,6 +746,22 @@ pub trait DispatchHost {
     /// [`RootPaneError::WorkspaceGone`].
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, RootPaneError>;
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String>;
+    /// Whether this host starts the agent as a new session's command (Rex) rather than typing
+    /// a launch line into the pane its worktree workspace opened with (Herdr). Such a host
+    /// labels the agent at launch, so there is nothing to name afterwards.
+    fn launches_as_command(&self) -> bool {
+        false
+    }
+    /// Open the session that runs `command` in `worktree`, labelled `label`: `(workspace id,
+    /// pane id)`. Only a host that [`Self::launches_as_command`] has one.
+    fn open_agent_session(
+        &mut self,
+        _label: &str,
+        _worktree: &Path,
+        _command: &[String],
+    ) -> Result<(String, String), String> {
+        Err("this host cannot open an agent session".into())
+    }
     /// The platform whose launch line and cleanup rules apply. Test hosts default to Unix.
     fn platform(&self) -> HostPlatform {
         HostPlatform::Unix
@@ -950,6 +967,14 @@ pub struct SystemDispatchHost {
     state_dir: PathBuf,
     /// The GitHub CLI: `gh` from PATH (`gh.exe` on Windows).
     gh: PathBuf,
+    /// The terminal host the worktree, workspace, and agent calls go to. Herdr unless
+    /// [`Self::on`] says otherwise, so a test host never reaches a live Rex.
+    kind: HostKind,
+    /// Rex worktrees this host created whose session has not opened yet, by provisional
+    /// workspace id: `(project, worktree)`, so a failed launch can take the worktree back.
+    rex_pending: std::collections::HashMap<String, (PathBuf, PathBuf)>,
+    /// The Rex CLI: `rex` from PATH. Tests point it at a stub.
+    rex: PathBuf,
 }
 
 impl SystemDispatchHost {
@@ -957,7 +982,27 @@ impl SystemDispatchHost {
         Self {
             state_dir: state_dir.into(),
             gh: PathBuf::from("gh"),
+            kind: HostKind::Herdr,
+            rex_pending: std::collections::HashMap::new(),
+            rex: PathBuf::from("rex"),
         }
+    }
+
+    /// Talk to `kind`'s host: [`HostKind::Rex`] sends worktree, session, and agent calls to
+    /// git and Rex; anything else keeps Herdr's.
+    pub fn on(mut self, kind: HostKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Run this `rex` instead of the one on PATH: tests point it at a stub.
+    pub fn with_rex(mut self, program: impl Into<PathBuf>) -> Self {
+        self.rex = program.into();
+        self
+    }
+
+    fn rex(&self) -> bool {
+        self.kind == HostKind::Rex
     }
 
     /// Run this `gh` instead of the one on PATH: tests point it at a stub.
@@ -1201,6 +1246,16 @@ impl DispatchHost for SystemDispatchHost {
         label: &str,
     ) -> Result<CreatedWorktree, String> {
         let root = host::worktree_root(&self.state_dir, project)?;
+        if self.rex() {
+            let path = worktree_path(&root, project, branch)
+                .ok_or_else(|| format!("{} has no repository name", project.display()))?;
+            let created = rex::create_worktree(project, &path, branch, base)?;
+            self.rex_pending.insert(
+                created.workspace_id.clone(),
+                (project.to_path_buf(), created.path.clone()),
+            );
+            return Ok(created);
+        }
         let mut command = Command::new("herdr");
         command
             .args(["worktree", "create", "--cwd"])
@@ -1243,6 +1298,33 @@ impl DispatchHost for SystemDispatchHost {
 
     fn worktree_root(&self, project: &Path) -> Result<Option<PathBuf>, String> {
         host::worktree_root(&self.state_dir, project).map(Some)
+    }
+
+    fn launches_as_command(&self) -> bool {
+        self.rex()
+    }
+
+    fn open_agent_session(
+        &mut self,
+        label: &str,
+        worktree: &Path,
+        command: &[String],
+    ) -> Result<(String, String), String> {
+        if !self.rex() {
+            return Err("this host cannot open an agent session".into());
+        }
+        let opened = rex::open_session(&self.rex, label, worktree, command)?;
+        // Re-key the worktree to the session: a record save that fails after this undoes the
+        // launch by the session id, and must still find the worktree to take back.
+        let pending = self
+            .rex_pending
+            .iter()
+            .find(|(_, (_, pending))| pending.as_path() == worktree)
+            .map(|(key, _)| key.clone());
+        if let Some(entry) = pending.and_then(|key| self.rex_pending.remove(&key)) {
+            self.rex_pending.insert(opened.0.clone(), entry);
+        }
+        Ok(opened)
     }
 
     fn inspect_cleanup(
@@ -1288,6 +1370,20 @@ impl DispatchHost for SystemDispatchHost {
         Some(check)
     }
     fn remove_host_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
+        if self.rex() {
+            // Only a launch this host started and could not record is taken back here; a
+            // recorded Rex dispatch's cleanup is T413's. Its session closes first, so no agent
+            // is left running in the removed checkout.
+            let (project, worktree) = self
+                .rex_pending
+                .get(workspace_id)
+                .cloned()
+                .ok_or_else(|| host::REX_CLEANUP_PENDING.to_string())?;
+            rex::kill_session(&self.rex, workspace_id)?;
+            system_remove_git_worktree(&project, &worktree, None)?;
+            self.rex_pending.remove(workspace_id);
+            return Ok(());
+        }
         let output = Command::new("herdr")
             .args(["worktree", "remove", "--workspace", workspace_id])
             .output()
@@ -1428,6 +1524,16 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn root_pane(&mut self, workspace_id: &str) -> Result<String, RootPaneError> {
+        if self.rex() {
+            return rex::agent_block(&self.rex, workspace_id);
+        }
+        if rex::is_session_id(workspace_id) {
+            // A Rex session recorded on this board: Herdr cannot say it is gone, so the start
+            // stays plain instead of offering a second agent on the same worktree.
+            return Err(RootPaneError::Failed(format!(
+                "{workspace_id} was dispatched in Rex"
+            )));
+        }
         let output = Command::new("herdr")
             .args(["pane", "list", "--workspace", workspace_id])
             .output()
@@ -1450,6 +1556,10 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String> {
+        if self.rex() {
+            // Rex launches through `open_agent_session`; nothing is ever typed into a pane.
+            return Err("Rex panes are never typed into".into());
+        }
         let output = Command::new("herdr")
             .args(["pane", "run", pane_id])
             .arg(command)
@@ -1464,6 +1574,9 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn pane_agent(&mut self, pane_id: &str) -> Result<PaneAgent, String> {
+        if self.rex() {
+            return rex::pane_agent(&self.rex, pane_id);
+        }
         let output = Command::new("herdr")
             .args(["agent", "get", pane_id])
             .output()
@@ -1472,6 +1585,11 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn prompt_agent(&mut self, pane_id: &str, text: &str) -> Result<(), PromptError> {
+        if self.rex() {
+            return Err(PromptError::Failed(
+                "delivery to a Rex agent is not built yet (T413)".into(),
+            ));
+        }
         let output = Command::new("herdr")
             .args(["agent", "prompt", pane_id])
             .arg(text)
@@ -1556,6 +1674,9 @@ impl DispatchHost for SystemDispatchHost {
     }
 
     fn close_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
+        if self.rex() {
+            return rex::kill_session(&self.rex, workspace_id);
+        }
         let output = Command::new("herdr")
             .args(["workspace", "close", workspace_id])
             .output()
@@ -3861,6 +3982,19 @@ pub fn launch_with_host(
     let number = *number;
     let project = project.as_path();
     let platform = host.platform();
+    if host.launches_as_command() {
+        // T411 spike: Rex dispatches a first launch on Unix only.
+        if platform == HostPlatform::Windows {
+            return Err(DispatchError::UnsupportedPlatform(
+                "dispatch into Rex on Windows is not built yet".into(),
+            ));
+        }
+        if eligible.again && task.dispatch.is_some() {
+            return Err(DispatchError::Herdr(
+                "relaunch in Rex is not built yet (T413)".into(),
+            ));
+        }
+    }
     // Checked before anything is created; an unanswered check stays quiet rather than nag.
     let long_paths_off =
         platform == HostPlatform::Windows && host.long_paths_enabled(project) == Ok(false);
@@ -3890,118 +4024,129 @@ pub fn launch_with_host(
         None
     };
     let mut warning = None;
-    let (worktree, branch, base, base_ref, base_commit, base_remote, workspace_id, pane_id, made) =
-        if let Some(existing) = task.dispatch.as_ref().filter(|_| eligible.again) {
-            if existing.cleaned {
-                let label = workspace_label(number, &task.title);
-                // The recreated checkout goes under today's root; the record takes its path.
-                host.worktree_root(project)
-                    .map_err(DispatchError::AgentConfig)?;
-                // Herdr's create command deliberately handles both cases: it creates a missing
-                // branch from the recorded base, or checks out an existing retained branch.
-                let recreated = host
-                    .create_worktree(
-                        project,
-                        &existing.branch,
-                        existing.base_commit.as_deref().or(existing.base.as_deref()),
-                        &label,
-                    )
-                    .map_err(DispatchError::Herdr)?;
-                (
-                    recreated.path.to_string_lossy().into_owned(),
-                    recreated.branch,
-                    existing.base.clone(),
-                    existing.base_ref.clone(),
-                    existing.base_commit.clone(),
-                    existing.base_remote.clone(),
-                    recreated.workspace_id,
-                    recreated.root_pane_id,
-                    // A missing branch comes back from the recorded base; either way it is
-                    // the recorded one and stays.
-                    Created::Worktree { branch_from: None },
-                )
-            } else if let Some(pane) = match host.root_pane(&existing.herdr_workspace_id) {
-                Ok(pane) => Some(pane),
-                // Only a workspace Herdr says is gone is reopened; any other failure may leave
-                // the agent running there, so nothing launches.
-                Err(RootPaneError::WorkspaceGone(_)) => None,
-                Err(RootPaneError::Failed(reason)) => return Err(DispatchError::Herdr(reason)),
-            } {
-                (
-                    existing.worktree.clone(),
-                    existing.branch.clone(),
-                    existing.base.clone(),
-                    existing.base_ref.clone(),
-                    existing.base_commit.clone(),
-                    existing.base_remote.clone(),
-                    existing.herdr_workspace_id.clone(),
-                    pane,
-                    Created::Nothing,
-                )
-            } else {
-                // The workspace was closed but the worktree is kept: open a new workspace on it.
-                let label = workspace_label(number, &task.title);
-                let reopened = host
-                    .open_worktree(project, Path::new(&existing.worktree), &label)
-                    .map_err(DispatchError::Herdr)?;
-                (
-                    reopened.path.to_string_lossy().into_owned(),
-                    existing.branch.clone(),
-                    existing.base.clone(),
-                    existing.base_ref.clone(),
-                    existing.base_commit.clone(),
-                    existing.base_remote.clone(),
-                    reopened.workspace_id,
-                    reopened.root_pane_id,
-                    Created::Workspace,
-                )
-            }
-        } else {
-            let names = DispatchNames::new(number, &task.title);
-            let label = names.label.clone();
-            let explicit = base_override.or(task.base.as_deref());
-            let choice = host
-                .resolve_base_choice(project, explicit)
-                .map_err(|reason| {
-                    if explicit.is_some() {
-                        DispatchError::UnknownBase(reason)
-                    } else {
-                        DispatchError::NoDefaultBase(reason)
-                    }
-                })?;
-            let base = choice.reference;
-            warning = choice.warning;
+    let (
+        worktree,
+        branch,
+        base,
+        base_ref,
+        base_commit,
+        base_remote,
+        mut workspace_id,
+        mut pane_id,
+        made,
+    ) = if let Some(existing) = task.dispatch.as_ref().filter(|_| eligible.again) {
+        if existing.cleaned {
+            let label = workspace_label(number, &task.title);
+            // The recreated checkout goes under today's root; the record takes its path.
             host.worktree_root(project)
                 .map_err(DispatchError::AgentConfig)?;
-            let requested_branch = free_branch(host, project, &names, number)?;
-            let created = host
+            // Herdr's create command deliberately handles both cases: it creates a missing
+            // branch from the recorded base, or checks out an existing retained branch.
+            let recreated = host
                 .create_worktree(
                     project,
-                    &requested_branch,
-                    Some(choice.commit.as_deref().unwrap_or(&base)),
+                    &existing.branch,
+                    existing.base_commit.as_deref().or(existing.base.as_deref()),
                     &label,
                 )
                 .map_err(DispatchError::Herdr)?;
-            // `free_branch` found no branch of this name, so Herdr made it at the base.
-            let made = Created::Worktree {
-                branch_from: choice.commit.clone(),
-            };
             (
-                created.path.to_string_lossy().into_owned(),
-                created.branch,
-                Some(base),
-                Some(choice.full_ref),
-                choice.commit,
-                choice.remote,
-                created.workspace_id,
-                created.root_pane_id,
-                made,
+                recreated.path.to_string_lossy().into_owned(),
+                recreated.branch,
+                existing.base.clone(),
+                existing.base_ref.clone(),
+                existing.base_commit.clone(),
+                existing.base_remote.clone(),
+                recreated.workspace_id,
+                recreated.root_pane_id,
+                // A missing branch comes back from the recorded base; either way it is
+                // the recorded one and stays.
+                Created::Worktree { branch_from: None },
             )
+        } else if let Some(pane) = match host.root_pane(&existing.herdr_workspace_id) {
+            Ok(pane) => Some(pane),
+            // Only a workspace Herdr says is gone is reopened; any other failure may leave
+            // the agent running there, so nothing launches.
+            Err(RootPaneError::WorkspaceGone(_)) => None,
+            Err(RootPaneError::Failed(reason)) => return Err(DispatchError::Herdr(reason)),
+        } {
+            (
+                existing.worktree.clone(),
+                existing.branch.clone(),
+                existing.base.clone(),
+                existing.base_ref.clone(),
+                existing.base_commit.clone(),
+                existing.base_remote.clone(),
+                existing.herdr_workspace_id.clone(),
+                pane,
+                Created::Nothing,
+            )
+        } else {
+            // The workspace was closed but the worktree is kept: open a new workspace on it.
+            let label = workspace_label(number, &task.title);
+            let reopened = host
+                .open_worktree(project, Path::new(&existing.worktree), &label)
+                .map_err(DispatchError::Herdr)?;
+            (
+                reopened.path.to_string_lossy().into_owned(),
+                existing.branch.clone(),
+                existing.base.clone(),
+                existing.base_ref.clone(),
+                existing.base_commit.clone(),
+                existing.base_remote.clone(),
+                reopened.workspace_id,
+                reopened.root_pane_id,
+                Created::Workspace,
+            )
+        }
+    } else {
+        let names = DispatchNames::new(number, &task.title);
+        let label = names.label.clone();
+        let explicit = base_override.or(task.base.as_deref());
+        let choice = host
+            .resolve_base_choice(project, explicit)
+            .map_err(|reason| {
+                if explicit.is_some() {
+                    DispatchError::UnknownBase(reason)
+                } else {
+                    DispatchError::NoDefaultBase(reason)
+                }
+            })?;
+        let base = choice.reference;
+        warning = choice.warning;
+        host.worktree_root(project)
+            .map_err(DispatchError::AgentConfig)?;
+        let requested_branch = free_branch(host, project, &names, number)?;
+        let created = host
+            .create_worktree(
+                project,
+                &requested_branch,
+                Some(choice.commit.as_deref().unwrap_or(&base)),
+                &label,
+            )
+            .map_err(DispatchError::Herdr)?;
+        // `free_branch` found no branch of this name, so Herdr made it at the base.
+        let made = Created::Worktree {
+            branch_from: choice.commit.clone(),
         };
+        (
+            created.path.to_string_lossy().into_owned(),
+            created.branch,
+            Some(base),
+            Some(choice.full_ref),
+            choice.commit,
+            choice.remote,
+            created.workspace_id,
+            created.root_pane_id,
+            made,
+        )
+    };
 
     // A relaunch reuses the pane; never rename an agent that is still running there, it may be
     // the previous launch under another assignee. An unanswered check counts as occupied.
-    let name_launch = task.dispatch.is_none() || host.pane_has_agent(&pane_id) == Ok(false);
+    // A host that launches as a session's command labels the agent there instead.
+    let name_launch = !host.launches_as_command()
+        && (task.dispatch.is_none() || host.pane_has_agent(&pane_id) == Ok(false));
     let steps = rendered_steps(task);
     let short_base = base
         .as_deref()
@@ -4026,7 +4171,13 @@ pub fn launch_with_host(
         &workspace_id,
         &pane_id,
         &rendered,
+        (&agent_name(number, assignee), Path::new(&worktree)),
     );
+    if let Ok(Some((session, block))) = &launch {
+        // T412: the record has no Rex field yet; the Herdr workspace id carries the session.
+        workspace_id = session.clone();
+        pane_id = block.clone();
+    }
     let record = Dispatch {
         argv: rendered.argv,
         worktree,
@@ -4070,6 +4221,10 @@ pub fn launch_with_host(
 
 /// Type the launch line into the pane: a fixed line that runs a launcher script, deleted again
 /// when the pane never ran it. No task text and no `env` value is ever typed.
+///
+/// A host that [`DispatchHost::launches_as_command`] instead opens a session, labelled with
+/// `session.0` in worktree `session.1`, whose command runs the launcher: its `(workspace id,
+/// pane id)` comes back.
 fn run_launch(
     host: &mut impl DispatchHost,
     platform: HostPlatform,
@@ -4077,7 +4232,32 @@ fn run_launch(
     workspace_id: &str,
     pane_id: &str,
     rendered: &crate::agents::RenderedLaunch,
-) -> Result<(), DispatchError> {
+    session: (&str, &Path),
+) -> Result<Option<(String, String)>, DispatchError> {
+    if host.launches_as_command() {
+        let launcher = host
+            .write_launcher(
+                workspace_id,
+                &rendered.shell_script(
+                    &host
+                        .launcher_path(workspace_id)
+                        .map_err(DispatchError::Herdr)?
+                        .to_string_lossy(),
+                ),
+            )
+            .map_err(DispatchError::Herdr)?;
+        let command = [
+            "/bin/sh".to_string(),
+            launcher.to_string_lossy().into_owned(),
+        ];
+        return host
+            .open_agent_session(session.0, session.1, &command)
+            .map(Some)
+            .map_err(|error| {
+                host.remove_launcher(workspace_id);
+                DispatchError::Herdr(error)
+            });
+    }
     let line = match platform {
         HostPlatform::Unix => {
             let launcher = host
@@ -4101,10 +4281,12 @@ fn run_launch(
             })?
         }
     };
-    host.run_in_pane(pane_id, &line).map_err(|error| {
-        host.remove_launcher(workspace_id);
-        DispatchError::Herdr(error)
-    })
+    host.run_in_pane(pane_id, &line)
+        .map(|()| None)
+        .map_err(|error| {
+            host.remove_launcher(workspace_id);
+            DispatchError::Herdr(error)
+        })
 }
 
 /// One bulk launch: confirm the repository first (the card checked it off the event loop, but
@@ -4573,9 +4755,30 @@ mod tests {
         branch_kept: Option<BranchRetentionReason>,
         /// A whole-store restore of this document lands in this store as a pane command runs.
         restore_on_run: Option<(PathBuf, Vec<u8>)>,
+        /// Launch as a session's command, as Rex does: what opening the session returns.
+        command_session: Option<Result<(String, String), String>>,
+        /// Every session opened: label, worktree, command.
+        sessions: Vec<(String, PathBuf, Vec<String>)>,
     }
 
     impl DispatchHost for FakeHost {
+        fn launches_as_command(&self) -> bool {
+            self.command_session.is_some()
+        }
+
+        fn open_agent_session(
+            &mut self,
+            label: &str,
+            worktree: &Path,
+            command: &[String],
+        ) -> Result<(String, String), String> {
+            self.sessions
+                .push((label.into(), worktree.to_path_buf(), command.to_vec()));
+            self.command_session
+                .clone()
+                .expect("a command-session host")
+        }
+
         fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
             Ok(self.git)
         }
@@ -7160,6 +7363,214 @@ mod tests {
         assert_eq!(host.creates, 1);
         assert_eq!(host.runs.len(), 1);
         assert!(host.launchers[0].1.contains("/tmp/worktree"));
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn a_command_session_host_records_its_session_and_types_nothing() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let number = state.get(id).and_then(|task| task.number).expect("number");
+        let mut host = FakeHost {
+            git: true,
+            command_session: Some(Ok(("session:s1".into(), "block:b1".into()))),
+            ..FakeHost::default()
+        };
+        let result = run_with_host(&mut state, id, &profiles, false, HostKind::Rex, &mut host)
+            .expect("dispatch");
+        assert_eq!(result.record.herdr_workspace_id, "session:s1");
+        assert_eq!(result.naming, None, "the session is labelled at launch");
+        assert!(host.runs.is_empty(), "nothing is typed into a pane");
+        let (label, worktree, command) = &host.sessions[0];
+        assert_eq!(label, &format!("t{number}-implementer"));
+        assert_eq!(worktree, Path::new("/tmp/worktree"));
+        assert_eq!(host.launchers.len(), 1);
+        let written = host
+            .launcher_path(&host.launchers[0].0)
+            .expect("the path write_launcher returned");
+        assert_eq!(
+            command,
+            &vec![
+                "/bin/sh".to_string(),
+                written.to_string_lossy().into_owned()
+            ],
+            "the command runs exactly the launcher it wrote"
+        );
+        assert_eq!(state.get(id).expect("task").status, HumanStatus::Started);
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// A throwaway repository on `main` with one commit, under its own temp root.
+    #[cfg(unix)]
+    fn rex_repo(name: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "tsk-dispatch-rex-{name}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let project = root.join("repo");
+        fs::create_dir_all(&project).expect("mkdir");
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ][..],
+        ] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&project)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "{args:?}: {output:?}");
+        }
+        (root, project)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unrecorded_rex_launch_closes_its_session_and_takes_worktree_and_branch_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let (path, profiles) = profiles();
+        let (root, project) = rex_repo("unrecorded");
+        // A stub `rex`: logs every call, opens a session on `api call session.create`.
+        let stub = root.join("rex");
+        fs::write(
+            &stub,
+            "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/rex.log\"\n\
+             case \"$1\" in api) printf '%s' '{\"session_id\":\"session:stub\",\
+             \"initial_windows\":[{\"window_id\":\"window:w\",\"block_ids\":[\"block:b\"],\
+             \"revision\":1}]}' ;; esac\n",
+        )
+        .expect("stub");
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let mut state = DomainState::new();
+        let id = state
+            .create_assigned(
+                "Rex rollback",
+                None,
+                TaskScope::Project {
+                    path: project.to_string_lossy().into_owned(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+                Some("implementer".into()),
+            )
+            .expect("task");
+        state.assign_numbers_for_persistence();
+        let mut host = SystemDispatchHost::in_state_dir(root.join("state"))
+            .on(HostKind::Rex)
+            .with_rex(&stub);
+        let result = run_with_host_base(
+            &mut state,
+            id,
+            &profiles,
+            false,
+            HostKind::Rex,
+            Some("main"),
+            &mut host,
+        )
+        .expect("dispatch");
+        assert_eq!(result.record.herdr_workspace_id, "session:stub");
+        let worktree = PathBuf::from(&result.record.worktree);
+        assert!(worktree.is_dir(), "{}", worktree.display());
+
+        // The record save fails after the session opened: the launch is taken back.
+        let error = unrecorded(
+            &mut host,
+            &result.record,
+            &result.undo,
+            DispatchError::Store("disk full".into()),
+        );
+        assert!(!error.to_string().contains("left behind"), "{error}");
+        assert!(!worktree.exists(), "the worktree is removed");
+        let branches = Command::new("git")
+            .arg("-C")
+            .arg(&project)
+            .args(["branch", "--list", &result.record.branch])
+            .output()
+            .expect("git");
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "the branch is deleted"
+        );
+        let log = fs::read_to_string(root.join("rex.log")).expect("log");
+        assert!(log.contains("session kill session:stub"), "{log}");
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn herdr_never_reads_a_rex_session_as_gone() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut fake = FakeHost {
+            git: true,
+            command_session: Some(Ok(("session:s1".into(), "session:s1/block:b1".into()))),
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, HostKind::Rex, &mut fake)
+            .expect("dispatch");
+        let task = state.get(id).expect("task").clone();
+        // The real host on Herdr: the guard answers before any `herdr` runs.
+        let mut host = SystemDispatchHost::in_state_dir(path.join("state"));
+        assert!(matches!(
+            host.root_pane("session:s1"),
+            Err(RootPaneError::Failed(_))
+        ));
+        let (route, check) = start_route_checked(&task, "you", HostKind::Herdr, &mut host);
+        assert_eq!(route, StartRoute::Plain, "no relaunch is offered");
+        assert!(matches!(check, AgentCheck::Unreachable { .. }), "{check:?}");
+        let worktree = Path::new("/tmp/worktree");
+        assert!(HostKind::Herdr.workspace_open_on("session:s1", worktree));
+        assert!(HostKind::Herdr.workspace_open_on("rex-pending:/w", worktree));
+        assert!(HostKind::Herdr
+            .worktree_workspace(Path::new("/repos/app"), "session:s1", worktree)
+            .is_err());
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn a_failed_session_takes_the_worktree_and_launcher_back() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut host = FakeHost {
+            git: true,
+            command_session: Some(Err("rex down".into())),
+            ..FakeHost::default()
+        };
+        let error = run_with_host(&mut state, id, &profiles, false, HostKind::Rex, &mut host)
+            .expect_err("refused");
+        assert!(error.to_string().contains("rex down"), "{error}");
+        assert_eq!(host.removed_herdr, 1, "the worktree it created is removed");
+        assert_eq!(host.removed_launchers.len(), 1);
+        assert!(state.get(id).expect("task").dispatch.is_none());
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn a_command_session_host_refuses_a_relaunch_for_now() {
+        let (path, profiles) = profiles();
+        let (mut state, id) = task();
+        let mut host = FakeHost {
+            git: true,
+            command_session: Some(Ok(("session:s1".into(), "block:b1".into()))),
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, HostKind::Rex, &mut host)
+            .expect("dispatch");
+        let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+            .expect_err("relaunch refused");
+        assert!(error.to_string().contains("T413"), "{error}");
+        assert_eq!(host.sessions.len(), 1);
         fs::remove_dir_all(path).expect("cleanup");
     }
 
