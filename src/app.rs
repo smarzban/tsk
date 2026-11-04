@@ -16148,7 +16148,7 @@ mod quick_assign_tests {
         assert!(host.root_queries.is_empty(), "Herdr is never asked");
         assert_eq!(
             model.message(),
-            Some("started · reply not sent: not in Herdr")
+            Some("started · reply not sent: outside Herdr or Rex")
         );
         let saved = temp.store.load().expect("reload");
         assert_eq!(
@@ -17007,7 +17007,7 @@ mod quick_assign_tests {
             &mut |_| {},
         )
         .expect("start");
-        assert_eq!(model.message(), Some("started · no launch: not in Herdr"));
+        assert_eq!(model.message(), Some("started · no launch: outside Herdr or Rex"));
         let saved = temp.store.load().expect("reload");
         let task = saved.get(ids[0]).expect("task");
         assert_eq!(task.status, HumanStatus::Started);
@@ -17051,7 +17051,7 @@ mod quick_assign_tests {
             .expect("number");
         assert_eq!(
             model.message().map(str::to_string),
-            Some(format!("started · no launch: not in Herdr (T{number})"))
+            Some(format!("started · no launch: outside Herdr or Rex (T{number})"))
         );
         let saved = temp.store.load().expect("reload");
         for id in &ids {
@@ -17080,7 +17080,7 @@ mod quick_assign_tests {
             &mut |_| {},
         )
         .expect("reply");
-        assert_eq!(model.message(), Some("started · no launch: not in Herdr"));
+        assert_eq!(model.message(), Some("started · no launch: outside Herdr or Rex"));
         let saved = temp.store.load().expect("reload");
         assert_eq!(
             saved.get(ids[0]).expect("task").status,

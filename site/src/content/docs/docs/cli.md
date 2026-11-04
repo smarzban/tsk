@@ -291,8 +291,8 @@ tsk status T12 ready
 | --- | --- |
 | Unassigned, already started, done, or archived | Sets the status |
 | Assigned, never dispatched | [Dispatches](#dispatch) it and prints `dispatched T12 to @claude in <worktree>` |
-| Assigned, never dispatched, but outside Herdr or on the desk | Sets the status and prints `no launch: <reason>` |
-| Dispatched, agent still running, Herdr cannot tell, or outside Herdr | Sets the status. When you start it from `blocked` or `review`, it also tries to send the agent your replies or feedback, and a second line says whether they went |
+| Assigned, never dispatched, but outside Herdr or Rex, or on the desk | Sets the status and prints `no launch: <reason>` |
+| Dispatched, agent still running, the host cannot tell, or outside Herdr or Rex | Sets the status. When you start it from `blocked` or `review`, it also tries to send the agent your replies or feedback, and a second line says whether they went |
 | Dispatched, agent gone | Refuses with `agent-gone` |
 | Runs after a task that is not done | Refuses with `after-not-done`, unless `--force` |
 
@@ -464,7 +464,7 @@ tsk reply T12 "Use postgres" --send
 
 ## dispatch
 
-Launches an assigned task's agent in its own Git worktree and Herdr workspace, then sets the task `started`. [Dispatch](/docs/dispatch/#dispatch) explains names, prompts, and what the agent gets.
+Launches an assigned task's agent in its own Git worktree and a Herdr workspace or Rex session, then sets the task `started`. [Dispatch](/docs/dispatch/#dispatch) explains names, prompts, and what the agent gets.
 
 ```text
 tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]
@@ -477,7 +477,7 @@ tsk dispatch <task> --show-prompt [--base <branch>] [--state-dir <dir>]
 | `--again` | Relaunch a dispatched task. Keeps the recorded base and recreates a cleaned worktree |
 | `--show-prompt` | Print the command and [prompt](/docs/storage/#prompt-and-placeholders) a dispatch would send. Launches nothing and saves nothing |
 
-- Dispatch needs Herdr, a task in a project that is a Git repository, and an assignee with a profile in [`config.toml`](/docs/storage/#configuration).
+- Dispatch needs Herdr or Rex, a task in a project that is a Git repository, and an assignee with a profile in [`config.toml`](/docs/storage/#configuration).
 - The base is `--base`, else the task's base, else the repository's default branch. Never the branch you run the command in. [Base branch](/docs/dispatch/#base-branch).
 - A dispatched task refuses with `already-dispatched`. Use `--again` to relaunch on purpose.
 - Output is `dispatched T12 to @claude in <worktree>`.
@@ -493,7 +493,7 @@ tsk dispatch T12 --base main
 
 ### Preview the prompt
 
-`--show-prompt` works for any status, on the desk, and outside Herdr. It still needs an assignee with a profile: otherwise it refuses with `no-assignee` or `unknown-agent`.
+`--show-prompt` works for any status, on the desk, and outside Herdr or Rex. It still needs an assignee with a profile: otherwise it refuses with `no-assignee` or `unknown-agent`.
 
 - A dispatched task shows its recorded worktree, branch, and base. `--base` does not change them.
 - Any other task shows the branch, worktree, and base a first dispatch would pick, and says so. It picks them the same way, skipping branch names already taken, but from what was last fetched: the preview never fetches.
@@ -536,8 +536,8 @@ Output is one line: `cleaned T12: worktree <path> (removed), branch <name> (kept
 | `number`, `title` | The task |
 | `worktree` | `path`, and `outcome`: `removed` or `missing` |
 | `branch` | `name`, `outcome` (`removed` or `kept`), and `reason` for a kept branch |
-| `workspace` | `id`, and `outcome`: `removed`, `kept`, or `missing` |
-| `warning` | A failed fetch, or a workspace Herdr would not close; `null` otherwise |
+| `workspace` | The dispatch's Herdr workspace or Rex session: `id`, and `outcome`: `removed`, `kept`, or `missing` |
+| `warning` | A failed fetch, or a workspace the host would not close; `null` otherwise |
 | `merge` | With `--merge`: `pr`, `url`, `method`, and `remote_branch` (`kept`, `deleted`, or `null`) |
 | `status` | With `--merge`: `done` |
 
@@ -775,14 +775,14 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 | --- | --- |
 | `add` | `empty-title`, `invalid-title`, `unknown-project`, `project-archived`, `unknown-base`; in a plan also `invalid-item`, `invalid-thread`, `invalid-assignee`, `invalid-after` |
 | `status` | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker` |
-| `status … started` | `after-not-done`, `agent-gone`, and the `dispatch` codes `needs-git-project`, `unknown-agent`, `agent-config`, `unknown-base`, `no-default-base`, `herdr-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
+| `status … started` | `after-not-done`, `agent-gone`, and the `dispatch` codes `needs-git-project`, `unknown-agent`, `agent-config`, `unknown-base`, `no-default-base`, `host-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
 | `status … done --clean` | The `clean` codes except `not-dispatched` and `already-cleaned` |
 | `status … done --merge` | Every `clean` code, with `--merge` |
 | `edit` | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title`, `unknown-base`, `invalid-after`, `after-loop`; with `--on` also `not-blocked`, `invalid-blocker`, `text-too-long` |
 | `steps` | `unknown-task`, `soft-deleted-task`, `empty-step-text`, `invalid-step-text`, `unknown-step`, `ambiguous-step`, `same-step` |
 | `reply` | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
-| `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `not-in-herdr`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
-| `clean` | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `herdr-failed`; on Windows `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
+| `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `no-host`, `needs-git-project`, `unknown-base`, `no-default-base`, `host-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
+| `clean` | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `host-failed`; on Windows `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
 | `archive`, `unarchive` | `unknown-task`, `soft-deleted-task` |
 
 `project`, `trash`, `backup`, and `restore` refuse with a message only: `tsk <command>: <message>`, exit 1. A store that cannot be read or written exits 3 from `project`, `trash`, and `restore`. `dispatch` and `clean` print `store-error` as the code of an exit 3.

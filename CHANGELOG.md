@@ -12,6 +12,10 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Breaking
+
+- Dispatch refusal codes name no host: `not-in-herdr` is `no-host` and `herdr-failed` is `host-failed`, for `tsk dispatch`, `tsk clean`, and `tsk status` ([refusal codes](https://gettsk.sh/docs/cli/#exit-contract)).
+
 ### Added
 
 - `[dispatch] worktrees` in `config.toml` sets where dispatch puts new worktrees ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
@@ -19,6 +23,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ### Changed
 
+- Dispatch messages name Herdr or Rex. Outside both, a start prints `no launch: outside Herdr or Rex` and `tsk dispatch` says it works inside Herdr or Rex.
 - Dispatch puts new worktrees under `~/.tsk/worktrees/<repo>/` instead of Herdr's `~/.herdr/worktrees`. Tasks already dispatched keep their worktree.
 - `tsk setup` names both installed skills, `tsk-cli` and `tsk-coordinator`, beside each agent's skills directory instead of printing only the `tsk-cli` file.
 - A backup URL with a user name, such as `https://org@host/…`, no longer asks your credential manager. Drop `org@` from the URL ([credentials](https://gettsk.sh/docs/storage/#credentials)).

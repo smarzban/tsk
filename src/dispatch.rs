@@ -45,7 +45,7 @@ fn cleanup_inspection_error(operation: &str, error: String) -> String {
 pub const NO_ASSIGNEE: &str = "no agent assigned, use tsk edit T<n> --assignee <name>";
 /// The board's wording of the same refusal: there `@` assigns, and with no profile it opens nothing.
 pub const BOARD_NO_ASSIGNEE: &str = "no agent assigned: press @ or add a profile to config.toml";
-pub const NOT_IN_HERDR: &str = "dispatch works inside herdr for now";
+pub const NOT_IN_HERDR: &str = "dispatch works inside Herdr or Rex";
 pub const NEEDS_GIT_PROJECT: &str = "dispatch needs a project in a git repo";
 pub const UNSUPPORTED_PLATFORM: &str = "dispatch on Windows needs Windows PowerShell";
 /// Said once per Windows dispatch whose repository leaves Git's long-path support off.
@@ -359,7 +359,7 @@ impl CleanupError {
             Self::PathTooLong => "path-too-long",
             Self::RemovalTimedOut => "removal-timed-out",
             Self::PartlyRemoved(_) => "partly-removed",
-            Self::Herdr(_) => "herdr-failed",
+            Self::Herdr(_) => "host-failed",
             Self::Store(_) => "store-error",
         }
     }
@@ -459,7 +459,7 @@ impl DispatchError {
         match self {
             Self::UnknownTask => "unknown-task",
             Self::NoAssignee => "no-assignee",
-            Self::NotInHerdr => "not-in-herdr",
+            Self::NotInHerdr => "no-host",
             Self::UnsupportedPlatform(_) => "unsupported-platform",
             Self::UnsafeStateDir(_) => "unsafe-state-dir",
             Self::NeedsGitProject => "needs-git-project",
@@ -471,7 +471,7 @@ impl DispatchError {
             Self::UnknownBase(_) => "unknown-base",
             Self::NoDefaultBase(_) => "no-default-base",
             Self::AgentConfig(_) => "agent-config",
-            Self::Herdr(_) => "herdr-failed",
+            Self::Herdr(_) => "host-failed",
             Self::Store(_) => "store-error",
         }
     }
@@ -659,7 +659,7 @@ pub trait DispatchHost {
         None
     }
     fn remove_host_worktree(&mut self, _workspace_id: &str) -> Result<(), String> {
-        Err("Herdr worktree removal is not supported".into())
+        Err("host worktree removal is not supported".into())
     }
     fn remove_git_worktree(&mut self, _project: &Path, _worktree: &Path) -> Result<(), String> {
         Err("git worktree removal is not supported".into())
@@ -804,7 +804,7 @@ pub trait DispatchHost {
     /// Close a Herdr workspace without touching its checkout (Windows cleanup closes before it
     /// checks and removes).
     fn close_workspace(&mut self, _workspace_id: &str) -> Result<(), String> {
-        Err("Herdr workspace close is not supported".into())
+        Err("workspace close is not supported by this host".into())
     }
     /// Record that a Windows removal of the worktree in `workspace_id` is under way (`true`)
     /// or settled (`false`). The mark outlives tsk.
@@ -2969,8 +2969,8 @@ pub enum StartRoute {
     NoLaunch { reason: &'static str },
 }
 
-/// The no-launch reason when tsk runs outside Herdr.
-pub const NO_LAUNCH_NOT_IN_HERDR: &str = "not in Herdr";
+/// The no-launch reason when tsk runs outside any host (Herdr or Rex).
+pub const NO_LAUNCH_NOT_IN_HERDR: &str = "outside Herdr or Rex";
 /// The no-launch reason for a desk task.
 pub const NO_LAUNCH_DESK: &str = "desk task has no repository";
 
@@ -6537,7 +6537,7 @@ mod tests {
             (
                 "fatal: something else",
                 RemovalState::Intact,
-                "herdr-failed",
+                "host-failed",
             ),
             (
                 "fatal: contains modified or untracked files, use --force to delete it",
@@ -7186,7 +7186,7 @@ mod tests {
             (DispatchError::UnknownTask, "unknown-task"),
             (DispatchError::SoftDeletedTask, "soft-deleted-task"),
             (DispatchError::NoAssignee, "no-assignee"),
-            (DispatchError::NotInHerdr, "not-in-herdr"),
+            (DispatchError::NotInHerdr, "no-host"),
             (
                 DispatchError::UnsupportedPlatform(UNSUPPORTED_PLATFORM.into()),
                 "unsupported-platform",
@@ -7214,7 +7214,7 @@ mod tests {
                 DispatchError::NoDefaultBase("no origin/HEAD".into()),
                 "no-default-base",
             ),
-            (DispatchError::Herdr("failed".into()), "herdr-failed"),
+            (DispatchError::Herdr("failed".into()), "host-failed"),
             (DispatchError::Store("failed".into()), "store-error"),
         ];
         for (error, code) in cases {
@@ -8602,7 +8602,7 @@ mod tests {
         assert_eq!(CleanupError::DirtyWorktree.code(), "dirty-worktree");
         assert_eq!(CleanupError::WorktreeMismatch.code(), "worktree-mismatch");
         assert_eq!(CleanupError::DispatchChanged.code(), "dispatch-changed");
-        assert_eq!(CleanupError::Herdr("failed".into()).code(), "herdr-failed");
+        assert_eq!(CleanupError::Herdr("failed".into()).code(), "host-failed");
     }
 
     fn names(title: &str) -> (String, String) {

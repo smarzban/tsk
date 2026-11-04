@@ -5,7 +5,7 @@ description: Hand a task to an agent in its own worktree and Herdr workspace, th
 
 Dispatch hands a task to a coding agent. The agent gets its own Git branch, worktree, and Herdr workspace. When you complete the task, tsk tidies them up.
 
-Dispatch needs [Herdr](/docs/install/#add-to-herdr), a task in a project that is a Git repository, and an agent assignee. Assigning works everywhere. On Windows, dispatch is a [preview](#windows-preview).
+Dispatch needs [Herdr](/docs/install/#add-to-herdr) or Rex, a task in a project that is a Git repository, and an agent assignee. Assigning works everywhere. On Windows, dispatch is a [preview](#windows-preview).
 
 ## Assign
 
@@ -74,10 +74,10 @@ start undone · T12 back to ready · @claude kept running
 | Assigned to an agent, never dispatched | Dispatches |
 | Dispatched, agent still running | Sets started |
 | Dispatched, agent gone | Asks first: [relaunch](#relaunch) |
-| Assigned, outside Herdr or on the desk | Sets started; the status row says why nothing launched |
+| Assigned, outside Herdr or Rex, or on the desk | Sets started; the status row says why nothing launched |
 | Done or archived | Sets started; never launches |
 
-When Herdr cannot say whether the agent still runs, the start is plain and launches nothing. Outside Herdr the status row reads `started · no launch: not in Herdr`. Other refusals leave the task unstarted: an unknown agent, a base that cannot be resolved, or a Git or Herdr failure.
+When the host cannot say whether the agent still runs, the start is plain and launches nothing. Outside Herdr or Rex the status row reads `started · no launch: outside Herdr or Rex`. Other refusals leave the task unstarted: an unknown agent, a base that cannot be resolved, or a Git, Herdr, or Rex failure.
 
 ### Names
 

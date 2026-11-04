@@ -582,7 +582,7 @@ mod tests {
                 "you",
                 HostKind::Standalone,
                 named(),
-                "not sent: not in Herdr",
+                "not sent: outside Herdr or Rex",
                 0,
             ),
             (

@@ -524,7 +524,7 @@ fn an_assigned_start_outside_herdr_starts_plainly_and_says_why() {
     assert_eq!(started.status.code(), Some(0), "{started:?}");
     let stdout = String::from_utf8_lossy(&started.stdout);
     assert!(stdout.starts_with("status T1 started"), "{stdout}");
-    assert!(stdout.contains("no launch: not in Herdr"), "{stdout}");
+    assert!(stdout.contains("no launch: outside Herdr or Rex"), "{stdout}");
     assert!(started.stderr.is_empty(), "{started:?}");
     assert_eq!(status(), tsk_tui::domain::HumanStatus::Started);
     let _ = std::fs::remove_dir_all(dir);
@@ -609,7 +609,7 @@ fn reply_send_outside_herdr_stores_the_reply_and_says_not_sent() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines[0].starts_with("replied T1 as you"), "{stdout}");
-    assert_eq!(lines[1], "not sent: not in Herdr");
+    assert_eq!(lines[1], "not sent: outside Herdr or Rex");
     assert!(still_blocked(&dir));
     let state = TaskStore::new(&dir).load().expect("load");
     let block = state.tasks()[0].block.as_ref().expect("open block");
