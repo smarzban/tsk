@@ -147,6 +147,7 @@ worktrees = "~/code/worktrees"   # the default is worktrees in the state directo
 - Each worktree goes under `<worktrees>/<repo>/`, such as `~/code/worktrees/app/tsk-t12-fix-login-timeout`.
 - The path must be absolute or start with `~`, and must sit outside the task's project.
 - A task already dispatched keeps its worktree where it is. Cleanup removes it from there.
+- A relaunch after cleanup recreates the worktree under the current setting.
 
 ### Merge method
 
