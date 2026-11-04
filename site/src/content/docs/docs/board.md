@@ -17,7 +17,7 @@ Click, or use the keyboard. The footer lists the actions for the cursor or the m
 
 Inside a Git repository the board opens on that project. Outside Git it opens on the desk and puts the current directory in the project tab. The project tab remembers the selected project; with none selected, it opens the project picker.
 
-In Herdr, `prefix+t` opens or focuses the board in the current workspace ([Add to Herdr](/docs/install/#add-to-herdr)). All boards share the same tasks.
+In Herdr, `prefix+t` opens or focuses the board in the current workspace ([Add to Herdr](/docs/install/#add-to-herdr)). In Rex, `alt+t` opens it beside the focused pane or focuses it in the session ([Add to Rex](/docs/install/#add-to-rex)). All boards share the same tasks.
 
 ## Quit and go back
 

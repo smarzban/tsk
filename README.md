@@ -16,6 +16,7 @@ your agent the task number when you are ready. New tasks start in the open inbox
 
 In Herdr, `prefix+t` opens or focuses your workspace's board, even across tabs.
 Other workspaces keep their own view of the same tasks. `prefix+a` opens quick capture.
+In Rex, `alt+t` opens the board beside the focused pane and `alt+a` opens quick capture.
 Click a task's `T` number to copy it, then paste it into your agent conversation.
 
 ### Room to think
@@ -23,18 +24,18 @@ Click a task's `T` number to copy it, then paste it into your agent conversation
 ![A wide tsk board with the selected task's notes and steps open alongside it](docs/images/wide-task-page.png)
 
 In a wide pane, click a task or press `→` or `l` to open it beside the board; `←` or `h`
-brings you back. `Enter` opens the task full screen and `Esc` returns. Without Herdr,
-run `tsk` in any terminal.
+brings you back. `Enter` opens the task full screen and `Esc` returns. Outside Herdr
+or Rex, run `tsk` in any terminal.
 
 ### From task to implementation
 
 Define your agents once in `config.toml`, press `@` to assign a task, and press
 `ctrl+s` to start it. Starting an assigned task dispatches it: tsk creates a Git
-worktree and a Herdr workspace for the task and launches the agent there.
-`ctrl+d` marks the task done; on a live dispatch it offers the cleanup card. Cleanup
-closes the workspace and removes the worktree, and deletes the branch only when it is
-merged. It never touches uncommitted changes. Dispatch runs in Herdr; on Windows it
-is a preview.
+worktree and a Herdr workspace or Rex session for the task and launches the agent
+there. `ctrl+d` marks the task done; on a live dispatch it offers the cleanup card.
+Cleanup closes the workspace or session and removes the worktree, and deletes the branch
+only when it is merged. It never touches uncommitted changes. Dispatch runs in Herdr or
+Rex; on Windows it is a preview. [Dispatch](https://gettsk.sh/docs/dispatch/).
 
 ## Quickstart
 

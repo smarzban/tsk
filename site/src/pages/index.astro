@@ -200,7 +200,7 @@ const softwareApplication = {
           <div class="hero-copy">
             <p class="eyebrow">
               <span class="prompt">$</span> tsk
-              <span class="dim">· a task board in your terminal · herdr plugin, runs standalone</span>
+              <span class="dim">· a task board in your terminal · for herdr and rex, runs standalone</span>
             </p>
             <h1 class="headline" id="headline">
               A task board<br />for you and<br />your agents<span class="block-cursor" aria-hidden="true"></span>
@@ -335,7 +335,7 @@ const softwareApplication = {
             <article class="pillar">
               <h3>One store. Everyone at the table.</h3>
               <p>
-                You, Herdr's quick-capture popup, and your agents edit the same store. An agent
+                You, the Herdr and Rex quick-capture popups, and your agents edit the same store. An agent
                 drops a plan in as JSON, the new tasks land in the inbox, and the open board
                 shows them live.
               </p>
@@ -604,7 +604,7 @@ const softwareApplication = {
             <span class="index">05 <span class="index-label">install</span></span>
             <h2 id="install-heading">Install it. Open the board.</h2>
             <p class="band-lede">
-              One binary, standalone or in Herdr. Tasks live in <code>~/.tsk</code> on macOS and
+              One binary, standalone or in Herdr or Rex. Tasks live in <code>~/.tsk</code> on macOS and
               Linux, or <code>%LOCALAPPDATA%\tsk</code> on Windows. Back them up to a private
               GitHub repository with <code>tsk backup setup</code>.
             </p>
@@ -614,6 +614,7 @@ const softwareApplication = {
             <div class="tabs" role="tablist" aria-label="Install mode">
               <button type="button" role="tab" id="tab-standalone" aria-selected="true" aria-controls="panel-standalone" data-install-tab="standalone">install</button>
               <button type="button" role="tab" id="tab-plugin" aria-selected="false" aria-controls="panel-plugin" data-install-tab="plugin" tabindex="-1">add to herdr</button>
+              <button type="button" role="tab" id="tab-rex" aria-selected="false" aria-controls="panel-rex" data-install-tab="rex" tabindex="-1">add to rex</button>
             </div>
 
             <div class="tabpanel" role="tabpanel" id="panel-standalone" aria-labelledby="tab-standalone" data-install-panel="standalone">
@@ -632,7 +633,7 @@ const softwareApplication = {
                 <button type="button" class="copy" data-copy aria-label="Copy Windows install command">copy</button>
               </div>
               <p class="install-note">
-                If prompted, reopen your terminal. When the installer finds Herdr or coding agents,
+                If prompted, reopen your terminal. When the installer finds Herdr, Rex, or coding agents,
                 it offers to set them up. Then open the board with <code>tsk</code>, or add a task with
                 <code>tsk add -t "your task title"</code>. <a href="/docs/install/">Installation details</a>.
               </p>
@@ -652,8 +653,21 @@ const softwareApplication = {
               </p>
             </div>
 
+            <div class="tabpanel" role="tabpanel" id="panel-rex" aria-labelledby="tab-rex" data-install-panel="rex" hidden>
+              <div class="shell-wrap">
+                <pre class="shell" data-copy-source><span class="prompt">$</span> tsk setup rex</pre>
+                <button type="button" class="copy" data-copy aria-label="Copy Rex setup command">copy</button>
+              </div>
+              <p class="install-note">
+                Bind the same binary to keys in a running Rex; the installer offers this when Rex is installed.
+                <code>alt+t</code> opens the board beside the focused pane, and <code>alt+a</code> adds a task.
+                <a href="/docs/install/#add-to-rex">Pick other keys</a>.
+              </p>
+            </div>
+
             <ul class="reqs" aria-label="Requirements">
               <li><span class="dim">plugin mode</span> Herdr 0.9 or newer; Windows is a preview</li>
+              <li><span class="dim">rex keys</span> macOS or Linux</li>
               <li><a href="/docs/install/">Full install guide →</a></li>
             </ul>
           </div>
@@ -666,16 +680,16 @@ const softwareApplication = {
             <p class="coming-announcement">Assign · dispatch · clean up</p>
             <h2 id="coming-soon-heading">From task to implementation.</h2>
             <p class="band-lede">
-              Assign a task to an agent, dispatch it into its own Git worktree and Herdr workspace,
+              Assign a task to an agent, dispatch it into its own Git worktree and Herdr workspace or Rex session,
               then review the pull request and clean up when you complete the task.
             </p>
           </header>
           <ol class="coming-steps" aria-label="Agent workflow">
             <li><span class="dim">01</span><h3>Assign an agent.</h3><p>Pick an agent profile for the task. The agent works from its notes and steps.</p></li>
-            <li><span class="dim">02</span><h3>Start it.</h3><p>Starting an assigned task launches its agent in its own Herdr workspace and Git worktree.</p></li>
+            <li><span class="dim">02</span><h3>Start it.</h3><p>Starting an assigned task launches its agent in its own Herdr workspace or Rex session and Git worktree.</p></li>
             <li><span class="dim">03</span><h3>Review and clean.</h3><p>Review the pull request, then complete the task. Cleanup removes a merged worktree and never touches unmerged or uncommitted work.</p></li>
           </ol>
-          <p class="coming-availability">Runs in Herdr, from the board or <code>tsk dispatch</code>. Windows support is a preview.</p>
+          <p class="coming-availability">Runs in Herdr or Rex, from the board or <code>tsk dispatch</code>. Windows support is a preview.</p>
         </div>
       </section>
     </main>

@@ -484,7 +484,7 @@ tsk dispatch <task> --show-prompt [--base <branch>] [--state-dir <dir>]
 - A task dispatched in the other host (Herdr or Rex) refuses `--again` with `other-host` until its dispatch is cleaned. Relaunch it from that host.
 - Output is `dispatched T12 to @claude in <worktree>`.
 - A refusal changes nothing. A launch that fails removes what it created ([Dispatch](/docs/dispatch/#dispatch)).
-- Exit 3 after a launch means its record was not saved. tsk then takes the launch back, and the message says `launch undone` or names what stayed. When it says `the agent may still run`, check Herdr (`herdr agent get t12-claude`) and read the task before retrying. The same holds for a `tsk status T12 started` that dispatched.
+- Exit 3 after a launch means its record was not saved. tsk then takes the launch back, and the message says `launch undone` or names what stayed. When it says `the agent may still run`, look for the agent in Herdr (`herdr agent get t12-claude`) or the Rex session `t12-claude`, and read the task before retrying. The same holds for a `tsk status T12 started` that dispatched.
 - On Windows dispatch is a preview ([Windows](/docs/dispatch/#windows-preview)).
 
 **Refusals:** codes and exits in the [exit contract](#exit-contract).
@@ -737,7 +737,7 @@ tsk setup claude
 
 ## update
 
-Installs the latest stable release over a copy the installer put there, then refreshes a registered Herdr plugin and outdated agent skills. A Homebrew copy prints `brew update && brew upgrade tsk` instead. Reopen a running board afterwards. [Upgrade](/docs/install/#upgrade).
+Installs the latest stable release over a copy the installer put there, then refreshes a registered Herdr plugin, bound Rex keys, and outdated agent skills. When Herdr or Rex is installed but not set up, it offers setup. A Homebrew copy prints `brew update && brew upgrade tsk` instead. Reopen a running board afterwards. [Upgrade](/docs/install/#upgrade).
 
 ```text
 tsk update

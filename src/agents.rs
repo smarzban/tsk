@@ -39,10 +39,10 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # =============================================================================
 
 # Agent profiles let you assign a task to an agent (`@` or `!a name`).
-# In Herdr, starting an assigned project task (ctrl+s) dispatches it: tsk
-# creates a git worktree for the task, opens a Herdr workspace there, and runs
-# the profile's command. Outside Herdr, or on a desk task, a start only sets
-# the status.
+# In Herdr or Rex, starting an assigned project task (ctrl+s) dispatches it:
+# tsk creates a git worktree for the task, opens a Herdr workspace or Rex
+# session there, and runs the profile's command. Outside Herdr and Rex, or on
+# a desk task, a start only sets the status.
 #
 # Any agent that runs in a terminal works, including ones not listed here.
 # A profile needs only:

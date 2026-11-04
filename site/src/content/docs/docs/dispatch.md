@@ -5,7 +5,7 @@ description: Hand a task to an agent in its own worktree and a Herdr workspace o
 
 Dispatch hands a task to a coding agent. The agent gets its own Git branch, worktree, and a Herdr workspace or Rex session. When you complete the task, tsk tidies them up.
 
-Dispatch needs [Herdr](/docs/install/#add-to-herdr) or Rex, a task in a project that is a Git repository, and an agent assignee. Assigning works everywhere. On Windows, dispatch is a [preview](#windows-preview).
+Dispatch needs [Herdr](/docs/install/#add-to-herdr) or [Rex](/docs/install/#add-to-rex), a task in a project that is a Git repository, and an agent assignee. Assigning works everywhere. On Windows, dispatch is a [preview](#windows-preview).
 
 ## Assign
 
@@ -55,7 +55,7 @@ Start an assigned task to dispatch it: `ctrl+s`, palette **set status: started**
 3. runs the assignee's profile command there,
 4. records the dispatch on the task and sets it to started, in one save.
 
-If the launch fails, the task stays unstarted with no dispatch, and the status row says why. tsk removes the worktree, workspace, and new branch that launch created. A worktree with changes stays, but its workspace still closes. The message names anything left. A started task with a live dispatch shows `◉` instead of `●`.
+If the launch fails, the task stays unstarted with no dispatch, and the status row says why. tsk removes the worktree, workspace, and new branch that launch created. A worktree with changes stays, but its workspace or session still closes. The message names anything left. A started task with a live dispatch shows `◉` instead of `●`.
 
 The agent's instructions come from the profile's prompt. Without one, a default prompt asks it to open a pull request into the base and set the task to review. A profile's `prompt_append` adds your own lines to the default, and a project's settings can add more and name who gets the review. See [prompt and placeholders](/docs/storage/#prompt-and-placeholders) and [project settings](/docs/storage/#project-settings). `tsk dispatch T12 --show-prompt` prints what an agent would get.
 
@@ -88,7 +88,7 @@ Names come from the task number and title. For T12 `Fix login timeout`, assigned
 | Branch | `tsk/t12-fix-login-timeout` |
 | Worktree directory | `tsk-t12-fix-login-timeout` |
 | Herdr workspace | `T12 Fix login timeout` |
-| Herdr agent, Rex session and pane | `t12-claude` |
+| Herdr agent, Rex session and its pane | `t12-claude` |
 
 - The title part keeps whole words within 30 characters.
 - The worktree directory keeps only ASCII letters and digits.
@@ -152,7 +152,7 @@ worktree  ~/.tsk/worktrees/app/tsk-t12-fix-login-timeout
 
 `y` relaunches and starts, `n` only starts, and `Esc` changes nothing. Palette **dispatch again** relaunches the cursor task without asking.
 
-A relaunch keeps the recorded base and names, even if the task's base changed since. It opens a new workspace on the kept worktree. After a cleanup, it recreates the worktree from the kept branch, or from the original starting commit when the branch was deleted.
+A relaunch keeps the recorded base and names, even if the task's base changed since. It opens a new workspace or session on the kept worktree. After a cleanup, it recreates the worktree from the kept branch, or from the original starting commit when the branch was deleted.
 
 In Rex, a relaunch picks where the agent runs from what is left in its session:
 
@@ -198,8 +198,8 @@ On the card, **agent pane** means the dispatch's Herdr workspace. For a Rex disp
 | Where the branch stands | Options |
 | --- | --- |
 | Open pull request | `m` merges it ([below](#merge-the-pull-request)); `y` keeps the branch and pull request; `n` keeps everything |
-| Merged, such as `Merged into main ✓` | `y` removes the worktree, branch, and workspace; `n` keeps everything |
-| Not merged, or the merge cannot be confirmed | `y` removes the worktree and workspace and keeps the branch; `n` keeps everything |
+| Merged, such as `Merged into main ✓` | `y` removes the worktree, branch, and workspace or session; `n` keeps everything |
+| Not merged, or the merge cannot be confirmed | `y` removes the worktree and workspace or session, and keeps the branch; `n` keeps everything |
 | Uncommitted files in the worktree | Only `n`: commit or discard them first to tidy up |
 
 Every option marks the task done, and options that do not apply are left out. Without the GitHub CLI (`gh`) logged in, the card never mentions a pull request.
@@ -243,7 +243,7 @@ Each option line names the tasks it touches. What each key does to each task:
 | `y` | Done, tidy | Done, full tidy | Done, tidy | Unchanged |
 | `n` | Done | Done | Done | Done |
 
-A full tidy removes the worktree, branch, and workspace; a tidy keeps the branch. Tasks without a dispatch are marked done under every key. One failure never stops the others, and the status row ends with a count that names the tasks that kept something. `Esc` keeps the marks.
+A full tidy removes the worktree, branch, and workspace or session; a tidy keeps the branch. Tasks without a dispatch are marked done under every key. One failure never stops the others, and the status row ends with a count that names the tasks that kept something. `Esc` keeps the marks.
 
 ## Merge the pull request
 
@@ -263,7 +263,7 @@ Quitting waits for a running merge. On a marked set, `m` merges each open pull r
 
 ## Windows (preview)
 
-Herdr on Windows is a preview, and so is dispatch there.
+Herdr on Windows is a preview, and so is dispatch there. Rex [does not run on Windows](/docs/install/#rex-setup-details).
 
 - A profile's `command` must find an `.exe` or a PowerShell script. A batch file (`.cmd`, `.bat`) is refused, because cmd.exe could run task text as commands. Dispatch refuses it with `agent-config` before it creates anything. When tsk cannot see where the command leads, the workspace opens and its pane refuses instead.
 - A PowerShell script works as a shim that hands its arguments to a program, like the `.ps1` files npm installs. A script that reads `$args` itself sees the arguments escaped.

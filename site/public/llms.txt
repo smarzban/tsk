@@ -2,7 +2,7 @@
 
 > tsk is a terminal task board for you and your agents: one shared queue, a TUI for you, a CLI for them.
 
-The human works the board in a TUI; agents read and write the same tasks with the `tsk` CLI. It ships as the `herdr-tsk` plugin for Herdr and also runs standalone in any terminal.
+The human works the board in a TUI; agents read and write the same tasks with the `tsk` CLI. It ships as the `herdr-tsk` plugin for Herdr, binds to keys in Rex, and also runs standalone in any terminal.
 
 ## Install
 

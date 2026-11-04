@@ -3,7 +3,7 @@ title: Storage
 description: Where tsk keeps tasks and settings, config.toml, git backups and restore, deleted tasks, and the update check.
 ---
 
-Where tsk keeps your tasks and settings, how to configure it, and how to back it up. The board, the CLI, and the Herdr plugin share one store.
+Where tsk keeps your tasks and settings, how to configure it, and how to back it up. The board, the CLI, and the Herdr and Rex shortcuts share one store.
 
 ## Location
 
@@ -14,7 +14,7 @@ Where tsk keeps your tasks and settings, how to configure it, and how to back it
 
 - `TSK_STATE_DIR` moves it. `--state-dir <dir>` moves it for one data command.
 - With no home directory and no `TSK_STATE_DIR`, tsk refuses to run rather than pick a directory.
-- Inside Herdr, tsk uses the same directory, so the plugin and a bare terminal show the same board.
+- Inside Herdr or Rex, tsk uses the same directory, so their board and a bare terminal show the same tasks.
 - Keep it on a local disk. Network drives and synced folders such as Dropbox, iCloud Drive, or OneDrive are not supported; use a [git backup](#git-backups) instead.
 - It must be a real directory, not a symlink or a Windows junction.
 
