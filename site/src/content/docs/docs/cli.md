@@ -737,7 +737,7 @@ tsk setup claude
 
 ## update
 
-Installs the latest stable release over a copy the installer put there, then refreshes a registered Herdr plugin and outdated agent skills. A Homebrew copy prints `brew update && brew upgrade tsk` instead. Reopen a running board afterwards. [Upgrade](/docs/install/#upgrade).
+Installs the latest stable release over a copy the installer put there, then refreshes a registered Herdr plugin, bound Rex keys, and outdated agent skills. When Herdr or Rex is installed but not set up, it offers setup. A Homebrew copy prints `brew update && brew upgrade tsk` instead. Reopen a running board afterwards. [Upgrade](/docs/install/#upgrade).
 
 ```text
 tsk update

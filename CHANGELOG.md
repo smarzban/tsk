@@ -15,7 +15,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 ### Breaking
 
 - Dispatch refusal codes name no host: `not-in-herdr` is `no-host` and `herdr-failed` is `host-failed` ([refusal codes](https://gettsk.sh/docs/cli/#exit-contract)).
-- Store format 16 records each dispatch's host, shown as `host` and `session` in `tsk list --json`. tsk 0.13 and older refuse it; to roll back, restore `tsk.json.v6`.
+- Store format 16 records each dispatch's host: `tsk list T12 --json` shows `host` and `session`, and Herdr keeps `herdr_workspace_id`. tsk 0.13 and older refuse it; roll back with `tsk.json.v6`.
 
 ### Added
 
