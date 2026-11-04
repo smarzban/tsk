@@ -26,6 +26,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ### Changed
 
+- Agent skills 1.7.0 cover dispatch in Herdr and Rex; the coordinator hands a passed review to you and cleans up after every merge. `tsk update` refreshes installed copies.
 - Dispatch puts new worktrees under `~/.tsk/worktrees/<repo>/` instead of Herdr's `~/.herdr/worktrees`. Tasks already dispatched keep their worktree.
 - Dispatch messages name Herdr or Rex: outside both, a start prints `no launch: outside Herdr or Rex`.
 - `tsk setup` names both installed skills, `tsk-cli` and `tsk-coordinator`, beside each agent's skills directory instead of printing only the `tsk-cli` file.

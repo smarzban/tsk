@@ -1,7 +1,7 @@
 ---
 name: tsk-coordinator
 description: 'Coordinate a multi-agent build: plan the work, brief builder agents, gate every pull request with an independent review, live-test before merge, and report to the user. Works with any agent and tracker, tuned for the tsk board. Use when asked to coordinate builders or workers, run parallel agents, "move the plan along", or work through a task list on your own.'
-version: 1.6.0
+version: 1.7.0
 ---
 
 # tsk-coordinator: run builders for the user
@@ -36,24 +36,32 @@ With tsk, run `tsk guide` first: the tsk skill owns every command. This skill ne
    ask "append or replace?" before writing into a field they wrote. The tsk skill names the
    append command.
 4. **Start a builder.** One fresh session per task, in its own worktree and branch.
-   - With tsk in Herdr: set the assignee and base, then start the task. Dispatch creates the
-     worktree, workspace, and agent. No agent profile in `config.toml` yet: ask the user to
-     add one, or start the builder yourself.
-   - Elsewhere: create the worktree and start the agent yourself, e.g. one terminal tab per agent.
+   - With tsk in Herdr or Rex: set the assignee and base, then start the task. Dispatch creates
+     the worktree, the Herdr workspace or Rex session, and the agent. No agent profile in
+     `config.toml` yet: ask the user to add one, or start the builder yourself.
+   - In neither: create the worktree and start the agent yourself, e.g. one terminal tab per agent.
    - The prompt only points at the brief: "T12: read `tsk list T12 --json`."
-   - After prompting, confirm the agent is working. A dialog can swallow a prompt.
+   - After prompting, confirm the agent is working: read its Herdr or Rex pane. A dialog can
+     swallow a prompt.
 5. **Wait on a completion signal.** Every prompt needs one; never assume you will notice.
    - With tsk, the task status is the signal: the builder sets `review` (with `--on` naming you)
-     or `blocked`. Poll `tsk list T12 --json`, not the agent's internals.
+     or `blocked`. Poll `tsk list T12 --json`, not the agent's internals. Answer a dispatched
+     builder with `tsk reply T12 "…" --send`, in Herdr or Rex.
      `review_on` under the project's `[project."<path>"]` in `config.toml` puts your name in the
      default prompt's `--on` ([project settings](https://gettsk.sh/docs/storage.md#project-settings)).
    - Without tsk, have the agent message you when done, or watch its status in a background loop.
 6. **Review gate.** Run it on every pull request ([below](#review-gate)).
 7. **Live test.** Run the change the way its user would ([below](#live-test)).
-8. **Merge.** The user merges unless they granted you a merge. With tsk the user merges from the
-   board (`m` on the cleanup card); `tsk status T12 done --clean` tidies up after a merge.
-   Never mark a task done unless the user said so.
-9. **Report** ([below](#talking-to-the-user)), and refresh `HANDOFF.md`.
+8. **Hand the review to the user.** Once the review gate and live test pass, the review waits on
+   them, not you: with tsk, `tsk edit T12 --on you`.
+9. **Merge.** The user merges unless they granted you a merge. With tsk the user merges from the
+   board (`m` on the cleanup card). Never mark a task done unless the user said so.
+10. **Clean up** after every merge, into an integration branch too. Keep any review-run records
+    first. Close the builder's Herdr workspace or Rex session, then remove its worktree and branch.
+    For a dispatched task `tsk clean T12` does all three (it keeps a branch it cannot confirm
+    merged, with the reason); for one you set up yourself, close the session, then
+    `git worktree remove` and `git branch -D`.
+11. **Report** ([below](#talking-to-the-user)), and refresh `HANDOFF.md`.
 
 A question only the user can answer blocks that task, with the question; move on to the next
 task meanwhile. New bugs and follow-ups found along the way become tasks, with evidence: IDs, timestamps, logs.
