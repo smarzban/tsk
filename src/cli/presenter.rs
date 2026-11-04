@@ -2573,12 +2573,16 @@ pub fn setup_help() -> CliOutput {
             .lines()
             .map(|line| line.trim_start_matches("usage:").trim().to_string())
             .collect(),
-        purpose: "Register tsk with Herdr, or install the agent skill. On a terminal, bare tsk setup offers the skill to every detected agent.".into(),
+        purpose: "Register tsk with Herdr or Rex, or install the agent skill. On a terminal, bare tsk setup offers the skill to every detected agent.".into(),
         groups: vec![
             group(
                 "Actions",
                 &[
                     ("herdr", "register the plugin and its shortcuts with Herdr"),
+                    (
+                        "rex",
+                        "add the board (alt+t) and quick-capture (alt+a) keys to the Rex config",
+                    ),
                     (
                         "agents",
                         "install or update both skills for every detected agent",
@@ -2598,7 +2602,15 @@ pub fn setup_help() -> CliOutput {
                 &[
                     (
                         "--check",
-                        "with herdr: print bound if both plugin commands are in the Herdr config, else unbound",
+                        "with herdr: print bound if both plugin commands are in the Herdr config, else unbound; with rex: bound if the Rex config loads tsk's keys",
+                    ),
+                    (
+                        "--board-key <key>",
+                        "with rex: open the board on <key> instead, in Rex notation (ctrl+b>t), or none",
+                    ),
+                    (
+                        "--capture-key <key>",
+                        "with rex: open quick capture on <key> instead, or none",
                     ),
                     ("--yes", "with agents: install without asking"),
                     ("--force", "rewrite a skill whose version already matches"),
@@ -2621,6 +2633,7 @@ pub fn setup_help() -> CliOutput {
         ],
         examples: vec![
             "tsk setup herdr".into(),
+            "tsk setup rex --board-key ctrl+b>t".into(),
             "tsk setup agents --yes".into(),
             "tsk setup claude".into(),
         ],
@@ -2628,6 +2641,7 @@ pub fn setup_help() -> CliOutput {
             "skill-exists: the installed skill already has this version".into(),
             "a symlinked skills root, skill folder, or skill file".into(),
             "Herdr setup failed".into(),
+            "Rex setup failed, or a key is taken and the terminal cannot ask".into(),
         ],
         exit: exit_line("setup done, or guidance printed", Some("refused or failed"), false),
     })
@@ -2916,6 +2930,38 @@ pub fn setup(result: crate::setup::SetupResult) -> CliOutput {
     stdout.push_str(
         "\nReload Herdr (herdr server reload-config) or restart it to apply the shortcuts.\n",
     );
+    CliOutput {
+        stdout,
+        stderr: String::new(),
+        code: 0,
+    }
+}
+
+pub fn setup_rex(result: crate::setup::rex::RexSetupResult) -> CliOutput {
+    let mut stdout = format!(
+        "    Rex config:     {}\n",
+        terminal_text(&result.config.display().to_string())
+    );
+    if let Some(backup) = result.backup {
+        stdout.push_str(&format!(
+            "    Config backup:\n        {}\n",
+            terminal_text(&backup.display().to_string())
+        ));
+    }
+    let shortcuts: Vec<String> = result
+        .shortcuts
+        .iter()
+        .map(|(keys, label)| format!("{} {label}", terminal_text(keys)))
+        .collect();
+    if shortcuts.is_empty() {
+        stdout.push_str("    Shortcuts:      none bound\n");
+    } else {
+        stdout.push_str(&format!("    Shortcuts:      {}\n", shortcuts.join(", ")));
+    }
+    if result.declined_conflicts {
+        stdout.push_str("Declined conflicts were left unchanged.\n");
+    }
+    stdout.push_str("\nRex reloaded its config; the shortcuts work in every Rex pane.\n");
     CliOutput {
         stdout,
         stderr: String::new(),

@@ -25,7 +25,10 @@ class InstallerTests(unittest.TestCase):
         self.bin.mkdir()
         self.assets = self.root / "assets"
         self.assets.mkdir()
-        self.env = dict(os.environ, HOME=str(self.root / "home"), PATH=f"{self.bin}:{os.environ['PATH']}", CURL_ARGS=str(self.root / "curl-args"), ASSETS=str(self.assets), REQUESTS=str(self.root / "requests"), MOCK_OS="Linux", MOCK_ARCH="x86_64")
+        # A Rex installed on this machine would answer the installer's `command -v rex`;
+        # tests that want Rex put a stub in self.bin.
+        host_path = ":".join(d for d in os.environ["PATH"].split(":") if not os.access(os.path.join(d, "rex"), os.X_OK))
+        self.env = dict(os.environ, HOME=str(self.root / "home"), PATH=f"{self.bin}:{host_path}", CURL_ARGS=str(self.root / "curl-args"), ASSETS=str(self.assets), REQUESTS=str(self.root / "requests"), MOCK_OS="Linux", MOCK_ARCH="x86_64")
         self.env["SHELL"] = "/bin/bash"
         self.env.pop("ZDOTDIR", None)
         self.env.pop("TSK_VERSION", None)
@@ -93,6 +96,10 @@ if [ "${1:-}" = setup ] && [ "${2:-}" = --skill-states ]; then
 fi
 if [ "${1:-}" = setup ] && [ "${2:-}" = herdr ] && [ "${3:-}" = --check ]; then
     if [ -n "${TSK_HERDR_BOUND:-}" ]; then echo bound; else echo unbound; fi
+    exit 0
+fi
+if [ "${1:-}" = setup ] && [ "${2:-}" = rex ] && [ "${3:-}" = --check ]; then
+    if [ -n "${TSK_REX_BOUND:-}" ]; then echo bound; else echo unbound; fi
     exit 0
 fi
 if [ "${1:-}" = setup ] && [ "${2:-}" = agents ] && [ "${3:-}" = --yes ]; then
@@ -566,6 +573,55 @@ echo installed-fixture
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("Herdr detected. Set up the Herdr plugin now? [y/N]", result.stdout)
         self.assertIn("setup herdr", self.setup_calls())
+
+    def test_update_refreshes_bound_rex_keys_without_asking(self):
+        self.archive(record_setup=True)
+        self.command("rex", "#!/bin/sh\nexit 0\n")
+        result = self.run_update(TSK_REX_BOUND="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Rex keys refreshed.", result.stdout)
+        self.assertIn("setup rex", self.setup_calls())
+        self.assertNotIn("[y/N]", result.stdout + result.stderr)
+        self.assertNotIn("    Rex keys:", result.stdout)
+        # The user's keys are kept, so the closing line must not promise alt+t.
+        self.assertNotIn("alt+t", result.stdout)
+
+    def test_update_reports_a_failed_rex_refresh_and_still_succeeds(self):
+        self.archive(record_setup=True)
+        self.command("rex", "#!/bin/sh\nexit 0\n")
+        result = self.run_update(TSK_REX_BOUND="1", TSK_SETUP_FAIL="rex")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("tsk setup rex failed; install succeeded.", result.stderr)
+        self.assertIn("    Rex keys:      tsk setup rex", result.stdout)
+
+    def test_update_with_unbound_rex_falls_back_to_the_install_nudge(self):
+        self.archive(record_setup=True)
+        self.command("rex", "#!/bin/sh\nexit 0\n")
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Rex keys refreshed", result.stdout)
+        self.assertNotIn("setup rex", self.setup_calls())
+        self.assertIn("    Rex keys:      tsk setup rex", result.stdout)
+
+    def test_no_rex_means_no_rex_row(self):
+        self.archive(record_setup=True)
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Rex", result.stdout + result.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "PTY prompt requires POSIX")
+    def test_first_install_asks_before_adding_rex_keys(self):
+        self.archive(record_setup=True)
+        self.command("rex", "#!/bin/sh\nexit 0\n")
+        result = self.run_install_with_answer(
+            b"y\n",
+            TSK_SETUP_LOG=str(self.setup_log),
+            PATH=f"{self.bin}:/usr/bin:/bin",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Rex detected. Add the tsk board (alt+t) and quick capture (alt+a) keys to Rex now? [y/N]", result.stdout)
+        self.assertIn("setup rex", self.setup_calls())
+        self.assertIn("or press alt+t in Rex.", result.stdout)
 
     def test_update_refreshes_outdated_skills_unattended(self):
         self.archive(record_setup=True)

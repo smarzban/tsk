@@ -58,8 +58,8 @@ Windows 10/11 (ARM64 or x86-64), in a PowerShell window:
 irm https://www.gettsk.sh/install.ps1 | iex
 ```
 
-The installers add tsk to your PATH and offer to set up Herdr and your coding agents
-when they find them. If prompted, reopen your terminal. Options, upgrades, and
+The installers add tsk to your PATH and offer to set up Herdr, Rex, and your coding
+agents when they find them. If prompted, reopen your terminal. Options, upgrades, and
 uninstall are in the [install guide](https://gettsk.sh/docs/install/).
 
 ### Add to Herdr
@@ -70,6 +70,11 @@ uninstall are in the [install guide](https://gettsk.sh/docs/install/).
 tsk setup herdr
 herdr server reload-config
 ```
+
+### Add to Rex
+
+With [Rex](https://www.superlogical.com/rex/) running, `tsk setup rex` binds `alt+t` to the
+board and `alt+a` to quick capture. [Rex setup](https://gettsk.sh/docs/install/#add-to-rex).
 
 ### Give your agent the skill
 
@@ -87,7 +92,7 @@ name it: `tsk setup pi`, or `omp`, `claude`, `cursor`, `grok`, `codex`, or `open
 
 ### Open the board
 
-Run `tsk`, or press `prefix+t` in Herdr. No project setup needed: inside a Git
+Run `tsk`, or press `prefix+t` in Herdr or `alt+t` in Rex. No project setup needed: inside a Git
 repository, tsk opens that project. Outside Git, it opens your desk, with the current
 directory one tab away.
 
@@ -97,7 +102,7 @@ directory one tab away.
 tsk add -t "your task title"
 ```
 
-Or press `+` on the board, `prefix+a` in Herdr, or ask your agent: “Add a task to fix
+Or press `+` on the board, `prefix+a` in Herdr, `alt+a` in Rex, or ask your agent: “Add a task to fix
 the login timeout, with steps to reproduce the bug.”
 
 ## Usage

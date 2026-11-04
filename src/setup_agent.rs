@@ -21,6 +21,7 @@ const SKILLS: [(&str, &str); 2] = [
 
 pub const USAGE: &str = "usage: tsk setup [--json]
        tsk setup herdr [--check]
+       tsk setup rex [--check] [--board-key <key>] [--capture-key <key>]
        tsk setup agents [--yes [--force]] [--json]
        tsk setup <agent> [--force] [--json]
        tsk setup --skill-dir <path> [--force] [--json]
@@ -188,6 +189,9 @@ pub enum Command {
         force: bool,
     },
     Herdr,
+    /// Installer probe: whether `init.lua` loads the managed `tsk.lua`.
+    RexCheck,
+    Rex(crate::setup::rex::Options),
     Skill {
         target: Target,
         force: bool,
@@ -235,6 +239,8 @@ pub fn parse(args: &[String]) -> Result<Command, Error> {
     }
 
     let mut herdr = false;
+    let mut rex = false;
+    let mut rex_options = crate::setup::rex::Options::default();
     let mut agents_cmd = false;
     let mut yes = false;
     let mut force = false;
@@ -253,6 +259,23 @@ pub fn parse(args: &[String]) -> Result<Command, Error> {
                     return Err(usage());
                 }
                 herdr = true;
+            }
+            "rex" => {
+                if rex {
+                    return Err(usage());
+                }
+                rex = true;
+            }
+            "--board-key" | "--capture-key" => {
+                index += 1;
+                let Some(value) = tail.get(index) else {
+                    return Err(usage());
+                };
+                set_key(&mut rex_options, arg, value)?;
+            }
+            flag if flag.starts_with("--board-key=") || flag.starts_with("--capture-key=") => {
+                let (name, value) = flag.split_once('=').expect("flag has =");
+                set_key(&mut rex_options, name, value)?;
             }
             "agents" => {
                 if agents_cmd {
@@ -295,6 +318,30 @@ pub fn parse(args: &[String]) -> Result<Command, Error> {
         index += 1;
     }
 
+    let key_flags = rex_options.board_key.is_some() || rex_options.capture_key.is_some();
+    if rex {
+        if herdr
+            || agents_cmd
+            || yes
+            || force
+            || json
+            || detected_ids
+            || skill_states
+            || !agents.is_empty()
+            || skill_dir.is_some()
+            || (check && key_flags)
+        {
+            return Err(usage());
+        }
+        return Ok(if check {
+            Command::RexCheck
+        } else {
+            Command::Rex(rex_options)
+        });
+    }
+    if key_flags {
+        return Err(usage());
+    }
     if detected_ids || skill_states {
         if herdr
             || agents_cmd
@@ -364,6 +411,20 @@ pub fn parse(args: &[String]) -> Result<Command, Error> {
         force,
         json,
     })
+}
+
+/// One `--board-key` or `--capture-key` value; each flag once, never empty or flag-like.
+fn set_key(options: &mut crate::setup::rex::Options, flag: &str, value: &str) -> Result<(), Error> {
+    let slot = if flag == "--board-key" {
+        &mut options.board_key
+    } else {
+        &mut options.capture_key
+    };
+    if value.is_empty() || value.starts_with('-') || slot.is_some() {
+        return Err(usage());
+    }
+    *slot = Some(value.to_string());
+    Ok(())
 }
 
 /// Bare `tsk setup` becomes interactive on a TTY; otherwise lists guidance.
@@ -749,6 +810,7 @@ pub fn list_text() -> String {
          On a TTY, bare `tsk setup` detects agents and asks once to install or update.\n\
          Each agent gets the {} skills in its skills folder.\n\
          herdr     register the plugin and shortcuts for this installed binary\n\
+         rex       add the board and quick-capture keys to the Rex config\n\
          agents    detect agents; --yes installs/updates without asking\n\
          claude    {}\n\
          pi        {}\n\

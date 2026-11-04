@@ -12,6 +12,10 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Added
+
+- `tsk setup rex` binds the board to `alt+t` and quick capture to `alt+a` in Rex; `--board-key` and `--capture-key` pick others. The installer and `tsk update` offer or refresh it.
+
 ### Changed
 
 - `tsk setup` names both installed skills, `tsk-cli` and `tsk-coordinator`, beside each agent's skills directory instead of printing only the `tsk-cli` file.

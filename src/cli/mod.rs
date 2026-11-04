@@ -687,6 +687,19 @@ fn run_setup<R: Read>(args: Vec<String>, stdin: &mut R, stdin_is_tty: bool) -> C
             Ok(false) => presenter::setup_probe("unbound\n".to_string()),
             Err(error) => presenter::setup_herdr_error(&error.to_string(), 1),
         },
+        Ok(crate::setup_agent::Command::RexCheck) => match crate::setup::rex::rex_setup_present() {
+            Ok(true) => presenter::setup_probe("bound\n".to_string()),
+            Ok(false) => presenter::setup_probe("unbound\n".to_string()),
+            Err(error) => presenter::setup_herdr_error(&error.to_string(), 1),
+        },
+        Ok(crate::setup_agent::Command::Rex(options)) => {
+            let mut reader = std::io::BufReader::new(stdin);
+            let mut stderr = std::io::stderr();
+            match crate::setup::rex::run(&options, &mut reader, &mut stderr, interactive) {
+                Ok(result) => presenter::setup_rex(result),
+                Err(error) => presenter::setup_herdr_error(&error.to_string(), 1),
+            }
+        }
         Ok(crate::setup_agent::Command::Interactive { json }) => {
             let mut reader = std::io::BufReader::new(stdin);
             let mut stderr = std::io::stderr();

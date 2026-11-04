@@ -155,6 +155,12 @@ esac
 #   board_prefix  — setup ran successfully (prefix+t is available)
 #   board_setup   — declined, CI/no-TTY skip, or setup failed (nudge tsk setup herdr)
 herdr_wrap=board
+# rex_wrap mirrors herdr_wrap for Rex (macOS app or Linux server, `rex` on PATH):
+#   none       — Rex absent
+#   keys       — first setup ran successfully (alt+t is available)
+#   refreshed  — update path refreshed a bound setup (the user's own keys stay)
+#   rex_setup  — declined, CI/no-TTY skip, or setup failed (nudge tsk setup rex)
+rex_wrap=none
 # skills_wrap: empty | nudge — close with an `Agent skills:  tsk setup` row when agents were
 # detected but the batch ask was declined, skipped (CI/no-TTY), or agents --yes failed.
 skills_wrap=
@@ -234,6 +240,69 @@ maybe_setup_herdr() {
             ;;
         *)
             herdr_wrap=board_setup
+            ;;
+    esac
+}
+
+# Update path: a Rex config that already loads tsk's managed file is refreshed without
+# asking, so the file follows the new binary and keeps the user's keys.
+refresh_rex() {
+    [ "$("$tsk_bin" setup rex --check 2>/dev/null)" = bound ] || return 1
+    if setup_error=$("$tsk_bin" setup rex </dev/null 2>&1 >/dev/null); then
+        printf '\nRex keys refreshed.\n'
+        rex_wrap=refreshed
+    else
+        printf '\ntsk setup rex failed; install succeeded.\n' >&2
+        [ -z "$setup_error" ] || printf '%s\n' "$setup_error" | sed 's/^/    /' >&2
+        rex_wrap=rex_setup
+    fi
+    return 0
+}
+
+maybe_setup_rex() {
+    command -v rex >/dev/null 2>&1 || return 0
+    [ "$post_install_setup" = 1 ] || { rex_wrap=rex_setup; return 0; }
+    [ -x "$tsk_bin" ] || return 0
+    if [ -n "$update_mode" ] && refresh_rex; then
+        return 0
+    fi
+    if [ -n "${CI:-}" ]; then
+        rex_wrap=rex_setup
+        return 0
+    fi
+    answer=
+    setup_stdin=
+    if [ -t 0 ]; then
+        printf '\n' >&2
+        printf 'Rex detected. Add the tsk board (alt+t) and quick capture (alt+a) keys to Rex now? [y/N] ' >&2
+        read -r answer || true
+    elif sh -c 'exec <>/dev/tty' 2>/dev/null; then
+        printf '\n' >&2
+        printf 'Rex detected. Add the tsk board (alt+t) and quick capture (alt+a) keys to Rex now? [y/N] ' >&2
+        read -r answer </dev/tty || true
+        setup_stdin=/dev/tty
+    else
+        rex_wrap=rex_setup
+        return 0
+    fi
+    case $answer in
+        y|Y|yes|YES)
+            printf '\nRunning tsk setup rex...\n\n'
+            setup_status=0
+            if [ -n "$setup_stdin" ]; then
+                "$tsk_bin" setup rex <"$setup_stdin" || setup_status=$?
+            else
+                "$tsk_bin" setup rex || setup_status=$?
+            fi
+            if [ "$setup_status" -ne 0 ]; then
+                printf '\ntsk setup rex failed; install succeeded.\n' >&2
+                rex_wrap=rex_setup
+            else
+                rex_wrap=keys
+            fi
+            ;;
+        *)
+            rex_wrap=rex_setup
             ;;
     esac
 }
@@ -362,19 +431,26 @@ maybe_setup_agent_skills() {
 }
 
 maybe_setup_herdr
+maybe_setup_rex
 maybe_setup_agent_skills
 
 printf '\nDone. Run tsk in a project directory to open the board'
 if [ "$herdr_wrap" = board_prefix ]; then
     printf ', or press prefix+t in Herdr.\n'
+elif [ "$rex_wrap" = keys ]; then
+    printf ', or press alt+t in Rex.\n'
 else
     printf '.\n'
 fi
 herdr_row=
+rex_row=
 agent_row=
 if [ "$post_install_setup" = 1 ]; then
     if [ "$herdr_wrap" = board_setup ]; then
         herdr_row='    Herdr plugin:  tsk setup herdr'
+    fi
+    if [ "$rex_wrap" = rex_setup ]; then
+        rex_row='    Rex keys:      tsk setup rex'
     fi
     if [ "$skills_wrap" = nudge ]; then
         agent_row='    Agent skills:  tsk setup'
@@ -387,12 +463,18 @@ else
     if [ "$herdr_wrap" = board_setup ]; then
         herdr_row="    Herdr plugin:  $tsk_bin setup herdr"
     fi
+    if [ "$rex_wrap" = rex_setup ]; then
+        rex_row="    Rex keys:      $tsk_bin setup rex"
+    fi
     agent_row="    Agent skills:  $tsk_bin setup"
 fi
-if [ -n "$herdr_row" ] || [ -n "$agent_row" ]; then
+if [ -n "$herdr_row" ] || [ -n "$rex_row" ] || [ -n "$agent_row" ]; then
     printf '\n'
     if [ -n "$herdr_row" ]; then
         printf '%s\n' "$herdr_row"
+    fi
+    if [ -n "$rex_row" ]; then
+        printf '%s\n' "$rex_row"
     fi
     if [ -n "$agent_row" ]; then
         printf '%s\n' "$agent_row"
