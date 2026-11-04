@@ -163,12 +163,9 @@ pub(super) fn worktree_root(state_dir: &Path, project: &Path) -> Result<PathBuf,
     let root = std::path::absolute(&root)
         .map_err(|error| format!("could not resolve {}: {error}", root.display()))?;
     let resolved = resolve_existing_prefix(&root);
-    let inside = [
-        project.to_path_buf(),
-        resolve_existing_prefix(project),
-    ]
-    .iter()
-    .any(|project| path_within(&resolved, project) || path_within(&root, project));
+    let inside = [project.to_path_buf(), resolve_existing_prefix(project)]
+        .iter()
+        .any(|project| path_within(&resolved, project) || path_within(&root, project));
     if inside {
         return Err(format!(
             "config.toml: [dispatch] worktrees {} is inside the project {}; pick a folder outside it",
@@ -297,8 +294,8 @@ mod tests {
 
     #[test]
     fn a_relative_state_dir_gives_an_absolute_root() {
-        let root = worktree_root(Path::new("relative-state"), Path::new("/nowhere/app"))
-            .expect("root");
+        let root =
+            worktree_root(Path::new("relative-state"), Path::new("/nowhere/app")).expect("root");
         assert!(root.is_absolute(), "{}", root.display());
         assert!(root.ends_with("relative-state/worktrees"));
     }

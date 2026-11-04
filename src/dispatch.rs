@@ -4625,6 +4625,10 @@ mod tests {
             self.batch_only.clone()
         }
 
+        fn worktree_root(&self, _: &Path) -> Result<Option<PathBuf>, String> {
+            Ok(Some(PathBuf::from("/worktrees")))
+        }
+
         fn branch_taken(&mut self, _: &Path, branch: &str) -> Result<bool, String> {
             if let Some(error) = self.fail_taken.clone() {
                 return Err(error);

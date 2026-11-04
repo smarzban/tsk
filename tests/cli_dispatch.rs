@@ -709,7 +709,10 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
     let preview = |worktrees: &Path| {
         fs::write(
             dir.join("config.toml"),
-            format!("[dispatch]\nworktrees = '{}'\n{config}", worktrees.display()),
+            format!(
+                "[dispatch]\nworktrees = '{}'\n{config}",
+                worktrees.display()
+            ),
         )
         .expect("config");
         run_with(

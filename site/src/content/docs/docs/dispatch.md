@@ -93,6 +93,7 @@ Names come from the task number and title. For T12 `Fix login timeout`, assigned
 - The title part keeps whole words within 30 characters.
 - The worktree directory keeps only ASCII letters and digits.
 - When a name is taken, tsk appends `-2`, `-3`, and so on.
+- The worktree goes under `<worktrees>/<repo>/`, such as `~/.tsk/worktrees/app/tsk-t12-fix-login-timeout`. `<worktrees>` is the `worktrees` folder in the [state directory](/docs/storage/#location), or the folder set in [`[dispatch]`](/docs/storage/#worktree-location).
 - tsk names the agent once Herdr detects it, so `herdr agent get t12-claude` finds it. If Herdr detects no agent within 30 seconds, it stays unnamed.
 
 The task page shows the worktree, the branch, and where the dispatch started, such as `from origin/main @ 3333b79`.
@@ -142,7 +143,7 @@ Starting a dispatched task whose agent is gone opens a card. The agent is gone w
 ▸ y  relaunch @claude in the same worktree · start T12
   n  start T12 · don't relaunch @claude
 
-worktree  ~/.herdr/worktrees/app/tsk-t12-fix-login-timeout
+worktree  ~/.tsk/worktrees/app/tsk-t12-fix-login-timeout
 
                                         esc cancel
 ```
@@ -174,7 +175,7 @@ PR #42 is still open:
   y  don't merge · mark done · remove worktree and agent pane · keep the branch and the PR open
   n  don't merge · mark done · keep everything
 
-worktree  ~/.herdr/worktrees/app/tsk-t12-fix-login-timeout
+worktree  ~/.tsk/worktrees/app/tsk-t12-fix-login-timeout
 branch    tsk/t12-fix-login-timeout
 
                                                      esc cancel
