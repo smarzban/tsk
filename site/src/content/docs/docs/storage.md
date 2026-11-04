@@ -145,7 +145,8 @@ worktrees = "~/code/worktrees"   # the default is worktrees in the state directo
 ```
 
 - Each worktree goes under `<worktrees>/<repo>/`, such as `~/code/worktrees/app/tsk-t12-fix-login-timeout`.
-- The path must be absolute or start with `~`, and must sit outside the task's project.
+- The path must be absolute or start with `~`.
+- Worktrees must land outside the task's project, so the project folder and its parent folder are refused.
 - A task already dispatched keeps its worktree where it is. Cleanup removes it from there.
 - A relaunch after cleanup recreates the worktree under the current setting.
 
@@ -192,7 +193,7 @@ An unknown key or a bad value in one table never blocks the others. A file that 
 | Unknown top-level key or table | Ignored, so a file written for a newer tsk still loads |
 | Unknown key inside `[agent.<name>]`, `[project."<path>"]`, `[dispatch]`, `[merge]`, `[board]`, or `[[backup]]` | That table is an error |
 | Broken profile or `[project."<path>"]` | The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` with an assignee exit 2 without saving |
-| Broken `[dispatch]`, or a `worktrees` folder inside the project | Only dispatch and `--show-prompt` refuse, with `agent-config`. Cleanup still works |
+| Broken `[dispatch]`, or a `worktrees` folder that puts worktrees inside the project | Only dispatch and `--show-prompt` refuse, with `agent-config`. Cleanup still works |
 | Broken `[merge]` | Only merging refuses: the cleanup card says why, and the CLI refuses with `merge-config` |
 | Broken `[board]` | The board opens at the default layout and shows the error on its status row. A bad `me` leaves the layout alone and names you `you` |
 | Broken `[[backup]]` | No backup runs. Every full board open shows `backup off:` and the error on its status row. `tsk backup`, `tsk backup list`, and `tsk restore` exit 1 with the error |

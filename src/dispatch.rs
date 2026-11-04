@@ -4507,6 +4507,8 @@ mod tests {
         git: bool,
         taken: Vec<String>,
         fail_taken: Option<String>,
+        /// What `worktree_root` refuses with: a bad `[dispatch] worktrees`.
+        fail_root: Option<String>,
         created_labels: Vec<String>,
         fail_create: Option<String>,
         fail_run: Option<String>,
@@ -4626,7 +4628,10 @@ mod tests {
         }
 
         fn worktree_root(&self, _: &Path) -> Result<Option<PathBuf>, String> {
-            Ok(Some(PathBuf::from("/worktrees")))
+            match &self.fail_root {
+                Some(error) => Err(error.clone()),
+                None => Ok(Some(PathBuf::from("/worktrees"))),
+            }
         }
 
         fn branch_taken(&mut self, _: &Path, branch: &str) -> Result<bool, String> {
@@ -8538,6 +8543,69 @@ mod tests {
         assert!(matches!(error, DispatchError::Herdr(_)), "{error}");
         assert_eq!(host.creates, 0);
         assert!(state.get(id).expect("task").dispatch.is_none());
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[test]
+    fn a_bad_worktree_root_refuses_as_agent_config_before_anything_is_created() {
+        let (path, profiles) = profiles();
+        let bad_root = || FakeHost {
+            git: true,
+            fail_root: Some("config.toml: [dispatch] worktrees must be a string".into()),
+            ..FakeHost::default()
+        };
+        let refused = |error: &DispatchError| {
+            matches!(error, DispatchError::AgentConfig(reason)
+                if reason == "config.toml: [dispatch] worktrees must be a string")
+        };
+
+        // A first dispatch.
+        let (mut state, id) = task();
+        let before = serde_json::to_string(&state).expect("state");
+        let mut host = bad_root();
+        let error = run_with_host(&mut state, id, &profiles, false, HostKind::Herdr, &mut host)
+            .expect_err("bad root refuses");
+        assert!(refused(&error), "{error}");
+        assert_eq!(host.creates, 0);
+        assert!(host.runs.is_empty() && host.launchers.is_empty());
+        assert_eq!(serde_json::to_string(&state).expect("state"), before);
+
+        // The preview.
+        let error = preview_prompt(&state, id, &profiles, None, &mut bad_root())
+            .expect_err("bad root refuses the preview");
+        assert!(refused(&error), "{error}");
+
+        // A relaunch after cleanup recreates the worktree, so it refuses too.
+        let mut host = FakeHost {
+            git: true,
+            ..FakeHost::default()
+        };
+        run_with_host(&mut state, id, &profiles, false, HostKind::Herdr, &mut host)
+            .expect("dispatch");
+        let mut clean = FakeHost {
+            cleanup: Some(CleanupInspection {
+                unreachable_remote: None,
+                warning: None,
+                base_available: true,
+                worktree_exists: false,
+                dirty: false,
+                dirty_files: Vec::new(),
+                checked_out_elsewhere: false,
+                branch_merged: false,
+                workspace_exists: false,
+                target_matches: true,
+            }),
+            ..FakeHost::default()
+        };
+        clean_with_host(&mut state, id, HostKind::Herdr, &mut clean).expect("clean");
+        let cleaned = serde_json::to_string(&state).expect("state");
+        let mut host = bad_root();
+        let error = run_with_host(&mut state, id, &profiles, true, HostKind::Herdr, &mut host)
+            .expect_err("bad root refuses the recreate");
+        assert!(refused(&error), "{error}");
+        assert_eq!(host.creates, 0);
+        assert!(host.runs.is_empty() && host.launchers.is_empty());
+        assert_eq!(serde_json::to_string(&state).expect("state"), cleaned);
         fs::remove_dir_all(path).expect("cleanup");
     }
 

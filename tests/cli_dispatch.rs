@@ -744,7 +744,7 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
     assert_eq!(inside.code, 1, "{}", inside.stdout);
     assert!(
         inside.stderr.starts_with("tsk dispatch: agent-config:")
-            && inside.stderr.contains("is inside the project"),
+            && inside.stderr.contains("puts worktrees inside the project"),
         "{}",
         inside.stderr
     );

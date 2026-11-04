@@ -153,8 +153,8 @@ pub(super) fn worktree_path(root: &Path, project: &Path, branch: &str) -> Option
 }
 
 /// The root new worktrees of `project` go under: `[dispatch] worktrees` in `config.toml`, or
-/// `<state_dir>/worktrees`, made absolute. A root inside the project refuses: the checkout
-/// would sit in the tree it was cut from.
+/// `<state_dir>/worktrees`, made absolute. A root that puts checkouts (`<root>/<repo>/…`)
+/// inside the project refuses: the checkout would sit in the tree it was cut from.
 pub(super) fn worktree_root(state_dir: &Path, project: &Path) -> Result<PathBuf, String> {
     let configured = crate::agents::DispatchSettings::load(state_dir)
         .map_err(|error| error.to_string())?
@@ -162,13 +162,20 @@ pub(super) fn worktree_root(state_dir: &Path, project: &Path) -> Result<PathBuf,
     let root = configured.unwrap_or_else(|| state_dir.join("worktrees"));
     let root = std::path::absolute(&root)
         .map_err(|error| format!("could not resolve {}: {error}", root.display()))?;
-    let resolved = resolve_existing_prefix(&root);
-    let inside = [project.to_path_buf(), resolve_existing_prefix(project)]
-        .iter()
-        .any(|project| path_within(&resolved, project) || path_within(&root, project));
+    // Checkouts land in `<root>/<repo>`, so that folder is what must stay outside.
+    let checkouts = project
+        .file_name()
+        .map_or_else(|| root.clone(), |repo| root.join(repo));
+    let candidates = [lexical(&checkouts), resolve_existing_prefix(&checkouts)];
+    let projects = [lexical(project), resolve_existing_prefix(project)];
+    let inside = candidates.iter().any(|checkouts| {
+        projects
+            .iter()
+            .any(|project| path_within(checkouts, project))
+    });
     if inside {
         return Err(format!(
-            "config.toml: [dispatch] worktrees {} is inside the project {}; pick a folder outside it",
+            "config.toml: [dispatch] worktrees {} puts worktrees inside the project {}; pick a folder outside it",
             root.display(),
             project.display()
         ));
@@ -176,26 +183,46 @@ pub(super) fn worktree_root(state_dir: &Path, project: &Path) -> Result<PathBuf,
     Ok(root)
 }
 
-/// `path` with its longest existing ancestor canonicalized, so symlinks and `..` resolve
-/// before a containment check; the rest is appended as written.
+/// `path` with its longest existing ancestor canonicalized, so symlinks resolve before a
+/// containment check; the rest is appended, then `.` and `..` fold away lexically.
 fn resolve_existing_prefix(path: &Path) -> PathBuf {
     let mut rest = Vec::new();
     let mut current = path;
     loop {
         if let Ok(canonical) = current.canonicalize() {
-            return rest
+            let joined = rest
                 .iter()
                 .rev()
                 .fold(canonical, |acc, part: &&std::ffi::OsStr| acc.join(part));
+            return lexical(&joined);
         }
-        match (current.parent(), current.file_name()) {
-            (Some(parent), Some(name)) => {
-                rest.push(name);
+        match (current.parent(), current.components().next_back()) {
+            (Some(parent), Some(last)) => {
+                rest.push(last.as_os_str());
                 current = parent;
             }
-            _ => return path.to_path_buf(),
+            _ => return lexical(path),
         }
     }
+}
+
+/// `path` with `.` dropped and each `..` removing the folder before it, without touching
+/// the disk. A `..` at the root stays at the root.
+fn lexical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// Whether `path` is `ancestor` or below it. Windows compares without case.
@@ -270,7 +297,7 @@ mod tests {
         ] {
             configure(&inside);
             let error = worktree_root(&state, &project).unwrap_err();
-            assert!(error.contains("is inside the project"), "{error}");
+            assert!(error.contains("inside the project"), "{error}");
         }
         #[cfg(unix)]
         {
@@ -278,6 +305,20 @@ mod tests {
             configure(&root.join("link/wt"));
             assert!(worktree_root(&state, &project).is_err());
         }
+        // `..` after a folder that does not exist yet still resolves into the project.
+        configure(&root.join("not-yet/../app/wt"));
+        assert!(worktree_root(&state, &project).is_err());
+        configure(&root.join("app/not-yet/../wt"));
+        assert!(worktree_root(&state, &project).is_err());
+        // The project's parent puts every checkout at `<parent>/<repo>`: the project itself.
+        configure(&root);
+        let error = worktree_root(&state, &project).unwrap_err();
+        assert!(
+            error.contains("puts worktrees inside the project"),
+            "{error}"
+        );
+        configure(&root.join("not-yet/.."));
+        assert!(worktree_root(&state, &project).is_err());
         // A sibling whose name starts like the project's is outside it.
         configure(&root.join("app-worktrees"));
         assert!(worktree_root(&state, &project).is_ok());
