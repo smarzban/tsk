@@ -71,7 +71,7 @@ Rows the board paints as `N1`, `N2`… are notices: starter tasks and release no
 
 - A bare name for `add` must match exactly one project the board knows: one with tasks, an archived one, or the repository you are in. Otherwise it refuses with `unknown-project`.
 - Only an absolute path to an existing directory creates a new project. Relative and missing paths refuse.
-- `tsk list -p <name>` never refuses: an unknown name lists nothing.
+- `tsk list -p <name>` lists nothing for an unknown name. A name that two or more projects share refuses with `unknown-project` and lists their paths: pass one of them instead.
 
 ## add
 
@@ -182,7 +182,7 @@ tsk list --all --thread release --json
 - Tasks group by status in the order `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW`, and keep the board's order inside each status.
 - A row reads `- 12 Fix login timeout @claude ⎇ main #auth`. A blocked row adds `blocked: <why>` beneath.
 - With `--all`, each status groups its rows by project and desk. A sort other than `recent` lists the rows flat instead, each ending with its scope.
-- With `--group`, sub-headings name each group as the board paints it.
+- With `--group`, sub-headings name each group as the board paints it. Projects that share a name read as their shortest distinct path, such as `site-a/wordpress/wp-content`.
 - One task in full adds its notes, steps, `@assignee`, `⎇ base`, `after` and `before` tasks, `#thread`, and its latest five [paper trail](/docs/task-page/#paper-trail) entries.
 - Text wraps to the terminal width. Redirected output keeps each line whole.
 
@@ -593,7 +593,7 @@ tsk project archive <name> [--state-dir <dir>]
 tsk project unarchive <name> [--state-dir <dir>]
 ```
 
-Output is `archived project <name>` or `unarchived project <name>`. Repeating it is safe. A name with no tasks refuses: `no project named <name> has tasks`.
+Output is `archived project <name>` or `unarchived project <name>`. Repeating it is safe. A name with no tasks refuses: `no project named <name> has tasks`. A name that two or more projects share refuses with `project <name> is ambiguous: <paths>`: pass one of the paths.
 
 **Refusals:** a message with no code, exit 1 ([exit contract](#exit-contract)).
 
@@ -777,6 +777,7 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 | Command | Refusal codes |
 | --- | --- |
 | `add` | `empty-title`, `invalid-title`, `unknown-project`, `project-archived`, `unknown-base`; in a plan also `invalid-item`, `invalid-thread`, `invalid-assignee`, `invalid-after` |
+| `list` | `unknown-project` |
 | `status` | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker` |
 | `status … started` | `after-not-done`, `agent-gone`, and the `dispatch` codes `other-host`, `needs-git-project`, `unknown-agent`, `agent-config`, `unknown-base`, `no-default-base`, `host-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
 | `status … done --clean` | The `clean` codes except `not-dispatched` and `already-cleaned` |

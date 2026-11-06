@@ -374,8 +374,12 @@ pub fn list_help(_terminal_width: Option<usize>) -> CliOutput {
             "tsk list --all --group project --sort title".into(),
             "tsk list --archived --all".into(),
         ],
-        refusals: Vec::new(),
-        exit: exit_line("tasks listed", None, true),
+        refusals: vec!["unknown-project: a -p name shared by two or more projects".into()],
+        exit: exit_line(
+            "tasks listed",
+            Some("a -p name matches more than one project"),
+            true,
+        ),
     })
 }
 
@@ -1273,26 +1277,30 @@ fn append_wrapped(
 }
 
 fn scope_labels(rows: &[ListRow]) -> BTreeMap<Option<String>, String> {
+    distinct_scope_labels(rows.iter().map(|row| row.project.clone()))
+}
+
+/// One distinct label per scope (`None` is the desk): a project's basename, widened to
+/// the shortest unique path suffix where basenames collide (`site-a/wordpress/wp-content`).
+pub(crate) fn distinct_scope_labels(
+    scopes: impl IntoIterator<Item = Option<String>>,
+) -> BTreeMap<Option<String>, String> {
     let mut entries = Vec::new();
     let mut empty_projects = 0;
-    for row in rows {
+    for scope in scopes {
         if entries
             .iter()
-            .any(|entry: &ScopeLabel| entry.scope == row.project)
+            .any(|entry: &ScopeLabel| entry.scope == scope)
         {
             continue;
         }
-        let empty_number = if row
-            .project
-            .as_deref()
-            .is_some_and(|path| path.trim().is_empty())
-        {
+        let empty_number = if scope.as_deref().is_some_and(|path| path.trim().is_empty()) {
             empty_projects += 1;
             empty_projects
         } else {
             0
         };
-        entries.push(ScopeLabel::new(row.project.clone(), empty_number));
+        entries.push(ScopeLabel::new(scope, empty_number));
     }
 
     loop {
@@ -2475,10 +2483,13 @@ pub fn project_help() -> CliOutput {
             "tsk project archive atlas".into(),
             "tsk project unarchive atlas".into(),
         ],
-        refusals: vec!["no project named <name> has tasks".into()],
+        refusals: vec![
+            "no project named <name> has tasks".into(),
+            "project <name> is ambiguous: <paths>".into(),
+        ],
         exit: exit_line(
             "project archived or unarchived, or already was",
-            Some("no project of that name has tasks"),
+            Some("no project of that name has tasks, or the name is ambiguous"),
             true,
         ),
     })
@@ -2559,6 +2570,14 @@ pub fn list_rejected(error: ListError, terminal_width: Option<usize>) -> CliOutp
         },
         // A well-formed address that addresses no task: the invocation is wrong, not the store.
         ListError::UnknownTask => list_usage("unknown task", terminal_width),
+        ListError::UnknownProject(detail) => CliOutput {
+            stdout: String::new(),
+            stderr: wrap_list_document(
+                &format!("tsk list: unknown-project: {}\n", terminal_text(&detail)),
+                terminal_width,
+            ),
+            code: 1,
+        },
     }
 }
 

@@ -3817,3 +3817,166 @@ fn list_group_and_sort_by_assignee_match_the_board() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Two real project directories sharing the basename `wp-content`, one task in each.
+fn seed_colliding_basenames(label: &str) -> (PathBuf, String, String) {
+    let dir = temp_state_dir(label);
+    let mut paths = Vec::new();
+    for site in ["site-a", "site-b"] {
+        let project = dir.join(site).join("wordpress").join("wp-content");
+        std::fs::create_dir_all(&project).expect("create project directory");
+        let path = project.to_string_lossy().into_owned();
+        let added = list(&[
+            "tsk".into(),
+            "add".into(),
+            "-t".into(),
+            format!("{site} task"),
+            "-p".into(),
+            path.clone(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+        ]);
+        assert_eq!(added.code, 0, "{}", added.stderr);
+        paths.push(path);
+    }
+    let b = paths.pop().expect("site-b");
+    let a = paths.pop().expect("site-a");
+    (dir, a, b)
+}
+
+#[test]
+fn list_project_refuses_a_basename_shared_by_two_projects() {
+    let _env = env_lock();
+    let (dir, a, b) = seed_colliding_basenames("ambiguous-p");
+    for args in [vec!["-p", "wp-content"], vec!["-p", "WP-CONTENT", "--json"]] {
+        let output = list_at_width(&list_args(&dir, &args), 400);
+        assert_eq!(output.code, 1, "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {}", output.stdout);
+        assert_eq!(
+            output.stderr,
+            format!(
+                "tsk list: unknown-project: project {} is ambiguous: {a}, {b}\n",
+                args[1]
+            ),
+            "{args:?}"
+        );
+    }
+
+    // A full path still lists one project, and an unknown name still lists nothing.
+    let one = json_rows(&list(&list_args(&dir, &["-p", a.as_str(), "--json"])));
+    assert_eq!(titles(&one), vec!["site-a task"]);
+    let none = json_rows(&list(&list_args(&dir, &["-p", "nothing-here", "--json"])));
+    assert!(none.is_empty());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn list_group_project_labels_colliding_basenames_by_their_shortest_unique_suffix() {
+    let _env = env_lock();
+    let (dir, _a, _b) = seed_colliding_basenames("ambiguous-group");
+
+    let rows = json_rows(&list(&list_args(
+        &dir,
+        &["--all", "--group", "project", "--sort", "title", "--json"],
+    )));
+    let mut labelled = rows
+        .iter()
+        .map(|row| {
+            (
+                row["title"].as_str().expect("title").to_owned(),
+                row["group"].as_str().expect("group").to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    labelled.sort();
+    assert_eq!(
+        labelled,
+        vec![
+            (
+                "site-a task".to_string(),
+                "site-a/wordpress/wp-content".to_string()
+            ),
+            (
+                "site-b task".to_string(),
+                "site-b/wordpress/wp-content".to_string()
+            ),
+        ]
+    );
+
+    let human = list_at_width(&list_args(&dir, &["--all", "--group", "project"]), 400);
+    assert_eq!(human.code, 0, "{}", human.stderr);
+    for site in ["site-a", "site-b"] {
+        assert!(
+            human
+                .stdout
+                .contains(&format!("  {site}/wordpress/wp-content\n    - ")),
+            "{}",
+            human.stdout
+        );
+    }
+    assert!(
+        !human.stdout.contains("\n  wp-content\n"),
+        "{}",
+        human.stdout
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn list_group_project_keeps_equivalent_spellings_in_one_labelled_group() {
+    let _env = env_lock();
+    let dir = temp_state_dir("equivalent-group");
+    let real = dir.join("real").join("wp-content");
+    let other = dir.join("other").join("wp-content");
+    std::fs::create_dir_all(&real).expect("create real project");
+    std::fs::create_dir_all(&other).expect("create other project");
+    let alias_parent = dir.join("alias");
+    std::fs::create_dir(&alias_parent).expect("create alias parent");
+    let alias = alias_parent.join("wp-content");
+    std::os::unix::fs::symlink(&real, &alias).expect("symlink alias");
+
+    let mut state = DomainState::new();
+    for (title, path) in [
+        ("real task", &real),
+        ("alias task", &alias),
+        ("other task", &other),
+    ] {
+        create_task(
+            &mut state,
+            title,
+            TaskScope::Project {
+                path: path.to_string_lossy().into_owned(),
+            },
+            HumanStatus::Open,
+        );
+    }
+    TaskStore::new(&dir).save(&state).expect("seed store");
+
+    let rows = json_rows(&list(&list_args(
+        &dir,
+        &["--all", "--group", "project", "--json"],
+    )));
+    let group_of = |title: &str| {
+        rows.iter()
+            .find(|row| row["title"] == title)
+            .map(|row| row["group"].as_str().expect("group").to_owned())
+            .expect("row")
+    };
+    assert_eq!(group_of("real task"), group_of("alias task"), "{rows:?}");
+    assert_ne!(group_of("real task"), group_of("other task"), "{rows:?}");
+    assert_eq!(group_of("other task"), "other/wp-content");
+
+    let human = list_at_width(&list_args(&dir, &["--all", "--group", "project"]), 400);
+    assert_eq!(human.code, 0, "{}", human.stderr);
+    let headings = human
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("  ") && !line.starts_with("    "))
+        .collect::<Vec<_>>();
+    assert_eq!(headings.len(), 2, "{}", human.stdout);
+
+    let _ = std::fs::remove_dir_all(dir);
+}

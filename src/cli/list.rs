@@ -59,6 +59,8 @@ pub enum ListError {
     Store(String),
     /// A well-formed task address that addresses no task in the store.
     UnknownTask,
+    /// A bare `-p` name that matches more than one project; the refusal message.
+    UnknownProject(String),
 }
 
 /// One task visible to the list command.
@@ -439,13 +441,15 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             }),
         });
     }
-    let scope = (!input.all).then(|| match input.project.as_deref() {
-        Some(project) => TaskScope::Project {
-            path: resolve_permissive_project_path(project, &domain, Some(&snapshot_from_env())),
-        },
-        None if input.global => TaskScope::Global,
-        None => snapshot_from_env().default_scope,
-    });
+    let scope = match (input.all, input.project.as_deref()) {
+        (true, _) => None,
+        (false, Some(project)) => Some(TaskScope::Project {
+            path: resolve_permissive_project_path(project, &domain, Some(&snapshot_from_env()))
+                .map_err(|error| ListError::UnknownProject(error.message(project)))?,
+        }),
+        (false, None) if input.global => Some(TaskScope::Global),
+        (false, None) => Some(snapshot_from_env().default_scope),
+    };
     let view = if input.deleted {
         ListView::Deleted
     } else if input.done {
@@ -532,6 +536,9 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             for (label, rows) in arrange_rows(status.to_vec(), group, sort) {
                 arranged.extend(rows.into_iter().map(|task| (label.clone(), task)));
             }
+        }
+        if group == GroupBy::Project {
+            distinguish_project_groups(&mut arranged);
         }
         arranged
     };
@@ -671,6 +678,40 @@ fn is_open(status: HumanStatus) -> bool {
             | HumanStatus::Blocked
             | HumanStatus::Review
     )
+}
+
+/// Relabel `--group project` groups whose basenames collide with the shortest unique path
+/// suffix, so two `wp-content` projects read as two groups. Equivalent spellings of one
+/// project (`/tmp/x`, `/private/tmp/x`) share one group and so one label.
+fn distinguish_project_groups(arranged: &mut [(Option<String>, &crate::domain::Task)]) {
+    let identities = PathIdentityCache::default();
+    // One representative spelling per project identity, the first one listed.
+    let mut representatives: Vec<String> = Vec::new();
+    let mut representative_of = |path: &str| -> String {
+        match representatives
+            .iter()
+            .find(|known| identities.equivalent(known, path))
+        {
+            Some(known) => known.clone(),
+            None => {
+                representatives.push(path.to_string());
+                path.to_string()
+            }
+        }
+    };
+    let keys = arranged
+        .iter()
+        .map(|(_, task)| match &task.scope {
+            TaskScope::Project { path } => Some(representative_of(path)),
+            TaskScope::Global => None,
+        })
+        .collect::<Vec<_>>();
+    let labels = crate::cli::presenter::distinct_scope_labels(keys.iter().cloned());
+    for ((label, _), key) in arranged.iter_mut().zip(&keys) {
+        if key.is_some() {
+            *label = labels.get(key).cloned();
+        }
+    }
 }
 
 fn status_group_rank(status: HumanStatus) -> u8 {

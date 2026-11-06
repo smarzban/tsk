@@ -506,16 +506,23 @@ pub fn adopt_stored_identity(snapshot: &mut InvocationSnapshot, domain: &DomainS
 }
 
 /// Resolve with the pre-T82 permissive rules used by read and project archive verbs.
-/// Slash paths stay literal, and missing or ambiguous bare names stay literal.
+/// Slash paths and bare names matching no project stay literal, so legacy relative
+/// scopes and removed directories stay addressable. A bare name matching two or more
+/// distinct projects refuses like `add` does, rather than silently matching nothing.
 pub(crate) fn resolve_permissive_project_path(
     token: &str,
     domain: &DomainState,
     snapshot: Option<&InvocationSnapshot>,
-) -> String {
+) -> Result<String, ProjectResolveError> {
     if has_path_separator(token) {
-        return token.to_string();
+        return Ok(token.to_string());
     }
     let stored = stored_project_paths(domain);
+    // A legacy bare scope (`atlas`) is addressable only by its own spelling, so an exact
+    // stored match wins before a same-basename `/…/atlas` can make it ambiguous.
+    if stored.contains(token) {
+        return Ok(token.to_string());
+    }
     let mut candidates = stored.clone();
     if let Some(snapshot) = snapshot {
         // Outside Git, the invocation directory was not historically a basename alias.
@@ -540,8 +547,12 @@ pub(crate) fn resolve_permissive_project_path(
         }
     }
     match matches.as_slice() {
-        [path] => stored_spelling(domain, path).unwrap_or_else(|| path.clone()),
-        _ => token.to_string(),
+        [path] => Ok(stored_spelling(domain, path).unwrap_or_else(|| path.clone())),
+        [] => Ok(token.to_string()),
+        _ => {
+            matches.sort();
+            Err(ProjectResolveError::Ambiguous(matches))
+        }
     }
 }
 
@@ -692,7 +703,48 @@ mod portable_path_tests {
         let domain = DomainState::new();
         assert_eq!(
             resolve_permissive_project_path(r"C:\work\tsk", &domain, None),
-            r"C:\work\tsk"
+            Ok(r"C:\work\tsk".to_string())
+        );
+    }
+
+    fn domain_with_scopes(paths: &[&str]) -> DomainState {
+        let mut domain = DomainState::new();
+        for path in paths {
+            domain
+                .create(
+                    "fixture",
+                    None,
+                    TaskScope::Project {
+                        path: (*path).to_string(),
+                    },
+                    crate::domain::ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create project fixture");
+        }
+        domain
+    }
+
+    #[test]
+    fn permissive_resolution_keeps_a_legacy_bare_scope_addressable_beside_a_namesake() {
+        let domain = domain_with_scopes(&["atlas", "/projects/tsk-missing-namesake/atlas"]);
+        assert_eq!(
+            resolve_permissive_project_path("atlas", &domain, None),
+            Ok("atlas".to_string())
+        );
+    }
+
+    #[test]
+    fn permissive_resolution_refuses_a_basename_two_absolute_projects_share() {
+        let domain = domain_with_scopes(&[
+            "/projects/tsk-missing-b/atlas",
+            "/projects/tsk-missing-a/atlas",
+        ]);
+        let error = resolve_permissive_project_path("atlas", &domain, None)
+            .expect_err("two absolute namesakes are ambiguous");
+        assert_eq!(
+            error.message("atlas"),
+            "project atlas is ambiguous: /projects/tsk-missing-a/atlas, /projects/tsk-missing-b/atlas"
         );
     }
 
