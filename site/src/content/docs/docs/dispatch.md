@@ -137,7 +137,7 @@ A launch row reads like `@claude  from default (main)`, with `checking…` while
 
 ## Relaunch
 
-Starting a dispatched task whose agent is gone opens a card. The agent is gone when its workspace or Rex session was closed, its pane has no agent, or its worktree was cleaned up.
+Starting a dispatched task whose agent is gone opens a card. The agent is gone when its workspace or Rex session was closed, its pane has no agent, or its worktree was cleaned up. In Rex, it is also gone when its pane was closed and nothing else in the session runs a program.
 
 ```text
 @claude is no longer running.
@@ -160,9 +160,10 @@ In Rex, a relaunch picks where the agent runs from what is left in its session:
 | --- | --- |
 | Holds a bare shell in the worktree, as after a Rex restart | Runs the agent in that shell |
 | The agent exited and its pane stayed open | Opens a new agent pane in the same session, then closes the old one. Your other panes stay |
-| Gone | Opens a new session |
-| Something else runs there, or the shell left the worktree | Refuses and launches nothing |
-| Open, but no pane carries the task's agent name | Refuses and launches nothing. Close the session to relaunch |
+| The agent's pane was closed, and every other pane holds a bare shell or a finished program | Opens a new agent pane in the same session. Your other panes stay |
+| Gone, or no pane left in it | Opens a new session |
+| Something else runs in the agent's pane, or its shell left the worktree | Refuses and launches nothing |
+| No pane carries the task's agent name, and another pane runs a program | Refuses, naming that pane and its program: it may be the agent renamed. Quit it or close that pane to relaunch |
 
 ## Decision cards
 

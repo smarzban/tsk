@@ -17,7 +17,10 @@
 //! agent that fails at once leaves its error on screen; with no process left it reads as gone.
 //! A relaunch types the launch line into a block that holds a bare shell in the worktree (the
 //! server-restart case). An exited agent's block is replaced by a new one in the same session,
-//! so the user's other blocks there are never touched; only a gone session gets a new one.
+//! so the user's other blocks there are never touched. A closed agent block gets a new one in
+//! the same session when every block left holds a bare shell or an exited program; any other
+//! program there may be the agent under another label, so nothing launches. Only a gone
+//! session, or one with no block left, gets a new session.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -192,23 +195,58 @@ pub fn replace_block(
         })
         .ok_or_else(|| format!("rex block {pane} not found"))?;
     label_block(program, pane, EXITED_LABEL)?;
-    let request =
-        replacement_request(session, block, label, cwd, command, &inherited_path()).to_string();
-    let output = match rex(program, &["api", "call", "session.new_split", &request]) {
-        Ok(output) if output.status.success() => output,
+    let new_block = match open_beside(program, session, block, label, cwd, command) {
+        Ok(block) => block,
         // Rex did not open the block: the dead block takes its label back, nothing closes.
-        failed => {
-            let error = failed.and_then(rex_json).err().unwrap_or_default();
+        Err(Split::Refused(error)) => {
             let restored = label_block(program, pane, &old_label)
                 .err()
                 .map(|restore| format!("; could not label {pane} {old_label} again: {restore}"))
                 .unwrap_or_default();
             return Err(format!("{error}{restored}"));
         }
+        // Rex answered success, so a new agent block may run under the agent label even though
+        // the answer does not say which: the dead block keeps its non-agent label, nothing
+        // closes.
+        Err(Split::Unreadable(error)) => return Err(error),
     };
-    // Rex answered success, so a new agent block may run under the agent label even though the
-    // answer does not say which: the dead block keeps its non-agent label and nothing closes.
-    let new_block = rex_json(output)
+    let close = json!({"session_id": session, "block_id": block}).to_string();
+    let note = rex(program, &["api", "call", "block.close", &close])
+        .and_then(rex_json)
+        .err()
+        .map(|error| format!("the exited agent's block {pane} stays open ({error})"));
+    Ok((pane_id(session, &new_block), note))
+}
+
+/// Why [`open_beside`] has no new block to hand back.
+enum Split {
+    /// Rex did not open a block.
+    Refused(String),
+    /// Rex answered success without naming the block: one may run under the agent label.
+    Unreadable(String),
+}
+
+/// Open the agent's block labelled `label` beside `anchor` in `session`, running `command` in
+/// `cwd`: the new block id.
+fn open_beside(
+    program: &Path,
+    session: &str,
+    anchor: &str,
+    label: &str,
+    cwd: &Path,
+    command: &[String],
+) -> Result<String, Split> {
+    let request =
+        replacement_request(session, anchor, label, cwd, command, &inherited_path()).to_string();
+    let output = match rex(program, &["api", "call", "session.new_split", &request]) {
+        Ok(output) if output.status.success() => output,
+        failed => {
+            return Err(Split::Refused(
+                failed.and_then(rex_json).err().unwrap_or_default(),
+            ))
+        }
+    };
+    rex_json(output)
         .ok()
         .and_then(|value| {
             value
@@ -217,17 +255,31 @@ pub fn replace_block(
                 .map(str::to_string)
         })
         .ok_or_else(|| {
-            format!(
+            Split::Unreadable(format!(
                 "rex session.new_split gave no readable block in {session}; a new {label} block \
                  may have opened there, so check the session before relaunching"
-            )
-        })?;
-    let close = json!({"session_id": session, "block_id": block}).to_string();
-    let note = rex(program, &["api", "call", "block.close", &close])
-        .and_then(rex_json)
-        .err()
-        .map(|error| format!("the exited agent's block {pane} stays open ({error})"));
-    Ok((pane_id(session, &new_block), note))
+            ))
+        })
+}
+
+/// Open the agent's block labelled `label` in the session of `anchor` (`<session>/<block>`),
+/// running `command` in `cwd`, after the agent's own block was closed: the new pane id. The
+/// session and every block in it stay; nothing is relabelled or closed.
+pub fn add_block(
+    program: &Path,
+    anchor: &str,
+    label: &str,
+    cwd: &Path,
+    command: &[String],
+) -> Result<String, String> {
+    let (session, block) = split_pane(anchor)?;
+    if !is_session_id(session) || session.starts_with(PENDING_PREFIX) {
+        return Err(format!("{session} is not a Rex session"));
+    }
+    match open_beside(program, session, block, label, cwd, command) {
+        Ok(new_block) => Ok(pane_id(session, &new_block)),
+        Err(Split::Refused(error) | Split::Unreadable(error)) => Err(error),
+    }
 }
 
 /// The PATH entries of this process, for [`session_request`].
@@ -308,22 +360,78 @@ fn label_of(block: &Value) -> Option<&str> {
 /// (`t<n>-…`, a reassigned task); without it, any `t<n>-<profile>` block. Another task's
 /// block is never this task's agent.
 ///
-/// Only a session Rex says is gone, or one that never opened, is
-/// [`RootPaneError::WorkspaceGone`]. An open session with no such block (someone renamed it)
-/// is uncertain: [`RootPaneError::Failed`], so nothing launches beside an agent that may
-/// still run there.
+/// The agent is gone, [`RootPaneError::WorkspaceGone`], when the session is gone or never
+/// opened, or when it is open with no such block and nothing in it could be the agent: every
+/// block holds a bare shell or an exited program, or there is no block at all. A block running
+/// anything else may be the agent under another label: [`RootPaneError::Failed`], naming it, so
+/// nothing launches beside an agent that may still run there.
 pub fn agent_block(
     program: &Path,
     session: &str,
     agent: Option<&str>,
 ) -> Result<String, RootPaneError> {
-    find_agent_block(program, session, agent)?.ok_or_else(|| no_agent_block(session, agent))
+    if let Some(pane) = find_agent_block(program, session, agent)? {
+        return Ok(pane);
+    }
+    match without_agent(program, session)? {
+        Leftover::Empty | Leftover::Idle { .. } => Err(RootPaneError::WorkspaceGone(format!(
+            "rex session {session} has no {} block and nothing else runs there",
+            agent.unwrap_or("agent")
+        ))),
+        Leftover::Busy { block, process } => Err(busy_block(session, agent, &block, &process)),
+    }
 }
 
-fn no_agent_block(session: &str, agent: Option<&str>) -> RootPaneError {
+/// What an open session holds once its agent block is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Leftover {
+    /// No block at all.
+    Empty,
+    /// Every block holds a bare shell or an exited program; `anchor` is the first one's pane.
+    Idle { anchor: String },
+    /// `block` (its label, else its id) runs `process`, which may be the agent renamed.
+    Busy { block: String, process: String },
+}
+
+/// Ask every block of `session` what it runs, for a session with no agent block. A block
+/// that closes meanwhile is skipped; a session that closes meanwhile is gone.
+fn without_agent(program: &Path, session: &str) -> Result<Leftover, RootPaneError> {
+    let blocks = session_blocks(program, session)
+        .map_err(RootPaneError::Failed)?
+        .ok_or_else(|| RootPaneError::WorkspaceGone(format!("rex session {session} not found")))?;
+    let mut anchor = None;
+    for entry in &blocks {
+        let Some(block) = entry.get("block_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let pane = pane_id(session, block);
+        match pane_program(program, &pane) {
+            Ok(BlockProgram::Shell { .. } | BlockProgram::Exited) => {
+                anchor.get_or_insert(pane);
+            }
+            Ok(BlockProgram::Busy { process }) => {
+                return Ok(Leftover::Busy {
+                    block: label_of(entry)
+                        .filter(|label| !label.is_empty())
+                        .unwrap_or(block)
+                        .to_string(),
+                    process,
+                })
+            }
+            Err(RootPaneError::WorkspaceGone(_)) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(anchor.map_or(Leftover::Empty, |anchor| Leftover::Idle { anchor }))
+}
+
+/// Why nothing launches in `session`: its agent block is gone, but `block` runs `process`.
+fn busy_block(session: &str, agent: Option<&str>, block: &str, process: &str) -> RootPaneError {
     let whose = agent.map_or_else(|| "an agent".to_string(), |agent| format!("{agent}'s"));
     RootPaneError::Failed(format!(
-        "rex session {session} has no block labelled as {whose}; it may have been renamed"
+        "rex session {session} has no block labelled as {whose}, and its block {block} runs \
+         {process}, which may be the agent under another label; quit it or close that block to \
+         relaunch"
     ))
 }
 
@@ -552,20 +660,26 @@ pub fn pane_program(program: &Path, pane: &str) -> Result<BlockProgram, RootPane
 
 /// Where a relaunch runs the agent in `session`: its agent block when it holds a bare shell in
 /// `worktree` (the agent is gone, as after a Rex server restart), or a new block beside it when
-/// its program exited. The session and the user's other blocks stay either way. Anything still
-/// running there, a shell elsewhere, or no agent block refuses: nothing launches on a guess.
+/// its program exited. With the agent block closed, a new block opens in the session when every
+/// other block holds a bare shell or an exited program; a session with no block at all is
+/// gone. The session and the user's other blocks stay. Anything still running in the agent
+/// block, a shell elsewhere, or any other block running something refuses: nothing launches
+/// on a guess.
 pub fn reusable_pane(
     program: &Path,
     session: &str,
     agent: Option<&str>,
     worktree: &Path,
 ) -> Result<Reuse, RootPaneError> {
-    let pane = find_agent_block(program, session, agent)?.ok_or_else(|| {
-        RootPaneError::Failed(format!(
-            "{}; close the session to relaunch",
-            no_agent_block(session, agent)
-        ))
-    })?;
+    let Some(pane) = find_agent_block(program, session, agent)? else {
+        return match without_agent(program, session)? {
+            Leftover::Empty => Err(RootPaneError::WorkspaceGone(format!(
+                "rex session {session} has no blocks"
+            ))),
+            Leftover::Idle { anchor } => Ok(Reuse::Add(anchor)),
+            Leftover::Busy { block, process } => Err(busy_block(session, agent, &block, &process)),
+        };
+    };
     match pane_program(program, &pane)? {
         BlockProgram::Shell { cwd } => {
             let here = cwd.as_deref().is_some_and(|cwd| {

@@ -569,6 +569,9 @@ pub enum Reuse {
     /// The agent in this pane exited and nothing runs there: open a new agent block beside it
     /// in the same session, then close this one ([`DispatchHost::replace_agent_pane`]).
     Replace(String),
+    /// The agent's pane was closed and nothing else in the session could be the agent: open a
+    /// new agent block beside this pane, closing nothing ([`DispatchHost::add_agent_pane`]).
+    Add(String),
 }
 
 /// What Herdr reports in a pane.
@@ -790,6 +793,17 @@ pub trait DispatchHost {
         _command: &[String],
     ) -> Result<(String, Option<String>), String> {
         Err("this host cannot replace an agent pane".into())
+    }
+    /// Open a new pane running `command` in `worktree`, labelled `label`, beside `anchor` in its
+    /// session, after the agent's own pane was closed: the new pane id. Nothing is closed.
+    fn add_agent_pane(
+        &mut self,
+        _anchor: &str,
+        _label: &str,
+        _worktree: &Path,
+        _command: &[String],
+    ) -> Result<String, String> {
+        Err("this host cannot add an agent pane".into())
     }
     /// The pane of the agent named `agent` (`t<n>-<assignee>`) in the recorded workspace. Hosts
     /// with one agent pane per workspace answer [`Self::root_pane`]; Rex matches the block by
@@ -1644,6 +1658,19 @@ impl DispatchHost for SystemDispatchHost {
             return Err("this host cannot replace an agent pane".into());
         }
         rex::replace_block(&self.rex, pane_id, label, worktree, command)
+    }
+
+    fn add_agent_pane(
+        &mut self,
+        anchor: &str,
+        label: &str,
+        worktree: &Path,
+        command: &[String],
+    ) -> Result<String, String> {
+        if !self.rex() {
+            return Err("this host cannot add an agent pane".into());
+        }
+        rex::add_block(&self.rex, anchor, label, worktree, command)
     }
 
     fn agent_pane(&mut self, workspace_id: &str, agent: &str) -> Result<String, RootPaneError> {
@@ -4242,6 +4269,10 @@ pub fn launch_with_host(
                     pane_use = PaneUse::Replace;
                     pane
                 }
+                Reuse::Add(anchor) => {
+                    pane_use = PaneUse::Add;
+                    anchor
+                }
             };
             (
                 existing.worktree.clone(),
@@ -4423,6 +4454,9 @@ enum PaneUse {
     Type,
     /// A relaunch replaces the pane, whose agent exited, with a new one in its session.
     Replace,
+    /// A relaunch opens a new agent pane beside this one in its session, the agent's own pane
+    /// having been closed.
+    Add,
 }
 
 /// Launch the agent: `Some((session, pane, note))` when a host that launches as a command
@@ -4457,6 +4491,9 @@ fn run_launch(
         let opened = if pane_use == PaneUse::Replace {
             host.replace_agent_pane(pane_id, session.0, session.1, &command)
                 .map(|(pane, note)| (workspace_id.to_string(), pane, note))
+        } else if pane_use == PaneUse::Add {
+            host.add_agent_pane(pane_id, session.0, session.1, &command)
+                .map(|pane| (workspace_id.to_string(), pane, None))
         } else {
             host.open_agent_session(session.0, session.1, &command)
                 .map(|(session, pane)| (session, pane, None))
@@ -7737,7 +7774,8 @@ mod tests {
     }
 
     /// A stub `rex` in `root` answering from files beside it: `blocks.json` (`block ls`),
-    /// `status.json` (`program_status`), `process.json` (`process`); `session.create` opens
+    /// `status.json` (`program_status`), `process.json` (`process`, or `process-<block>.json`
+    /// for that block alone); `session.create` opens
     /// `session:stub` with `block:b`. A `<name>.next` file replaces `<name>.json` once it was
     /// answered, so the next call sees a change. With a `gone` file, `block` calls say not
     /// found; with `kill-fails`, `session kill` fails. `session.new_split` opens `block:c`
@@ -7771,7 +7809,8 @@ mod tests {
              *) printf '{}' ;; esac ;;\n\
              'block ls') serve blocks ;;\n\
              'block call') case \"$7\" in program_status) serve status ;;\n\
-             process) serve process ;; *) printf '{}' ;; esac ;;\n\
+             process) if [ -e \"$dir/process-$6.json\" ]; then cat \"$dir/process-$6.json\"; \
+             else serve process; fi ;; *) printf '{}' ;; esac ;;\n\
              esac\n",
         )
         .expect("stub");
@@ -8241,6 +8280,147 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_rex_relaunch_adds_an_agent_block_when_its_own_was_closed_and_only_shells_are_left() {
+        let (path, profiles) = profiles();
+        let (mut state, id, mut host, root, _) = rex_dispatched("closed", &profiles);
+        let number = state.get(id).and_then(|task| task.number).expect("number");
+        let agent = format!("t{number}-implementer");
+        let worktree = PathBuf::from(&state.get(id).unwrap().dispatch.clone().unwrap().worktree);
+        let blocks = |entries: &[(&str, &str)]| {
+            let blocks = entries
+                .iter()
+                .map(|(id, label)| serde_json::json!({"block_id": id, "label": label}))
+                .collect::<Vec<_>>();
+            fs::write(
+                root.join("blocks.json"),
+                serde_json::json!({ "blocks": blocks }).to_string(),
+            )
+            .expect("blocks");
+        };
+        let runs = |block: &str, foreground: &str| {
+            let process = if foreground.is_empty() {
+                serde_json::json!({"last_exit": {"code": 0}, "child": null, "foreground": null})
+            } else {
+                serde_json::json!({"last_exit": null, "foreground": {"pid": 7, "name": foreground, "cwd": "/"}})
+            };
+            fs::write(
+                root.join(format!("process-{block}.json")),
+                process.to_string(),
+            )
+            .expect("process");
+        };
+
+        // The agent's block was closed; the user's split holds a shell in their home, another
+        // an exited program. Nothing could be the agent: it is gone.
+        blocks(&[("block:x", "zsh"), ("block:y", "")]);
+        runs("block:x", "-zsh");
+        runs("block:y", "");
+        let task = state.get(id).expect("task").clone();
+        let (route, _) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
+        assert_eq!(
+            route,
+            StartRoute::AgentGone {
+                assignee: "implementer".into()
+            }
+        );
+
+        // A relaunch opens one new agent block in the same session and touches nothing else.
+        let before = task.dispatch.clone().expect("record");
+        fs::write(root.join("rex.log"), "").expect("log");
+        let result = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+            .expect("relaunch");
+        assert_eq!(result.record.session, before.session, "the session is kept");
+        assert_eq!(result.record.worktree, before.worktree);
+        assert_eq!(result.warning, None);
+        let log = rex_log(&root);
+        assert_eq!(log.matches("session.new_split").count(), 1, "{log}");
+        let split = log
+            .lines()
+            .find(|line| line.contains("session.new_split"))
+            .expect("a new block");
+        assert!(split.contains("\"session_id\":\"session:stub\""), "{split}");
+        assert!(split.contains("\"anchor_id\":\"block:x\""), "{split}");
+        assert!(split.contains(&format!("\"label\":\"{agent}\"")), "{split}");
+        assert!(
+            split.contains(&format!("\"cwd\":\"{}\"", worktree.display())),
+            "{split}"
+        );
+        for untouched in [
+            "block.close",
+            "set_block_label",
+            "session kill",
+            "session.create",
+            "write",
+        ] {
+            assert!(!log.contains(untouched), "{untouched}: {log}");
+        }
+
+        // The new agent block runs: a further relaunch refuses by its name and never splits.
+        blocks(&[("block:x", "zsh"), ("block:y", ""), ("block:c", &agent)]);
+        runs("block:c", "login");
+        fs::write(root.join("rex.log"), "").expect("log");
+        let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+            .expect_err("the new agent runs");
+        assert!(
+            error.to_string().contains(&format!("{agent} still runs")),
+            "{error}"
+        );
+        assert!(!rex_log(&root).contains("new_split"), "{}", rex_log(&root));
+
+        // A Rex answer naming no block: one may run, so the relaunch fails, records nothing,
+        // and closes nothing.
+        blocks(&[("block:x", "zsh")]);
+        fs::write(root.join("split-unreadable"), "").expect("marker");
+        fs::write(root.join("rex.log"), "").expect("log");
+        let before = state.get(id).unwrap().dispatch.clone();
+        let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+            .expect_err("refused");
+        assert!(error.to_string().contains("may have opened"), "{error}");
+        assert!(
+            !rex_log(&root).contains("block.close"),
+            "{}",
+            rex_log(&root)
+        );
+        assert_eq!(state.get(id).unwrap().dispatch, before);
+        fs::remove_file(root.join("split-unreadable")).expect("marker");
+
+        // A block running something else may be the agent renamed: the start is plain, and a
+        // relaunch refuses naming that block and its program, launching nothing.
+        blocks(&[("block:x", "zsh"), ("block:z", "scratch")]);
+        runs("block:z", "sleep");
+        let task = state.get(id).expect("task").clone();
+        let (route, check) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
+        assert_eq!(route, StartRoute::Plain);
+        assert!(matches!(check, AgentCheck::Unreachable { .. }), "{check:?}");
+        fs::write(root.join("rex.log"), "").expect("log");
+        let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+            .expect_err("refused");
+        let said = error.to_string();
+        assert!(said.contains("block scratch runs sleep"), "{said}");
+        assert!(said.contains("close that block to relaunch"), "{said}");
+        let log = rex_log(&root);
+        for untouched in ["new_split", "block.close", "session kill", "session.create"] {
+            assert!(!log.contains(untouched), "{untouched}: {log}");
+        }
+
+        // A session with no block left is gone: a relaunch opens a new session.
+        blocks(&[]);
+        let task = state.get(id).expect("task").clone();
+        let (route, _) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
+        assert!(matches!(route, StartRoute::AgentGone { .. }), "{route:?}");
+        fs::write(root.join("rex.log"), "").expect("log");
+        run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host).expect("relaunch");
+        assert!(
+            rex_log(&root).contains("session.create"),
+            "{}",
+            rex_log(&root)
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_renamed_agent_block_or_another_tasks_block_is_never_this_tasks_agent() {
         let (path, profiles) = profiles();
         let (mut state, id, mut host, root, _) = rex_dispatched("renamed", &profiles);
@@ -8258,8 +8438,9 @@ mod tests {
             )
             .expect("blocks");
         };
-        // The agent exited, so a relaunch would replace a session it could find.
-        rex_reports(&root, &[], "", None);
+        // Something runs in the block that is not labelled as this task's agent: it may be the
+        // agent renamed.
+        rex_reports(&root, &[], "node", None);
 
         for case in [
             vec![("block:b", "renamed by hand")],
@@ -8278,12 +8459,7 @@ mod tests {
             let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
                 .expect_err("no second agent session");
             assert!(error.to_string().contains("no block labelled"), "{error}");
-            assert!(
-                error
-                    .to_string()
-                    .ends_with("; close the session to relaunch"),
-                "{error}"
-            );
+            assert!(error.to_string().contains("runs node"), "{error}");
             let log = rex_log(&root);
             assert!(!log.contains("session.create"), "{case:?}: {log}");
             assert!(!log.contains("session kill"), "{case:?}: {log}");
