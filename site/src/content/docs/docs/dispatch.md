@@ -152,17 +152,17 @@ worktree  ~/.tsk/worktrees/app/tsk-t12-fix-login-timeout
 
 `y` relaunches and starts, `n` only starts, and `Esc` changes nothing. Palette **dispatch again** relaunches the cursor task without asking.
 
-A relaunch keeps the recorded base and names, even if the task's base changed since. It opens a new workspace or session on the kept worktree. After a cleanup, it recreates the worktree from the kept branch, or from the original starting commit when the branch was deleted.
+A relaunch keeps the recorded base and names, even if the task's base changed since. In Herdr, it opens a new workspace on the kept worktree when the old one is closed. After a cleanup, it recreates the worktree from the kept branch, or from the original starting commit when the branch was deleted.
 
 In Rex, a relaunch picks where the agent runs from what is left in its session:
 
 | Session | Relaunch |
 | --- | --- |
 | Holds a bare shell in the worktree, as after a Rex restart | Runs the agent in that shell |
-| The agent exited and its pane stayed open | Closes the session and opens a new one |
+| The agent exited and its pane stayed open | Opens a new agent pane in the same session, then closes the old one. Your other panes stay |
 | Gone | Opens a new session |
 | Something else runs there, or the shell left the worktree | Refuses and launches nothing |
-| Open, but no pane carries the task's agent name | Refuses and launches nothing |
+| Open, but no pane carries the task's agent name | Refuses and launches nothing. Close the session to relaunch |
 
 ## Decision cards
 
