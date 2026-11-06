@@ -166,7 +166,9 @@ const EXITED_LABEL: &str = "exited agent";
 /// closed (the new agent runs either way).
 ///
 /// The dead block gives up the agent label first, so a later lookup can only find the new
-/// block. If the new block does not open, the label goes back and nothing is closed.
+/// block. If Rex fails to open the new block, the label goes back and nothing is closed. If
+/// Rex succeeds but its answer names no block, a new agent may run: the dead block keeps its
+/// non-agent label, nothing is closed, and the launch fails.
 pub fn replace_block(
     program: &Path,
     pane: &str,
@@ -192,18 +194,11 @@ pub fn replace_block(
     label_block(program, pane, EXITED_LABEL)?;
     let request =
         replacement_request(session, block, label, cwd, command, &inherited_path()).to_string();
-    let opened = rex(program, &["api", "call", "session.new_split", &request])
-        .and_then(rex_json)
-        .and_then(|value| {
-            value
-                .pointer("/block_ids/0")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .ok_or_else(|| "rex session.new_split returned no block".to_string())
-        });
-    let new_block = match opened {
-        Ok(new_block) => new_block,
-        Err(error) => {
+    let output = match rex(program, &["api", "call", "session.new_split", &request]) {
+        Ok(output) if output.status.success() => output,
+        // Rex did not open the block: the dead block takes its label back, nothing closes.
+        failed => {
+            let error = failed.and_then(rex_json).err().unwrap_or_default();
             let restored = label_block(program, pane, &old_label)
                 .err()
                 .map(|restore| format!("; could not label {pane} {old_label} again: {restore}"))
@@ -211,6 +206,22 @@ pub fn replace_block(
             return Err(format!("{error}{restored}"));
         }
     };
+    // Rex answered success, so a new agent block may run under the agent label even though the
+    // answer does not say which: the dead block keeps its non-agent label and nothing closes.
+    let new_block = rex_json(output)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/block_ids/0")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .ok_or_else(|| {
+            format!(
+                "rex session.new_split gave no readable block in {session}; a new {label} block \
+                 may have opened there, so check the session before relaunching"
+            )
+        })?;
     let close = json!({"session_id": session, "block_id": block}).to_string();
     let note = rex(program, &["api", "call", "block.close", &close])
         .and_then(rex_json)

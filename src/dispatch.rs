@@ -7741,7 +7741,8 @@ mod tests {
     /// `session:stub` with `block:b`. A `<name>.next` file replaces `<name>.json` once it was
     /// answered, so the next call sees a change. With a `gone` file, `block` calls say not
     /// found; with `kill-fails`, `session kill` fails. `session.new_split` opens `block:c`
-    /// beside the anchor, or fails with `split-fails`; `block.close` fails with `close-fails`.
+    /// beside the anchor, fails with `split-fails`, or succeeds with an unreadable answer with
+    /// `split-unreadable`; `block.close` fails with `close-fails`.
     /// Every call is logged to `rex.log`, one per line.
     #[cfg(unix)]
     fn rex_stub(root: &Path, label: &str) -> PathBuf {
@@ -7761,7 +7762,8 @@ mod tests {
              '{\"session_id\":\"session:stub\",\"initial_windows\":[{\"window_id\":\"window:w\",\
              \"block_ids\":[\"block:b\"],\"revision\":1}]}' ;;\n\
              session.new_split) if [ -e \"$dir/split-fails\" ]; then \
-             echo 'Error: server busy' >&2; exit 1; fi; printf '%s' \
+             echo 'Error: server busy' >&2; exit 1; fi; \
+             if [ -e \"$dir/split-unreadable\" ]; then printf 'not json'; exit 0; fi; printf '%s' \
              '{\"anchor_id\":\"block:b\",\"block_ids\":[\"block:c\"],\"split_ids\":[\"split:s\"],\
              \"revision\":2}' ;;\n\
              block.close) if [ -e \"$dir/close-fails\" ]; then \
@@ -8106,6 +8108,13 @@ mod tests {
             split.contains(&format!("\"cwd\":\"{}\"", worktree.display())),
             "{split}"
         );
+        // The new block runs exactly the launcher, as a new session's block does.
+        let launcher = host.launcher_path("session:stub").expect("launcher");
+        let command = serde_json::json!(["/bin/sh", launcher.to_string_lossy()]).to_string();
+        assert!(
+            split.contains(&format!("\"command\":{command}")),
+            "{command} in {split}"
+        );
         // The dead block gives up the agent label before the new one opens, then closes.
         let unlabel = log.find("\"label\":\"exited agent\"").expect("unlabelled");
         let opened = log.find("session.new_split").expect("split");
@@ -8115,6 +8124,36 @@ mod tests {
         assert!(unlabel < opened && opened < closed, "{log}");
         assert_eq!(log.matches("block.close").count(), 1, "{log}");
         assert!(worktree.is_dir(), "the worktree is kept");
+
+        // Rex now holds the new agent block beside the user's: a further relaunch finds it
+        // running and refuses, and never splits again.
+        let agent_blocks = |entries: &[(&str, &str)]| {
+            let blocks = entries
+                .iter()
+                .map(|(id, label)| serde_json::json!({"block_id": id, "label": label}))
+                .collect::<Vec<_>>();
+            fs::write(
+                root.join("blocks.json"),
+                serde_json::json!({ "blocks": blocks }).to_string(),
+            )
+            .expect("blocks");
+        };
+        agent_blocks(&[("block:x", "dev server"), ("block:c", &agent)]);
+        rex_reports(&root, &[], "login", Some(&worktree));
+        fs::write(root.join("rex.log"), "").expect("log");
+        assert_eq!(
+            host.agent_pane("session:stub", &agent),
+            Ok("session:stub/block:c".into())
+        );
+        let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+            .expect_err("the new agent runs");
+        assert!(
+            error.to_string().contains(&format!("{agent} still runs")),
+            "{error}"
+        );
+        assert!(!rex_log(&root).contains("new_split"), "{}", rex_log(&root));
+        agent_blocks(&[("block:b", &agent), ("block:x", "dev server")]);
+        rex_reports(&root, &[], "", None);
 
         // The new block does not open: nothing closes, the label goes back, and the relaunch
         // fails without touching the record.
@@ -8140,6 +8179,30 @@ mod tests {
         assert_eq!(state.get(id).unwrap().dispatch, before);
         fs::remove_file(root.join("split-fails")).expect("marker");
 
+        // Rex says the split worked but its answer names no block: a new agent may run under
+        // the label, so the dead block keeps its non-agent label, nothing closes, and the
+        // relaunch fails without touching the record.
+        fs::write(root.join("split-unreadable"), "").expect("marker");
+        fs::write(root.join("rex.log"), "").expect("log");
+        let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+            .expect_err("refused");
+        assert!(error.to_string().contains("may have opened"), "{error}");
+        let log = rex_log(&root);
+        assert!(
+            !log.contains("block.close") && !log.contains("session kill"),
+            "{log}"
+        );
+        let last_label = log
+            .lines()
+            .rfind(|line| line.contains("session.set_block_label"))
+            .expect("unlabelled");
+        assert!(
+            last_label.contains("\"label\":\"exited agent\""),
+            "{last_label}"
+        );
+        assert_eq!(state.get(id).unwrap().dispatch, before);
+        fs::remove_file(root.join("split-unreadable")).expect("marker");
+
         // The dead block does not close: the new agent runs, and the launch says what stayed.
         fs::write(root.join("close-fails"), "").expect("marker");
         let result = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
@@ -8150,6 +8213,28 @@ mod tests {
             warning.contains("session:stub/block:b stays open"),
             "{warning}"
         );
+
+        // The dead block stayed, relabelled: only the new block is the agent, so a further
+        // relaunch finds it running and refuses, and never splits again.
+        agent_blocks(&[
+            ("block:b", "exited agent"),
+            ("block:x", "dev server"),
+            ("block:c", &agent),
+        ]);
+        rex_reports(&root, &[], "login", Some(&worktree));
+        fs::write(root.join("rex.log"), "").expect("log");
+        assert_eq!(
+            host.agent_pane("session:stub", &agent),
+            Ok("session:stub/block:c".into())
+        );
+        let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+            .expect_err("the new agent runs");
+        assert!(
+            error.to_string().contains(&format!("{agent} still runs")),
+            "{error}"
+        );
+        assert!(!rex_log(&root).contains("new_split"), "{}", rex_log(&root));
+        assert!(!rex_log(&root).contains("block:b"), "{}", rex_log(&root));
         fs::remove_dir_all(root).expect("cleanup");
         fs::remove_dir_all(path).expect("cleanup");
     }
