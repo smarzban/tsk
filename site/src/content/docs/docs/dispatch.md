@@ -97,7 +97,7 @@ Names come from the task number and title. For T12 `Fix login timeout`, assigned
 - tsk names the agent once Herdr detects it, so `herdr agent get t12-claude` finds it. If Herdr detects no agent within 30 seconds, it stays unnamed.
 - In Rex, the tab opens in the session you dispatch from, without taking focus. The tab and its pane carry the agent name from the start. tsk finds the agent by its pane name, so renaming the tab is safe.
 - In Rex, the pane stays open after the agent exits, so an error it printed stays readable. Cleanup closes the tab, never the session.
-- A Rex dispatch made before tabs keeps its own session: tsk checks and relaunches into that whole session. Cleanup closes it only while it holds no other tab; otherwise close the agent's tab yourself.
+- A Rex dispatch made before tabs keeps its own session: tsk checks and relaunches into that whole session. Cleanup closes that session only while it holds one tab with the task's agent and no other task's pane. Otherwise it closes nothing: close the session yourself once its work is done, and cleanup finishes.
 
 The task page shows the worktree, the branch, and where the dispatch started, such as `from origin/main @ 3333b79`.
 

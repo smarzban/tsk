@@ -1000,9 +1000,9 @@ pub fn workspace_exists(program: &Path, workspace_id: &str) -> Result<bool, Stri
     }
 }
 
-/// Close the recorded workspace: the agent's tab, never the session around it. Only a record
-/// from before tabs, whose whole session tsk opened, closes a session, and only while it holds
-/// no other tab. One already gone is closed.
+/// Close the recorded workspace: the agent's tab, never the session around it. A record from
+/// before tabs needs its task to tell its agent from other work ([`close_task_workspace`]), so
+/// here it is refused. One already gone is closed.
 pub fn close_workspace(program: &Path, workspace_id: &str) -> Result<(), String> {
     if workspace_id.starts_with(PENDING_PREFIX) {
         return Ok(());
@@ -1010,25 +1010,62 @@ pub fn close_workspace(program: &Path, workspace_id: &str) -> Result<(), String>
     let at = workspace(workspace_id)?;
     match at.window {
         Some(window) => close_window(program, at.session, window),
-        None => close_legacy_session(program, at.session),
+        None => Err(format!(
+            "rex session {} is a dispatch from before tabs; close it yourself if its work is done",
+            at.session
+        )),
     }
 }
 
-/// Close the session a dispatch from before tabs opened, unless it now holds other tabs: newer
-/// dispatches or the user may have opened them there, and which tab held this agent cannot be
-/// told apart, so nothing closes and the user is asked to.
-fn close_legacy_session(program: &Path, session: &str) -> Result<(), String> {
+/// [`close_workspace`] for task `number`'s dispatch. A session a dispatch from before tabs
+/// opened closes only while it is plainly that task's alone.
+pub fn close_task_workspace(program: &Path, workspace_id: &str, number: u64) -> Result<(), String> {
+    if workspace_id.starts_with(PENDING_PREFIX) {
+        return Ok(());
+    }
+    let at = workspace(workspace_id)?;
+    match at.window {
+        Some(window) => close_window(program, at.session, window),
+        None => close_legacy_session(program, at.session, number),
+    }
+}
+
+/// Close the session a dispatch from before tabs opened for task `number`, only when it holds
+/// one tab, a block of that task's agent (`t<n>-…`), and no block labelled for another task.
+/// Newer dispatches or the user may have opened other work there since, and closing the
+/// session ends all of it, so anything else is refused for the user to close. Cleanup finishes
+/// once the session is gone.
+fn close_legacy_session(program: &Path, session: &str, number: u64) -> Result<(), String> {
     let Some(windows) = session_windows(program, session)? else {
         return Ok(());
     };
-    if windows.len() > 1 {
-        return Err(format!(
-            "rex session {session} holds {} tabs, and only the agent's was this dispatch's; \
-             close that tab yourself",
-            windows.len()
-        ));
+    let Some(blocks) = session_blocks(program, session)? else {
+        return Ok(());
+    };
+    let ours = format!("t{number}-");
+    let agents = blocks
+        .iter()
+        .filter_map(label_of)
+        .filter(|label| is_agent_label(label));
+    let (own, other) = agents.fold((0, 0), |(own, other), label| {
+        if label.starts_with(&ours) {
+            (own + 1, other)
+        } else {
+            (own, other + 1)
+        }
+    });
+    if windows.len() == 1 && own > 0 && other == 0 {
+        return kill_session(program, session);
     }
-    kill_session(program, session)
+    let holds = if own == 0 {
+        format!("no block of T{number}'s agent")
+    } else {
+        "other work beside it".to_string()
+    };
+    Err(format!(
+        "rex session {session} (T{number}'s, from before tabs) holds {holds}; close the session \
+         yourself if its work is done"
+    ))
 }
 
 /// Close one tab of `session`. A tab or session already gone is closed.

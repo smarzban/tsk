@@ -876,6 +876,11 @@ pub trait DispatchHost {
     fn wait_before_retry(&mut self) {}
     /// Close a Herdr workspace without touching its checkout (Windows cleanup closes before it
     /// checks and removes).
+    /// Close the workspace of task `number`'s dispatch, `workspace_id`. Rex needs the task to
+    /// tell its agent from other work in a session a dispatch from before tabs opened.
+    fn close_task_workspace(&mut self, workspace_id: &str, _number: u64) -> Result<(), String> {
+        self.close_workspace(workspace_id)
+    }
     fn close_workspace(&mut self, _workspace_id: &str) -> Result<(), String> {
         Err("workspace close is not supported by this host".into())
     }
@@ -1833,6 +1838,13 @@ impl DispatchHost for SystemDispatchHost {
         std::thread::sleep(REMOVAL_RETRY_DELAY);
     }
 
+    fn close_task_workspace(&mut self, workspace_id: &str, number: u64) -> Result<(), String> {
+        if self.rex() {
+            return rex::close_task_workspace(&self.rex, workspace_id, number);
+        }
+        self.close_workspace(workspace_id)
+    }
+
     fn close_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
         if self.rex() {
             return rex::close_workspace(&self.rex, workspace_id);
@@ -2633,7 +2645,7 @@ pub fn clean_planned_with_host(
         } else if workspace_removed && host.launches_as_command() {
             // Rex has no worktree of its own to remove: close the tab, so no agent runs
             // in the checkout, then remove it with git, which still refuses uncommitted work.
-            host.close_workspace(&preview.record.session)
+            host.close_task_workspace(&preview.record.session, preview.number)
                 .map_err(CleanupError::Host)?;
             host.remove_git_worktree(&preview.project, worktree)
                 .map_err(CleanupError::Host)?;
@@ -2670,7 +2682,8 @@ pub fn clean_planned_with_host(
         (WorktreeCleanup::Removed, deletion, workspace)
     } else {
         let workspace = if host_kind.is_hosted() && preview.inspection.workspace_exists {
-            let (workspace, warning) = close_orphaned_workspace(host, &preview.record.session);
+            let (workspace, warning) =
+                close_orphaned_workspace(host, &preview.record.session, preview.number);
             close_warning = warning;
             workspace
         } else {
@@ -2733,8 +2746,9 @@ pub fn untouched_workspace(
 pub fn close_orphaned_workspace(
     host: &mut impl DispatchHost,
     workspace_id: &str,
+    number: u64,
 ) -> (WorkspaceCleanup, Option<String>) {
-    match host.close_workspace(workspace_id) {
+    match host.close_task_workspace(workspace_id, number) {
         Ok(()) => (WorkspaceCleanup::Removed, None),
         Err(error) => (
             WorkspaceCleanup::Kept,
@@ -8926,10 +8940,55 @@ mod tests {
         );
         fs::write(root.join("rex.log"), "").expect("log");
         let error = clean_with_host(&mut state, id, HostKind::Rex, &mut host).expect_err("refused");
-        assert!(error.to_string().contains("holds 2 tabs"), "{error}");
+        assert!(
+            error.to_string().contains("other work beside it"),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .ends_with("close the session yourself if its work is done"),
+            "{error}"
+        );
         let log = rex_log(&root);
         assert!(!log.contains("session kill"), "{log}");
         assert!(!log.contains("close_window"), "{log}");
+
+        // Its own tab is gone and the one tab left is another task's: never this session's
+        // to close.
+        rex_layout(
+            &root,
+            &["window:w2"],
+            &[("block:n", "t77-implementer", "window:w2")],
+        );
+        fs::write(root.join("rex.log"), "").expect("log");
+        let error = clean_with_host(&mut state, id, HostKind::Rex, &mut host).expect_err("refused");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("no block of T{number}'s agent")),
+            "{error}"
+        );
+        let log = rex_log(&root);
+        assert!(!log.contains("session kill"), "{log}");
+        assert!(!log.contains("close_window"), "{log}");
+
+        // One tab holding its agent beside another task's block: refused too.
+        rex_layout(
+            &root,
+            &["window:a"],
+            &[
+                ("block:b", &agent, "window:a"),
+                ("block:n", "t77-implementer", "window:a"),
+            ],
+        );
+        fs::write(root.join("rex.log"), "").expect("log");
+        clean_with_host(&mut state, id, HostKind::Rex, &mut host).expect_err("refused");
+        assert!(
+            !rex_log(&root).contains("session kill"),
+            "{}",
+            rex_log(&root)
+        );
 
         // Holding only its own tab, the session it opened closes, as it did then.
         rex_layout(&root, &["window:a"], &[("block:b", &agent, "window:a")]);
