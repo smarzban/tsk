@@ -159,10 +159,10 @@ In Rex, a relaunch picks where the agent runs from what is left in its session:
 | Session | Relaunch |
 | --- | --- |
 | Holds a bare shell in the worktree, as after a Rex restart | Runs the agent in that shell |
-| The agent exited and its pane stayed open | Closes the session and opens a new one |
+| The agent exited and its pane stayed open | Opens a new agent pane in the same session, then closes the old one. Your other panes stay |
 | Gone | Opens a new session |
 | Something else runs there, or the shell left the worktree | Refuses and launches nothing |
-| Open, but no pane carries the task's agent name | Refuses and launches nothing |
+| Open, but no pane carries the task's agent name | Refuses and launches nothing. Close the session to relaunch |
 
 ## Decision cards
 
