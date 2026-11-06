@@ -37,7 +37,7 @@ With tsk, run `tsk guide` first: the tsk skill owns every command. This skill ne
    append command.
 4. **Start a builder.** One fresh session per task, in its own worktree and branch.
    - With tsk in Herdr or Rex: set the assignee and base, then start the task. Dispatch creates
-     the worktree, the Herdr workspace or Rex session, and the agent. No agent profile in
+     the worktree, the Herdr workspace or Rex tab, and the agent. No agent profile in
      `config.toml` yet: ask the user to add one, or start the builder yourself.
    - In neither: create the worktree and start the agent yourself, e.g. one terminal tab per agent.
    - The prompt only points at the brief: "T12: read `tsk list T12 --json`."
@@ -57,7 +57,7 @@ With tsk, run `tsk guide` first: the tsk skill owns every command. This skill ne
 9. **Merge.** The user merges unless they granted you a merge. With tsk the user merges from the
    board (`m` on the cleanup card). Never mark a task done unless the user said so.
 10. **Clean up** after every merge, into an integration branch too. Keep any review-run records
-    first. Close the builder's Herdr workspace or Rex session, then remove its worktree and branch.
+    first. Close the builder's Herdr workspace or Rex tab, then remove its worktree and branch.
     For a dispatched task `tsk clean T12` does all three (it keeps a branch it cannot confirm
     merged, with the reason); for one you set up yourself, close the session, then
     `git worktree remove` and `git branch -D`.

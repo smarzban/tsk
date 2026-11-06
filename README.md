@@ -31,9 +31,9 @@ or Rex, run `tsk` in any terminal.
 
 Define your agents once in `config.toml`, press `@` to assign a task, and press
 `ctrl+s` to start it. Starting an assigned task dispatches it: tsk creates a Git
-worktree and a Herdr workspace or Rex session for the task and launches the agent
+worktree and a Herdr workspace or Rex tab for the task and launches the agent
 there. `ctrl+d` marks the task done; on a live dispatch it offers the cleanup card.
-Cleanup closes the workspace or session and removes the worktree, and deletes the branch
+Cleanup closes the workspace or tab and removes the worktree, and deletes the branch
 only when it is merged. It never touches uncommitted changes. Dispatch runs in Herdr or
 Rex; on Windows it is a preview. [Dispatch](https://gettsk.sh/docs/dispatch/).
 

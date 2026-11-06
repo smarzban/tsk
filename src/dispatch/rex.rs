@@ -34,7 +34,7 @@ use super::{CreatedWorktree, PaneAgent, PromptError, Reuse, RootPaneError};
 /// Rex's exit status for a target that does not exist (`session target … not found`).
 const REX_NOT_FOUND: i32 = 3;
 
-/// Prefix of the provisional workspace id a Rex worktree carries until its session exists.
+/// Prefix of the provisional workspace id a Rex worktree carries until its tab exists.
 pub(super) const PENDING_PREFIX: &str = "rex-pending:";
 
 /// Whether `id` has the shape of a Rex session id. The dispatch record's host decides which
@@ -58,7 +58,7 @@ pub enum RexAgent {
 
 /// `git worktree add -b <branch> <path> <base>`, or `git worktree add <path> <branch>` when
 /// the branch already exists (a relaunch after cleanup kept it), as Herdr's create does. The
-/// workspace id is provisional until the session opens; the root pane is unknown until then.
+/// workspace id is provisional until the tab opens; the root pane is unknown until then.
 pub fn create_worktree(
     project: &Path,
     path: &Path,
@@ -171,9 +171,9 @@ pub fn replacement_request(
 /// blocks never both read as the task's agent.
 const EXITED_LABEL: &str = "exited agent";
 
-/// Replace the exited agent's block in `pane` (`<session>/<block>`) with a new block in the
-/// same session running `command` in `cwd`, labelled `label`: the session and every other
-/// block in it stay. Returns the new pane id, and a note when the dead block could not be
+/// Replace the exited agent's block in `pane` (`<session>/<block>`) with a new block beside it,
+/// in the same tab, running `command` in `cwd`, labelled `label`: the tab and every other
+/// block stay. Returns the new pane id, and a note when the dead block could not be
 /// closed (the new agent runs either way).
 ///
 /// The dead block gives up the agent label first, so a later lookup can only find the new
@@ -825,11 +825,12 @@ pub fn leftover_program(process: &Value) -> BlockProgram {
     }
 }
 
-/// Where a relaunch runs the agent in `session`: its agent block when it holds a bare shell in
-/// `worktree` (the agent is gone, as after a Rex server restart), or a new block beside it when
-/// its program exited. With the agent block closed, a new block opens in the session when every
-/// other block holds a bare shell or an exited program; a session with no block at all is
-/// gone. The session and the user's other blocks stay. Anything still running in the agent
+/// Where a relaunch runs the agent in the recorded tab (or legacy session) `workspace_id`: its
+/// agent block when it holds a bare shell in `worktree` (the agent is gone, as after a Rex
+/// server restart), or a new block beside it when its program exited. With the agent block
+/// closed, a new block opens in the tab when every other block there holds a bare shell or an
+/// exited program; a tab with no block left, or a closed one, is gone. The tab and the user's
+/// other blocks stay. Anything still running in the agent
 /// block, a shell elsewhere, or any other block running something refuses: nothing launches
 /// on a guess.
 pub fn reusable_pane(

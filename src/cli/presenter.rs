@@ -1567,7 +1567,7 @@ pub(crate) fn status_name(status: HumanStatus) -> &'static str {
 pub fn dispatch_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(DISPATCH_USAGE),
-        purpose: "Launch the task's assigned agent in its own worktree and a Herdr workspace or Rex session, then set the task started.".into(),
+        purpose: "Launch the task's assigned agent in its own worktree and a Herdr workspace or Rex tab, then set the task started.".into(),
         groups: vec![
             group("Arguments", &[("<task>", "a task number or UUID")]),
             group(
@@ -1615,7 +1615,7 @@ pub fn dispatch_help() -> CliOutput {
 pub fn clean_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(CLEAN_USAGE),
-        purpose: "Remove a dispatched task's worktree, and inside Herdr or Rex its workspace or session, without changing its status. The branch is deleted only when it is merged into the recorded base; with gh, a pull request merged at the branch tip counts.".into(),
+        purpose: "Remove a dispatched task's worktree, and inside Herdr or Rex its workspace or tab, without changing its status. The branch is deleted only when it is merged into the recorded base; with gh, a pull request merged at the branch tip counts.".into(),
         groups: vec![
             group("Arguments", &[("<task>", "a task number or UUID")]),
             group(

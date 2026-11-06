@@ -110,8 +110,8 @@ Only when the user asks.
 
 - **Dispatch:** `tsk dispatch T12`, or `tsk status T12 started` on an assigned task never
   dispatched. It launches the assignee's agent in a new worktree, in a Herdr workspace or a Rex
-  session named `t12-<assignee>`, and sets the task `started`. Follow it with `tsk list T12 --json`:
-  the status, and `dispatch.host` (`herdr` or `rex`) with `dispatch.session`.
+  tab named `t12-<assignee>` in your session, and sets the task `started`. Follow it with
+  `tsk list T12 --json`: the status, and `dispatch.host` (`herdr` or `rex`) with `dispatch.session`.
 - `already-dispatched`, or `agent-gone` from a start, means a launch exists. Relaunch with `--again`
   only when the user wants it.
 - `other-host` means the task was dispatched in the other host (Herdr or Rex): relaunch or clean it
@@ -141,7 +141,7 @@ A refusal prints a stable code first: `tsk status: unknown-task: T12 is not on t
 the code, never the message. `tsk help <command>` lists each command's codes. `project`, `trash`,
 `backup`, and `restore` refuse with a message only. After exit 3 from `dispatch`, or from a start that
 dispatched, a message saying `the agent may still run` means it may run without its record: look for
-its workspace or session (`herdr agent get t12-<assignee>` in Herdr, `rex session ls` in Rex) and
+its workspace or tab (`herdr agent get t12-<assignee>` in Herdr, `rex window ls` in Rex) and
 read the task before retrying.
 
 ## Refine a task

@@ -817,7 +817,7 @@ pub trait DispatchHost {
         Ok(())
     }
     fn run_in_pane(&mut self, pane_id: &str, command: &str) -> Result<(), String>;
-    /// Whether this host starts the agent as a new session's command (Rex) rather than typing
+    /// Whether this host starts the agent as a new tab's command (Rex) rather than typing
     /// a launch line into the pane its worktree workspace opened with (Herdr). Such a host
     /// labels the agent at launch, so there is nothing to name afterwards.
     fn launches_as_command(&self) -> bool {
@@ -1048,7 +1048,7 @@ pub struct SystemDispatchHost {
     /// The terminal host the worktree, workspace, and agent calls go to. Herdr unless
     /// [`Self::on`] says otherwise, so a test host never reaches a live Rex.
     kind: HostKind,
-    /// Rex worktrees this host created whose session has not opened yet, by provisional
+    /// Rex worktrees this host created whose tab has not opened yet, by provisional
     /// workspace id: `(project, worktree)`, so a failed launch can take the worktree back.
     rex_pending: std::collections::HashMap<String, (PathBuf, PathBuf)>,
     /// The Rex CLI: `rex` from PATH. Tests point it at a stub.
@@ -1376,7 +1376,7 @@ impl DispatchHost for SystemDispatchHost {
         label: &str,
     ) -> Result<CreatedWorktree, String> {
         if self.rex() {
-            // The kept worktree gets a new session when the launch runs. It is not this host's
+            // The kept worktree gets a new tab when the launch runs. It is not this host's
             // to take back: a failed launch only closes the session.
             return Ok(CreatedWorktree {
                 path: worktree.to_path_buf(),
@@ -1479,7 +1479,7 @@ impl DispatchHost for SystemDispatchHost {
     fn remove_host_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
         if self.rex() {
             // Only a launch this host started and could not record is taken back here; cleanup
-            // of a recorded Rex dispatch closes its session and removes the worktree with git
+            // of a recorded Rex dispatch closes its tab and removes the worktree with git
             // ([`clean_planned_with_host`]). The session closes first, so no agent is left
             // running in the removed checkout.
             let (project, worktree) = self
@@ -2631,7 +2631,7 @@ pub fn clean_planned_with_host(
         if host.platform() == HostPlatform::Windows {
             remove_windows_worktree(host, &preview, workspace_removed)?;
         } else if workspace_removed && host.launches_as_command() {
-            // Rex has no worktree of its own to remove: close the session, so no agent runs
+            // Rex has no worktree of its own to remove: close the tab, so no agent runs
             // in the checkout, then remove it with git, which still refuses uncommitted work.
             host.close_workspace(&preview.record.session)
                 .map_err(CleanupError::Host)?;
@@ -4411,8 +4411,8 @@ pub fn launch_with_host(
             .map(|record| record.session.as_str()),
     );
     if let Ok(Some((session, block, note))) = &launch {
-        // Rex opens the session with the launch: it replaces the provisional id. A replaced
-        // agent block keeps its session, so the record's id does not change.
+        // Rex opens the tab with the launch: it replaces the provisional id. A replaced or
+        // added agent block keeps its tab, so the record's id does not change.
         workspace_id = session.clone();
         pane_id = block.clone();
         if let Some(note) = note {
@@ -4467,20 +4467,20 @@ pub fn launch_with_host(
 /// Type the launch line into the pane: a fixed line that runs a launcher script, deleted again
 /// when the pane never ran it. No task text and no `env` value is ever typed.
 ///
-/// A host that [`DispatchHost::launches_as_command`] instead opens a session, labelled with
+/// A host that [`DispatchHost::launches_as_command`] instead opens a tab, labelled with
 /// `session.0` in worktree `session.1`, whose command runs the launcher: its `(workspace id,
 /// pane id)` comes back. Its relaunch into a recorded pane (`reuse`, a bare shell a server
 /// restart left) labels the pane `session.0` and types the fixed line, as Herdr's does.
 /// How a launch uses the pane it was handed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaneUse {
-    /// A new worktree or workspace: a host that launches as a command opens a session.
+    /// A new worktree or workspace: a host that launches as a command opens a tab.
     New,
     /// A relaunch types into the pane, a shell left in the worktree.
     Type,
-    /// A relaunch replaces the pane, whose agent exited, with a new one in its session.
+    /// A relaunch replaces the pane, whose agent exited, with a new one in its tab.
     Replace,
-    /// A relaunch opens a new agent pane beside this one in its session, the agent's own pane
+    /// A relaunch opens a new agent pane beside this one in its tab, the agent's own pane
     /// having been closed.
     Add,
 }
