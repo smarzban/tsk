@@ -451,19 +451,27 @@ fn workspace_blocks(program: &Path, at: Workspace) -> Result<Option<Vec<Value>>,
     }))
 }
 
-/// The session's blocks, `None` when the session is gone.
+/// The session's blocks, `None` when the session is gone. An answer that does not list them,
+/// or lists one without its id, is an error, never an empty session: a session read as empty
+/// gets a second agent.
 fn session_blocks(program: &Path, session: &str) -> Result<Option<Vec<Value>>, String> {
     let output = rex(program, &["block", "ls", "-s", session, "--json"])?;
     if not_found(&output) {
         return Ok(None);
     }
-    Ok(Some(
-        rex_json(output)?
-            .get("blocks")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-    ))
+    let unreadable = || format!("rex block ls gave no readable blocks for {session}");
+    let blocks = rex_json(output)?
+        .get("blocks")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(unreadable)?;
+    if blocks
+        .iter()
+        .any(|block| block.get("block_id").and_then(Value::as_str).is_none())
+    {
+        return Err(unreadable());
+    }
+    Ok(Some(blocks))
 }
 
 fn label_of(block: &Value) -> Option<&str> {
