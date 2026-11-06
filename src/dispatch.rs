@@ -555,6 +555,22 @@ impl From<String> for RootPaneError {
     }
 }
 
+/// Why [`DispatchHost::open_agent_session`] has no tab to hand back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenSessionError {
+    /// No tab opened, or the one that opened was closed again.
+    Failed(String),
+    /// The host took the request but its answer names no tab: one may be open, running the
+    /// agent in the worktree, so the checkout stays.
+    Uncertain(String),
+}
+
+impl From<String> for OpenSessionError {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
 impl From<&str> for RootPaneError {
     fn from(reason: &str) -> Self {
         Self::Failed(reason.to_string())
@@ -832,8 +848,10 @@ pub trait DispatchHost {
         _label: &str,
         _worktree: &Path,
         _command: &[String],
-    ) -> Result<(String, String), String> {
-        Err("this host cannot open an agent session".into())
+    ) -> Result<(String, String), OpenSessionError> {
+        Err(OpenSessionError::Failed(
+            "this host cannot open an agent session".into(),
+        ))
     }
     /// The platform whose launch line and cleanup rules apply. Test hosts default to Unix.
     fn platform(&self) -> HostPlatform {
@@ -1420,9 +1438,11 @@ impl DispatchHost for SystemDispatchHost {
         label: &str,
         worktree: &Path,
         command: &[String],
-    ) -> Result<(String, String), String> {
+    ) -> Result<(String, String), OpenSessionError> {
         if !self.rex() {
-            return Err("this host cannot open an agent session".into());
+            return Err(OpenSessionError::Failed(
+                "this host cannot open an agent session".into(),
+            ));
         }
         let session = rex::tab_session(&self.rex, near, self.rex_session.as_deref())?;
         let opened = rex::open_tab(&self.rex, &session, label, worktree, command)?;
@@ -4453,7 +4473,17 @@ pub fn launch_with_host(
         project: project.to_path_buf(),
         created: made,
     };
-    if let Err(error) = launch {
+    if let Err(LaunchFailure {
+        error,
+        tab_uncertain,
+    }) = launch
+    {
+        if tab_uncertain {
+            return Err(error.noting(&format!(
+                "worktree {} and branch {} kept",
+                record.worktree, record.branch
+            )));
+        }
         // Nothing records this launch: take back what it created, or `tsk clean` never could.
         return Err(match undo_launch(host, &record, &undo) {
             None => error,
@@ -4509,7 +4539,7 @@ fn run_launch(
     rendered: &crate::agents::RenderedLaunch,
     session: (&str, &Path),
     near: Option<&str>,
-) -> Result<Option<(String, String, Option<String>)>, DispatchError> {
+) -> Result<Option<(String, String, Option<String>)>, LaunchFailure> {
     if host.launches_as_command() && pane_use == PaneUse::Type {
         host.label_pane(pane_id, session.0)
             .map_err(DispatchError::Host)?;
@@ -4532,16 +4562,24 @@ fn run_launch(
         let opened = if pane_use == PaneUse::Replace {
             host.replace_agent_pane(pane_id, session.0, session.1, &command)
                 .map(|(pane, note)| (workspace_id.to_string(), pane, note))
+                .map_err(LaunchFailure::from)
         } else if pane_use == PaneUse::Add {
             host.add_agent_pane(pane_id, session.0, session.1, &command)
                 .map(|pane| (workspace_id.to_string(), pane, None))
+                .map_err(LaunchFailure::from)
         } else {
             host.open_agent_session(near, session.0, session.1, &command)
                 .map(|(session, pane)| (session, pane, None))
+                .map_err(|error| match error {
+                    OpenSessionError::Failed(reason) => LaunchFailure::from(reason),
+                    OpenSessionError::Uncertain(reason) => LaunchFailure {
+                        error: DispatchError::Host(reason),
+                        tab_uncertain: true,
+                    },
+                })
         };
-        return opened.map(Some).map_err(|error| {
+        return opened.map(Some).inspect_err(|_| {
             host.remove_launcher(workspace_id);
-            DispatchError::Host(error)
         });
     }
     let line = match platform {
@@ -4571,8 +4609,32 @@ fn run_launch(
         .map(|()| None)
         .map_err(|error| {
             host.remove_launcher(workspace_id);
-            DispatchError::Host(error)
+            LaunchFailure::from(error)
         })
+}
+
+/// Why [`run_launch`] launched nothing.
+#[derive(Debug)]
+struct LaunchFailure {
+    error: DispatchError,
+    /// The host may have opened the agent's tab though its answer named none: the launch's
+    /// worktree and branch stay, never removed under a running agent.
+    tab_uncertain: bool,
+}
+
+impl From<DispatchError> for LaunchFailure {
+    fn from(error: DispatchError) -> Self {
+        Self {
+            error,
+            tab_uncertain: false,
+        }
+    }
+}
+
+impl From<String> for LaunchFailure {
+    fn from(reason: String) -> Self {
+        DispatchError::Host(reason).into()
+    }
 }
 
 /// One bulk launch: confirm the repository first (the card checked it off the event loop, but
@@ -5067,12 +5129,13 @@ mod tests {
             label: &str,
             worktree: &Path,
             command: &[String],
-        ) -> Result<(String, String), String> {
+        ) -> Result<(String, String), OpenSessionError> {
             self.sessions
                 .push((label.into(), worktree.to_path_buf(), command.to_vec()));
             self.command_session
                 .clone()
                 .expect("a command-session host")
+                .map_err(OpenSessionError::Failed)
         }
 
         fn is_git_repo(&mut self, _: &Path) -> Result<bool, String> {
@@ -8890,6 +8953,99 @@ mod tests {
         fs::remove_dir_all(path).expect("cleanup");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_rex_process_reply_that_names_no_program_or_exit_is_never_an_exited_agent() {
+        let (path, profiles) = profiles();
+        let (mut state, id, mut host, root, _) = rex_dispatched("process-unreadable", &profiles);
+        for answer in ["{}", "null"] {
+            fs::write(root.join("process.json"), answer).expect("process");
+            let task = state.get(id).expect("task").clone();
+            let (route, check) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
+            assert_eq!(route, StartRoute::Plain, "{answer}");
+            assert!(
+                matches!(check, AgentCheck::Unreachable { .. }),
+                "{answer}: {check:?}"
+            );
+            fs::write(root.join("rex.log"), "").expect("log");
+            let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+                .expect_err("refused");
+            assert!(
+                error.to_string().contains("no readable program or exit"),
+                "{answer}: {error}"
+            );
+            let log = rex_log(&root);
+            assert!(
+                !log.contains("new_split")
+                    && !log.contains("new_window")
+                    && !log.contains("block.close")
+                    && !log.contains("set_block_label"),
+                "{answer}: {log}"
+            );
+        }
+        // Rex's answer for a block whose program was killed: no program, its last exit.
+        fs::write(
+            root.join("process.json"),
+            r#"{"last_exit":{"exit_code":-1,"error":"signal: terminated"},"home":"/home/u"}"#,
+        )
+        .expect("process");
+        let task = state.get(id).expect("task").clone();
+        let (route, _) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
+        assert!(matches!(route, StartRoute::AgentGone { .. }), "{route:?}");
+        fs::write(root.join("rex.log"), "").expect("log");
+        let result = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+            .expect("relaunch");
+        assert_eq!(result.record.session, STUB_TAB);
+        let log = rex_log(&root);
+        assert!(log.contains("session.new_split"), "{log}");
+        assert!(
+            log.contains("block.close {\"block_id\":\"block:b\",\"session_id\":\"session:stub\"}"),
+            "{log}"
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rex_block_that_names_no_tab_is_never_dropped_from_a_recorded_tab() {
+        let (path, profiles) = profiles();
+        let (mut state, id, mut host, root, _) = rex_dispatched("block-no-tab", &profiles);
+        let number = state.get(id).and_then(|task| task.number).expect("number");
+        // The agent exited, so a tab read as empty or bare would get a new agent.
+        rex_reports(&root, &[], "", None);
+        for answer in [
+            serde_json::json!({"blocks": [
+                {"block_id": "block:b", "label": format!("t{number}-implementer")},
+            ]}),
+            serde_json::json!({"blocks": [
+                {"block_id": "block:b", "label": format!("t{number}-implementer"), "window_id": null},
+            ]}),
+            serde_json::json!({"blocks": [
+                {"block_id": "block:x", "label": "dev server", "window_id": "window:w"},
+                {"block_id": "block:b", "label": format!("t{number}-implementer"), "window_id": 7},
+            ]}),
+        ] {
+            fs::write(root.join("blocks.json"), answer.to_string()).expect("blocks");
+            fs::write(root.join("rex.log"), "").expect("log");
+            let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+                .expect_err("refused");
+            assert!(
+                error.to_string().contains("no readable tab"),
+                "{answer}: {error}"
+            );
+            let log = rex_log(&root);
+            assert!(
+                !log.contains("new_split")
+                    && !log.contains("new_window")
+                    && !log.contains("block.close"),
+                "{answer}: {log}"
+            );
+        }
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
     /// A second assigned task in the project of `id`, numbered, ready to dispatch.
     #[cfg(unix)]
     fn another_rex_task(state: &mut DomainState, project: &Path) -> Uuid {
@@ -8961,6 +9117,45 @@ mod tests {
         assert!(!log.contains("session kill"), "{log}");
         assert!(!log.contains("set_block_label"), "{log}");
         assert_eq!(state.get(id).unwrap().dispatch, None, "nothing recorded");
+        // The tab may run the agent in the new worktree: its checkout and branch stay.
+        let worktrees = Command::new("git")
+            .arg("-C")
+            .arg(&project)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .expect("git");
+        let worktrees = String::from_utf8_lossy(&worktrees.stdout).into_owned();
+        let kept = worktrees
+            .split("\n\n")
+            .filter(|entry| !entry.trim().is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kept.len(),
+            3,
+            "the project, the first task and this one: {worktrees}"
+        );
+        let entry = kept[2];
+        let checkout = entry
+            .lines()
+            .find_map(|line| line.strip_prefix("worktree "))
+            .expect("worktree path");
+        let branch = entry
+            .lines()
+            .find_map(|line| line.strip_prefix("branch refs/heads/"))
+            .expect("worktree branch");
+        assert!(
+            Path::new(checkout).is_dir(),
+            "the worktree stays: {checkout}"
+        );
+        let message = error.to_string();
+        let name = Path::new(checkout)
+            .file_name()
+            .expect("name")
+            .to_string_lossy();
+        assert!(
+            message.contains(&format!("{name} and branch {branch} kept")),
+            "{message}"
+        );
         fs::remove_dir_all(root).expect("cleanup");
         fs::remove_dir_all(path).expect("cleanup");
     }

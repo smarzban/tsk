@@ -29,7 +29,7 @@ use std::process::{Command, Output};
 
 use serde_json::{json, Value};
 
-use super::{CreatedWorktree, PaneAgent, PromptError, Reuse, RootPaneError};
+use super::{CreatedWorktree, OpenSessionError, PaneAgent, PromptError, Reuse, RootPaneError};
 
 /// Rex's exit status for a target that does not exist (`session target … not found`).
 const REX_NOT_FOUND: i32 = 3;
@@ -316,36 +316,42 @@ fn split_pane(pane: &str) -> Result<(&str, &str), String> {
 /// Open the task's tab in `session` with the agent's block: `(tab id, pane id)`.
 ///
 /// When Rex names the tab but no block, the tab is closed again, or the agent runs in a
-/// worktree the failed launch is about to remove. When it names no tab, nothing can be closed
-/// and the launch fails saying so.
+/// worktree the failed launch is about to remove. When Rex answers success but names no tab,
+/// nothing can be closed: the outcome is [`OpenSessionError::Uncertain`], and the worktree
+/// stays for the agent that may run there.
 pub fn open_tab(
     program: &Path,
     session: &str,
     label: &str,
     cwd: &Path,
     command: &[String],
-) -> Result<(String, String), String> {
+) -> Result<(String, String), OpenSessionError> {
     if !session.starts_with("session:") || session.contains('/') {
-        return Err(format!("{session} is not a Rex session"));
+        return Err(format!("{session} is not a Rex session").into());
     }
     let request = window_request(session, label, cwd, command, &inherited_path()).to_string();
     let output = rex(program, &["api", "call", "session.new_window", &request])?;
-    let value = rex_json(output)?;
-    let Some(window) = value.get("window_id").and_then(Value::as_str) else {
-        return Err(format!(
+    if !output.status.success() {
+        return Err(rex_failure(&output).into());
+    }
+    let window = rex_json(output).ok().and_then(|value| {
+        let window = value.get("window_id").and_then(Value::as_str)?.to_string();
+        Some((window, value))
+    });
+    let Some((window, value)) = window else {
+        return Err(OpenSessionError::Uncertain(format!(
             "rex session.new_window gave no readable tab in {session}; a {label} tab may have \
              opened there, so check the session before dispatching again"
-        ));
+        )));
     };
+    let window = window.as_str();
     let tab = tab_id(session, window);
     let Some(block) = value.pointer("/block_ids/0").and_then(Value::as_str) else {
         let closed = close_window(program, session, window)
             .err()
             .map(|error| format!("; could not close it: {error}"))
             .unwrap_or_default();
-        return Err(format!(
-            "rex session.new_window returned no block for {tab}{closed}"
-        ));
+        return Err(format!("rex session.new_window returned no block for {tab}{closed}").into());
     };
     Ok((tab, pane_id(session, block)))
 }
@@ -443,12 +449,25 @@ fn workspace_blocks(program: &Path, at: Workspace) -> Result<Option<Vec<Value>>,
     if !windows.iter().any(|id| id == window) {
         return Ok(None);
     }
-    Ok(session_blocks(program, at.session)?.map(|blocks| {
+    let Some(blocks) = session_blocks(program, at.session)? else {
+        return Ok(None);
+    };
+    // A block that names no tab may be the agent's: dropping it reads the tab as empty.
+    if blocks
+        .iter()
+        .any(|block| block.get("window_id").and_then(Value::as_str).is_none())
+    {
+        return Err(format!(
+            "rex block ls gave no readable tab for a block in {}",
+            at.session
+        ));
+    }
+    Ok(Some(
         blocks
             .into_iter()
             .filter(|block| block.get("window_id").and_then(Value::as_str) == Some(window))
-            .collect()
-    }))
+            .collect(),
+    ))
 }
 
 /// The session's blocks, `None` when the session is gone. An answer that does not list them,
@@ -540,7 +559,9 @@ fn without_agent(program: &Path, at: Workspace) -> Result<Leftover, RootPaneErro
             continue;
         };
         let pane = pane_id(session, block);
-        match pane_process(program, &pane).map(|process| leftover_program(&process)) {
+        match pane_process(program, &pane)
+            .and_then(|process| leftover_program(&process).map_err(RootPaneError::Failed))
+        {
             Ok(BlockProgram::Shell { .. } | BlockProgram::Exited) => {
                 anchor.get_or_insert(pane);
             }
@@ -674,7 +695,7 @@ pub fn agent(program: &Path, pane: &str) -> Result<(RexAgent, Option<String>), S
     if not_found(&process) {
         return Ok((RexAgent::Gone, label));
     }
-    Ok((classify(&status, &rex_json(process)?), label))
+    Ok((classify(&status, &rex_json(process)?)?, label))
 }
 
 /// [`agent`] as the dispatch seam reads it, named by the block's label.
@@ -685,14 +706,11 @@ pub fn pane_agent(program: &Path, pane: &str) -> Result<PaneAgent, String> {
     })
 }
 
-/// The liveness rule, from `program_status` and `process` results.
-pub fn classify(status: &Value, process: &Value) -> RexAgent {
-    let foreground = process
-        .get("foreground")
-        .filter(|value| !value.is_null())
-        .or_else(|| process.get("child").filter(|value| !value.is_null()));
-    let Some(foreground) = foreground else {
-        return RexAgent::Gone;
+/// The liveness rule, from `program_status` and `process` results. A `process` result that
+/// names neither a program nor a last exit is an error: an agent read as gone gets a second one.
+pub fn classify(status: &Value, process: &Value) -> Result<RexAgent, String> {
+    let Some(foreground) = foreground(process)? else {
+        return Ok(RexAgent::Gone);
     };
     let pid = foreground.get("pid").and_then(Value::as_i64);
     let name = foreground
@@ -722,15 +740,33 @@ pub fn classify(status: &Value, process: &Value) -> RexAgent {
             .get("kind")
             .and_then(Value::as_str)
             .map(str::to_string);
-        return RexAgent::Reported { state, kind };
+        return Ok(RexAgent::Reported { state, kind });
     }
-    if is_shell(name) {
+    Ok(if is_shell(name) {
         RexAgent::Gone
     } else {
         RexAgent::Running {
             process: name.to_string(),
         }
+    })
+}
+
+/// The program a `process` result names in the foreground (else the block's own child), or
+/// `None` when nothing runs and Rex reports the program's last exit. A result with neither
+/// (`{}`, `null`) is an error: read as exited, it would launch a second agent beside one
+/// that may still run.
+fn foreground(process: &Value) -> Result<Option<&Value>, String> {
+    let running = process
+        .get("foreground")
+        .filter(|value| !value.is_null())
+        .or_else(|| process.get("child").filter(|value| !value.is_null()));
+    if running.is_some() {
+        return Ok(running);
     }
+    if process.get("last_exit").is_some_and(|exit| !exit.is_null()) {
+        return Ok(None);
+    }
+    Err("rex process gave no readable program or exit for the block".to_string())
 }
 
 /// Whether the foreground program is a bare shell. `login` is not: Rex starts a block's
@@ -756,20 +792,17 @@ pub enum BlockProgram {
     Busy { process: String },
 }
 
-/// The program in a `process` result.
-pub fn block_program(process: &Value) -> BlockProgram {
-    let foreground = process
-        .get("foreground")
-        .filter(|value| !value.is_null())
-        .or_else(|| process.get("child").filter(|value| !value.is_null()));
-    let Some(foreground) = foreground else {
-        return BlockProgram::Exited;
+/// The program in a `process` result; an error when it names neither a program nor a last
+/// exit ([`foreground`]).
+pub fn block_program(process: &Value) -> Result<BlockProgram, String> {
+    let Some(foreground) = foreground(process)? else {
+        return Ok(BlockProgram::Exited);
     };
     let name = foreground
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if is_shell(name) {
+    Ok(if is_shell(name) {
         BlockProgram::Shell {
             cwd: foreground
                 .get("cwd")
@@ -780,13 +813,13 @@ pub fn block_program(process: &Value) -> BlockProgram {
         BlockProgram::Busy {
             process: name.to_string(),
         }
-    }
+    })
 }
 
 /// What runs in `pane` (`<session>/<block>`). A missing session or block is
 /// [`RootPaneError::WorkspaceGone`].
 pub fn pane_program(program: &Path, pane: &str) -> Result<BlockProgram, RootPaneError> {
-    Ok(block_program(&pane_process(program, pane)?))
+    block_program(&pane_process(program, pane)?).map_err(RootPaneError::Failed)
 }
 
 /// The `process` result for `pane`. A missing session or block is
@@ -816,13 +849,13 @@ fn pane_process(program: &Path, pane: &str) -> Result<Value, RootPaneError> {
 /// leading `-`; a shell Rex reports no `argv0` for is not known to be bare). A shell an agent spawned has the agent among its
 /// ancestors, and the launcher's own shell, in the moment before it starts the agent, is not a
 /// login shell: both are named instead.
-pub fn leftover_program(process: &Value) -> BlockProgram {
-    let program = block_program(process);
+pub fn leftover_program(process: &Value) -> Result<BlockProgram, String> {
+    let program = block_program(process)?;
     let Some(foreground) = process.get("foreground").filter(|value| !value.is_null()) else {
-        return program;
+        return Ok(program);
     };
     if !matches!(program, BlockProgram::Shell { .. }) {
-        return program;
+        return Ok(program);
     }
     let name = |entry: &Value| {
         entry
@@ -850,9 +883,9 @@ pub fn leftover_program(process: &Value) -> BlockProgram {
         .iter()
         .find(|entry| name(entry) != "login" && !is_shell(&name(entry)))
     {
-        return BlockProgram::Busy {
+        return Ok(BlockProgram::Busy {
             process: name(other),
-        };
+        });
     }
     let outer = chain
         .iter()
@@ -863,11 +896,11 @@ pub fn leftover_program(process: &Value) -> BlockProgram {
     // No `argv0` says nothing about how the shell started: it may be the launcher's.
     let argv0 = outer.get("argv0").and_then(Value::as_str);
     if !argv0.is_some_and(|argv0| argv0.starts_with('-')) {
-        return BlockProgram::Busy {
+        return Ok(BlockProgram::Busy {
             process: name(outer),
-        };
+        });
     }
-    program
+    Ok(program)
 }
 
 /// Where a relaunch runs the agent in the recorded tab (or legacy session) `workspace_id`: its
@@ -1171,7 +1204,7 @@ mod tests {
             "owner": {"pid": 42, "name": "2.1.318"},
         }]});
         assert_eq!(
-            classify(&status, &process("2.1.318", 42)),
+            classify(&status, &process("2.1.318", 42)).expect("readable"),
             RexAgent::Reported {
                 state: "blocked".into(),
                 kind: Some("permission".into())
@@ -1183,10 +1216,13 @@ mod tests {
     fn a_report_from_a_gone_process_does_not_count() {
         let status = json!({"records": [record("working", 42, "2.1.318")]});
         // The agent exited back to a shell (or Rex restarted the terminal).
-        assert_eq!(classify(&status, &process("zsh", 77)), RexAgent::Gone);
+        assert_eq!(
+            classify(&status, &process("zsh", 77)).expect("readable"),
+            RexAgent::Gone
+        );
         // A reused pid under another name is not the reporter.
         assert_eq!(
-            classify(&status, &process("vim", 42)),
+            classify(&status, &process("vim", 42)).expect("readable"),
             RexAgent::Running {
                 process: "vim".into()
             }
@@ -1197,15 +1233,18 @@ mod tests {
     fn no_report_falls_back_to_the_foreground_process() {
         let none = json!({"records": []});
         assert_eq!(
-            classify(&none, &process("codex", 5)),
+            classify(&none, &process("codex", 5)).expect("readable"),
             RexAgent::Running {
                 process: "codex".into()
             }
         );
-        assert_eq!(classify(&none, &process("-zsh", 5)), RexAgent::Gone);
+        assert_eq!(
+            classify(&none, &process("-zsh", 5)).expect("readable"),
+            RexAgent::Gone
+        );
         // Seen live: an agent at its trust dialog reports nothing, under Rex's `login`.
         assert_eq!(
-            classify(&none, &process("login", 5)),
+            classify(&none, &process("login", 5)).expect("readable"),
             RexAgent::Running {
                 process: "login".into()
             }
@@ -1214,7 +1253,8 @@ mod tests {
             classify(
                 &none,
                 &json!({"last_exit": {"code": 0}, "child": null, "foreground": null})
-            ),
+            )
+            .expect("readable"),
             RexAgent::Gone
         );
     }
@@ -1226,7 +1266,7 @@ mod tests {
             {"state": "idle", "owner": {"pid": 1, "name": "pi"}},
         ]});
         assert_eq!(
-            classify(&status, &process("pi", 1)),
+            classify(&status, &process("pi", 1)).expect("readable"),
             RexAgent::Reported {
                 state: "idle".into(),
                 kind: None
@@ -1284,16 +1324,17 @@ mod tests {
         let bare = json!({"pid": 9, "name": "zsh", "argv0": "-zsh", "cwd": "/w"});
         // A bare shell as Rex reports it: `login` started a login shell.
         assert!(matches!(
-            leftover_program(&json!({"child": login, "ancestors": [login], "foreground": bare})),
+            leftover_program(&json!({"child": login, "ancestors": [login], "foreground": bare}))
+                .expect("readable"),
             BlockProgram::Shell { .. }
         ));
         // The block's own program is that shell, or Rex says nothing more.
         assert!(matches!(
-            leftover_program(&json!({"child": bare, "foreground": bare})),
+            leftover_program(&json!({"child": bare, "foreground": bare})).expect("readable"),
             BlockProgram::Shell { .. }
         ));
         assert!(matches!(
-            leftover_program(&json!({"child": null, "foreground": bare})),
+            leftover_program(&json!({"child": null, "foreground": bare})).expect("readable"),
             BlockProgram::Shell { .. }
         ));
         // A user's nested shell is still bare.
@@ -1301,7 +1342,8 @@ mod tests {
         assert!(matches!(
             leftover_program(&json!({
                 "child": login, "ancestors": [login, bare], "foreground": nested,
-            })),
+            }))
+            .expect("readable"),
             BlockProgram::Shell { .. }
         ));
         // A shell an agent spawned: the agent is named.
@@ -1310,13 +1352,14 @@ mod tests {
         assert_eq!(
             leftover_program(&json!({
                 "child": login, "ancestors": [login, claude], "foreground": spawned,
-            })),
+            }))
+            .expect("readable"),
             BlockProgram::Busy {
                 process: "claude".into()
             }
         );
         assert_eq!(
-            leftover_program(&json!({"child": claude, "foreground": spawned})),
+            leftover_program(&json!({"child": claude, "foreground": spawned})).expect("readable"),
             BlockProgram::Busy {
                 process: "claude".into()
             }
@@ -1324,7 +1367,8 @@ mod tests {
         // Rex reports no argv0: how the shell started is unknown, so it is not bare.
         let unknown = json!({"pid": 12, "name": "zsh"});
         assert_eq!(
-            leftover_program(&json!({"child": login, "ancestors": [login], "foreground": unknown})),
+            leftover_program(&json!({"child": login, "ancestors": [login], "foreground": unknown}))
+                .expect("readable"),
             BlockProgram::Busy {
                 process: "zsh".into()
             }
@@ -1334,7 +1378,8 @@ mod tests {
         assert_eq!(
             leftover_program(
                 &json!({"child": login, "ancestors": [login], "foreground": launcher})
-            ),
+            )
+            .expect("readable"),
             BlockProgram::Busy {
                 process: "zsh".into()
             }
@@ -1382,17 +1427,35 @@ mod tests {
     #[test]
     fn a_block_holds_a_shell_an_exited_program_or_something_busy() {
         assert_eq!(
-            block_program(&json!({"foreground": {"pid": 1, "name": "-zsh", "cwd": "/w/t12"}})),
+            block_program(&json!({"foreground": {"pid": 1, "name": "-zsh", "cwd": "/w/t12"}}))
+                .expect("readable"),
             BlockProgram::Shell {
                 cwd: Some("/w/t12".into())
             }
         );
         assert_eq!(
-            block_program(&json!({"last_exit": {"code": 1}, "child": null, "foreground": null})),
+            block_program(&json!({"last_exit": {"code": 1}, "child": null, "foreground": null}))
+                .expect("readable"),
             BlockProgram::Exited
         );
+        // A killed program: Rex names no program, only its last exit.
         assert_eq!(
-            block_program(&process("login", 5)),
+            block_program(&json!({"last_exit": {"exit_code": -1, "error": "signal: terminated"}}))
+                .expect("readable"),
+            BlockProgram::Exited
+        );
+        // Neither a program nor an exit says nothing: never read as exited, or as gone.
+        for unreadable in [
+            json!({}),
+            Value::Null,
+            json!({"foreground": null, "child": null}),
+        ] {
+            assert!(block_program(&unreadable).is_err(), "{unreadable}");
+            assert!(leftover_program(&unreadable).is_err(), "{unreadable}");
+            assert!(classify(&json!({}), &unreadable).is_err(), "{unreadable}");
+        }
+        assert_eq!(
+            block_program(&process("login", 5)).expect("readable"),
             BlockProgram::Busy {
                 process: "login".into()
             }
