@@ -65,11 +65,19 @@ pub fn run_project(
             // Project verbs keep the old permissive path contract so outside-Git invocation
             // directories, removed directories, and legacy relative scopes do not alter how an
             // existing project is addressed.
-            let resolved = crate::scope::resolve_permissive_project_path(
+            let resolved = match crate::scope::resolve_permissive_project_path(
                 &name,
                 domain,
                 Some(&crate::context::snapshot_from_env()),
-            );
+            ) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    return Ok((
+                        Err(ArchiveCliError::UnknownProject(error.message(&name))),
+                        false,
+                    ))
+                }
+            };
             let result = if archive {
                 domain.archive_project(&resolved)
             } else {

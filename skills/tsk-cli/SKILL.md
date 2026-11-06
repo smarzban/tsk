@@ -59,7 +59,8 @@ task's running agent, in Herdr or Rex, add `--send`: it sends only that reply an
    `dispatch`, `edit --append-notes`, `steps add`, `steps toggle`, and `steps remove` are not:
    read the task first.
 4. **Use a known project name or a full path.** For `tsk add -p <project>`,
-   unknown or ambiguous names refuse; `tsk list -p` lists nothing for them. Only an
+   unknown or ambiguous names refuse; `tsk list -p` lists nothing for an unknown name and
+   refuses an ambiguous one. Only an
    existing absolute directory creates a project ([scope](https://gettsk.sh/docs/cli.md#scope)).
 5. **Never pass `--state-dir`** unless the user asked. It points at a different board.
 6. **Ignore notice rows.** Rows the board paints as `N1`… are for the user; no command reaches them.

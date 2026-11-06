@@ -342,3 +342,58 @@ fn unarchive_refusals_name_the_unarchive_verb() {
         unknown.stderr
     );
 }
+
+#[test]
+fn project_archive_refuses_a_basename_shared_by_two_projects() {
+    let dir = temp_state_dir("project-ambiguous");
+    let _guard = TempDirGuard(dir.clone());
+    let mut paths = Vec::new();
+    for site in ["site-a", "site-b"] {
+        let project = dir.join(site).join("wordpress").join("wp-content");
+        fs::create_dir_all(&project).expect("create project directory");
+        let path = project.to_string_lossy().into_owned();
+        let added = cli(vec![
+            "tsk".into(),
+            "add".into(),
+            "-t".into(),
+            format!("{site} task"),
+            "-p".into(),
+            path.clone(),
+            "--state-dir".into(),
+            dir.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(added.code, 0, "{:?}", added.stderr);
+        paths.push(path);
+    }
+    let project = |verb: &str, name: &str| {
+        cli(vec![
+            "tsk".into(),
+            "project".into(),
+            verb.into(),
+            name.into(),
+            "--state-dir".into(),
+            dir.to_string_lossy().into_owned(),
+        ])
+    };
+
+    for verb in ["archive", "unarchive"] {
+        let out = project(verb, "wp-content");
+        assert_eq!(out.code, 1, "{verb}: {out:?}");
+        assert!(out.stdout.is_empty(), "{verb}: {:?}", out.stdout);
+        assert_eq!(
+            out.stderr,
+            format!(
+                "tsk project: project wp-content is ambiguous: {}, {}\n",
+                paths[0], paths[1]
+            ),
+            "{verb}"
+        );
+    }
+    let store = TaskStore::new(&dir).load().expect("load store");
+    assert!(store.projects().is_empty(), "nothing archived");
+
+    // A full path still addresses one of them.
+    let one = project("archive", &paths[0]);
+    assert_eq!(one.code, 0, "{one:?}");
+    assert_eq!(one.stdout, "archived project wp-content\n");
+}
