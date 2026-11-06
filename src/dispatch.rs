@@ -8039,8 +8039,14 @@ mod tests {
         );
         assert!(!said.contains("login"), "{said}");
         let log = rex_log(&root);
-        assert!(!log.contains("new_split") && !log.contains("session kill"), "{log}");
-        assert!(!log.contains("session.create") && !log.contains("write"), "{log}");
+        assert!(
+            !log.contains("new_split") && !log.contains("session kill"),
+            "{log}"
+        );
+        assert!(
+            !log.contains("session.create") && !log.contains("write"),
+            "{log}"
+        );
         fs::remove_dir_all(root).expect("cleanup");
         fs::remove_dir_all(path).expect("cleanup");
     }
@@ -8073,7 +8079,10 @@ mod tests {
         let log = rex_log(&root);
         assert!(!log.contains("session kill"), "{log}");
         assert!(!log.contains("session.create"), "{log}");
-        assert!(!log.contains("block:x"), "the other block is untouched: {log}");
+        assert!(
+            !log.contains("block:x"),
+            "the other block is untouched: {log}"
+        );
         let split = log
             .lines()
             .find(|line| line.contains("session.new_split"))
@@ -8106,13 +8115,18 @@ mod tests {
             .expect_err("refused");
         assert!(error.to_string().contains("server busy"), "{error}");
         let log = rex_log(&root);
-        assert!(!log.contains("block.close") && !log.contains("session kill"), "{log}");
+        assert!(
+            !log.contains("block.close") && !log.contains("session kill"),
+            "{log}"
+        );
         let restore = log
             .lines()
-            .filter(|line| line.contains("session.set_block_label"))
-            .last()
+            .rfind(|line| line.contains("session.set_block_label"))
             .expect("relabelled");
-        assert!(restore.contains(&format!("\"label\":\"{agent}\"")), "{restore}");
+        assert!(
+            restore.contains(&format!("\"label\":\"{agent}\"")),
+            "{restore}"
+        );
         assert_eq!(state.get(id).unwrap().dispatch, before);
         fs::remove_file(root.join("split-fails")).expect("marker");
 
@@ -8122,7 +8136,10 @@ mod tests {
             .expect("relaunch");
         assert_eq!(result.record.session, "session:stub");
         let warning = result.warning.expect("a note");
-        assert!(warning.contains("session:stub/block:b stays open"), "{warning}");
+        assert!(
+            warning.contains("session:stub/block:b stays open"),
+            "{warning}"
+        );
         fs::remove_dir_all(root).expect("cleanup");
         fs::remove_dir_all(path).expect("cleanup");
     }
