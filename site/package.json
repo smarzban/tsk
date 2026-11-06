@@ -17,10 +17,11 @@
     "format": "prettier --write public/board-demo.js public/task-steps.js public/board-wrap.js public/landing.js \"parity/*.mjs\" playwright.config.mjs"
   },
   "dependencies": {
+    "@astrojs/markdown-remark": "^7.3.6",
     "@astrojs/sitemap": "^3.7.2",
     "@astrojs/starlight": "^0.41.10",
     "@vercel/analytics": "2.0.1",
-    "astro": "^7.1.6",
+    "astro": "^7.4.7",
     "sharp": "^0.35.5"
   },
   "devDependencies": {
