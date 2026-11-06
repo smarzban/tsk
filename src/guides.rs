@@ -128,7 +128,7 @@ pub const CATALOG: [Guide; 4] = [
                 **Say hello**\n\
                 - Something broke, or something is missing? Tell us at https://github.com/smarzban/tsk/issues\n\
                 - A star at https://github.com/smarzban/tsk helps other people find tsk.\n\
-                - Say hi at https://x.com/smarzbanX",
+                - Say hi at https://x.com/smarzban",
         status: HumanStatus::Open,
         steps: &[
             ("Press ctrl+d on this task", false),
@@ -365,6 +365,27 @@ mod tests {
             Some(CATALOG[0].catalog_id)
         );
         assert_eq!(delivery::load(store.path()).guides, catalog_ids());
+        let _ = fs::remove_dir_all(store.path());
+    }
+
+    #[test]
+    fn the_wrap_up_guide_says_hi_at_the_live_x_account() {
+        let store = temp_store("wrap-up-x");
+        assert_eq!(seed_on_open(&store), Ok(4));
+        let state = store.load().expect("load");
+        let wrap_up = notices(&state)
+            .into_iter()
+            .find(|task| {
+                task.notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.catalog_id == "guide.wrap-up")
+            })
+            .expect("wrap-up notice");
+        let notes = wrap_up.notes.as_deref().expect("notes");
+        assert!(
+            notes.ends_with("- Say hi at https://x.com/smarzban"),
+            "{notes}"
+        );
         let _ = fs::remove_dir_all(store.path());
     }
 

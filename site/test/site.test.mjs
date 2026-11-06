@@ -418,6 +418,14 @@ test("quickstarts use the installer, Herdr and Rex setup, and task capture", asy
   }
 });
 
+test("landing footer links to the maintainer on X", async () => {
+  const page = await read("../src/pages/index.astro");
+  const foot = page.match(/<footer class="site-foot">[\s\S]*?<\/footer>/)[0];
+  assert.match(foot, /href="https:\/\/x\.com\/smarzban"/);
+  assert.match(foot, /aria-label="smarzban on X"/);
+  assert.match(foot, /title="@smarzban"/);
+});
+
 test("every GitHub link carries the star count, refreshed by one script", async () => {
   const page = await read("../src/pages/index.astro");
   assert.equal(page.match(/<GitHubStars \/>/g)?.length, 2);

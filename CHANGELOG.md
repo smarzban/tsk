@@ -34,6 +34,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ### Fixed
 
+- The starter tour and the site footer link to https://x.com/smarzban. A tour already on your board keeps its notes.
 - A bare token in an https backup URL is removed and masked even when the URL does not start at the scheme.
 - An open board shows the update notice as soon as the release check finishes, and a board left open checks again once a day.
 - A token in a backup URL stays out of git's command line and the backup's local clone, so other local users cannot see it.
