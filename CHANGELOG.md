@@ -12,8 +12,23 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Breaking
+
+- Dispatch refusal codes name no host: `not-in-herdr` is `no-host` and `herdr-failed` is `host-failed` ([refusal codes](https://gettsk.sh/docs/cli/#exit-contract)).
+- Store format 16 records each dispatch's host: `tsk list T12 --json` shows `host` and `session`, and Herdr keeps `herdr_workspace_id`. tsk 0.13 and older refuse it; roll back with `tsk.json.v6`.
+
+### Added
+
+- Rex support: `tsk setup rex` binds the board to `alt+t` and quick capture to `alt+a`. The installer and `tsk update` offer or refresh it ([Add to Rex](https://gettsk.sh/docs/install/#add-to-rex)).
+- Dispatch in Rex: each task gets its own tab in the Rex session you dispatch from; relaunch, reply delivery, cleanup, and `--merge` work as in Herdr ([dispatch](https://gettsk.sh/docs/dispatch/)).
+- A task dispatched in Herdr or Rex starts plainly in the other; relaunch, reply delivery, and cleanup there refuse with `other-host`.
+- `[dispatch] worktrees` in `config.toml` sets where dispatch puts new worktrees ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
+
 ### Changed
 
+- Agent skills 1.7.0 cover dispatch in Herdr and Rex; the coordinator hands a passed review to you and cleans up after every merge. `tsk update` refreshes installed copies.
+- Dispatch puts new worktrees under `~/.tsk/worktrees/<repo>/` instead of Herdr's `~/.herdr/worktrees`. Tasks already dispatched keep their worktree.
+- Dispatch messages name Herdr or Rex: outside both, a start prints `no launch: outside Herdr or Rex`.
 - `tsk setup` names both installed skills, `tsk-cli` and `tsk-coordinator`, beside each agent's skills directory instead of printing only the `tsk-cli` file.
 - A backup URL with a user name, such as `https://org@host/…`, no longer asks your credential manager. Drop `org@` from the URL ([credentials](https://gettsk.sh/docs/storage/#credentials)).
 

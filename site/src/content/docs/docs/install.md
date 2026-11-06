@@ -1,9 +1,9 @@
 ---
 title: Install
-description: Install tsk, connect Herdr, give your agent the skill, and upgrade or remove tsk.
+description: Install tsk, connect Herdr or Rex, give your agent the skill, and upgrade or remove tsk.
 ---
 
-Install tsk on macOS, Linux, or Windows 10/11, on ARM64 or x86-64. Then connect it to Herdr and give your agent the skill. Windows builds are checksum-verified but not code-signed, and are not in a Windows package manager yet.
+Install tsk on macOS, Linux, or Windows 10/11, on ARM64 or x86-64. Then connect it to Herdr or Rex and give your agent the skill. Windows builds are checksum-verified but not code-signed, and are not in a Windows package manager yet.
 
 ## Install
 
@@ -36,10 +36,11 @@ It installs `tsk.exe` in `%LOCALAPPDATA%\Programs\tsk\bin` and adds that directo
 1. Downloads the release for your platform and checks it against the release's `SHA256SUMS`.
 2. Installs `tsk` without sudo and adds it to your [PATH](#path).
 3. If Herdr is installed, asks whether to run `tsk setup herdr`.
-4. If it finds coding agents, asks once whether to install the tsk skill for them.
-5. Ends with a [closing message](#prompts-and-closing-message) naming any setup step still to run.
+4. If Rex is installed, asks whether to run `tsk setup rex`.
+5. If it finds coding agents, asks once whether to install the tsk skill for them.
+6. Ends with a [closing message](#prompts-and-closing-message) naming any setup step still to run.
 
-Homebrew never asks. Its formula prints `tsk setup herdr` and `tsk setup agents` for you to run.
+Homebrew never asks. Its formula prints `tsk setup herdr` and `tsk setup agents` for you to run. Run `tsk setup rex` yourself for Rex.
 
 ## Add to Herdr
 
@@ -61,6 +62,25 @@ herdr server reload-config
 
 More: [Herdr setup details](#herdr-setup-details).
 
+## Add to Rex
+
+With [Rex](https://www.superlogical.com/rex/) running on macOS or Linux:
+
+```sh
+tsk setup rex
+```
+
+| Shortcut | Action |
+| --- | --- |
+| `alt+t` | Open the board beside the focused pane, or focus it in this session |
+| `alt+a` | Quick capture in a floating popup |
+
+- Rex catches these keys in every pane, so the program in that pane never receives them. In Claude Code, `alt+t` toggles thinking.
+- Pick other keys with `--board-key` and `--capture-key`, in Rex notation: `tsk setup rex --board-key ctrl+b>t`. `none` leaves an action without a key.
+- The actions also appear in Rex's command list as `tsk: Open Board` and `tsk: Quick Capture`.
+
+More: [Rex setup details](#rex-setup-details).
+
 ## Agent skill
 
 `tsk setup` installs two skills for each agent:
@@ -81,7 +101,7 @@ Skill directories and options: [`tsk setup`](/docs/cli/#setup).
 
 ## First task
 
-Open the board with `tsk`, or `prefix+t` in Herdr. Press `+`, type a title, and press `Enter`. Or use the CLI:
+Open the board with `tsk`, `prefix+t` in Herdr, or `alt+t` in Rex. Press `+`, type a title, and press `Enter`. Or use the CLI:
 
 ```sh
 tsk add -t "your task title"
@@ -102,6 +122,7 @@ Give your agent the task number to work on it. [Board guide](/docs/board/).
 After it replaces the binary, `tsk update` refreshes what you already set up:
 
 - **Herdr plugin:** re-registered without asking when both plugin shortcuts are bound, on any keys. Reload Herdr's config afterwards. If Herdr is installed but not set up, it asks as a first install does.
+- **Rex keys:** rewritten without asking when the Rex config loads them, keeping your keys. If Rex is installed but not set up, it asks as a first install does.
 - **Agent skills:** outdated skills are updated. In a terminal it asks once, for example `tsk skill installed for claude (v1.2.0), codex (v1.2.0); update to v1.3.0? [Y/n]`; without one it updates them unattended. An agent with the tsk skill also gets the coordinator skill. It never adds a skill for an agent that had none, unless no agent has one: then it offers the first-install ask.
 - A refresh that fails leaves the new binary in place and prints the `tsk setup` command to run.
 
@@ -121,6 +142,7 @@ The board shows a notice when a newer release is out. [Update check settings](/d
 Your [task data](/docs/storage/#location) stays in place.
 
 - **Herdr:** run `herdr plugin unlink herdr-tsk`, remove the two shortcut bindings from Herdr's config, and reload it.
+- **Rex:** delete `tsk.lua` beside your Rex `init.lua`, remove the `require("tsk")` line from `init.lua`, and run `rex config reload`.
 - **PATH on macOS and Linux:** remove the `# tsk PATH` comment and the `case` line under it from the startup files the installer named.
 - **PATH on Windows:** remove the tsk install directory from your user `Path` variable.
 
@@ -162,9 +184,10 @@ The installer asks only in an interactive terminal, and only when it installs in
 | Prompt | When | Yes runs |
 | --- | --- | --- |
 | `Herdr detected. Set up the Herdr plugin now? [y/N]` | Herdr is on PATH | `tsk setup herdr` |
+| `Rex detected. Add the tsk board (alt+t) and quick capture (alt+a) keys to Rex now? [y/N]` | Rex is on PATH | `tsk setup rex` |
 | `Agents detected: claude, pi. Install the tsk skill for them? [y/N]` | Coding agents are found | `tsk setup agents --yes` |
 
-With `CI` set, or without a terminal, it skips both prompts so it never hangs. A setup that fails never undoes the install.
+With `CI` set, or without a terminal, it skips every prompt so it never hangs. A setup that fails never undoes the install.
 
 It ends with one closing message, with a row for each setup step still to run:
 
@@ -172,11 +195,13 @@ It ends with one closing message, with a row for each setup step still to run:
 Done. Run tsk in a project directory to open the board.
 
     Herdr plugin:  tsk setup herdr
+    Rex keys:      tsk setup rex
     Agent skills:  tsk setup
 ```
 
-- After Herdr setup ran, the first line ends `, or press prefix+t in Herdr.` instead.
+- After Herdr setup ran, the first line ends `, or press prefix+t in Herdr.` instead. After only Rex setup ran, it names the board key setup bound, such as `, or press alt+t in Rex.`
 - `Herdr plugin:` appears when Herdr is installed but its setup was declined, skipped, or failed.
+- `Rex keys:` appears the same way for Rex.
 - `Agent skills:` appears when agents were found but the skill prompt was declined or skipped.
 - With `TSK_INSTALL_DIR`, the installer never runs the new binary. It prints `Custom install directory: setup was not run. When you are ready:`, then the setup rows with the binary's full path.
 
@@ -195,6 +220,26 @@ Done. Run tsk in a project directory to open the board.
 - **Windows:** setup writes PowerShell launchers.
 
 Installing a new tsk does not refresh the registration by itself. `tsk update` refreshes it, and so does running `tsk setup herdr` again.
+
+## Rex setup details
+
+`tsk setup rex` adds two actions, `tsk_board` and `tsk_capture`, and their keys to your Rex config, then runs `rex config reload`.
+
+- **Version:** Rex with server API revision 10 or newer (`rex version`). An older Rex is refused before anything is written.
+- **Running Rex:** setup reads the keys already in use from the running Rex, so Rex must be running. A Rex server that reads a different config file is refused.
+- **Config files:** `REX_CONFIG`, else `$XDG_CONFIG_HOME/rex/init.lua`, else `~/.config/rex/init.lua`. Setup writes `tsk.lua` beside it and adds one `require("tsk")` line to the end of `init.lua`, creating it if needed. Your other lines are never changed.
+- **Load order:** setup keeps its `require` line last in `init.lua`, moving it back on a rerun, so its keys win. If a later binding still takes one, setup names it.
+- **`tsk.lua` is tsk's:** reruns rewrite it, so put your own changes in `init.lua`. Setup refuses a `tsk.lua` it did not write.
+- **Backup:** before changing `init.lua`, setup saves a copy beside it, `init.lua.tsk-backup-<YYYYMMDD-HHMMSS>` in UTC.
+- **Checks:** a config Rex reports errors in is refused before any change. After the change, Rex checks the merged config. If it reports errors, setup puts both files back.
+- **Shortcut conflicts:** setup asks before taking a key that one of your bindings uses, or that starts or extends one of your key sequences. Declining leaves that action without a key. Without a terminal, a conflict stops setup before it writes anything.
+- **Edited `init.lua` by hand?** Rex does not watch its config, and setup checks keys against the config Rex has loaded. Run `rex config reload` first, or setup cannot see your new bindings.
+- **Your own keys:** an action you already bound in `init.lua` gets no default key. A rerun without key flags keeps the keys the last setup chose, and keeps any key you agreed to hand over.
+- **Binary path:** `tsk.lua` launches the `tsk` you ran by its full path, so it works when Rex's shell has a different PATH.
+- **Selected text:** Rex quick capture opens with an empty title. Herdr's popup prefills the selected text; Rex has no way to pass it yet.
+- **Windows:** Rex does not run on Windows, so `tsk setup rex` refuses there.
+
+Check whether setup is in place with `tsk setup rex --check`. It prints `bound` or `unbound` and never contacts Rex.
 
 ## Manual archives
 

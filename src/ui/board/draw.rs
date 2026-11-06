@@ -241,7 +241,7 @@ pub(crate) fn cleanup_run_overlay<'a>(
                         .iter()
                         .find(|(closed, _)| closed == identifier)
                         .map(|(_, closed)| match closed {
-                            Ok(()) => " · workspace closed".to_string(),
+                            Ok(()) => format!(" · {} closed", run.noun()),
                             Err(why) => format!(" · {why}"),
                         })
                         .unwrap_or_default();

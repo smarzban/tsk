@@ -217,7 +217,7 @@ pub fn top_level_help() -> String {
         "  backup     back the store up to one or more git repositories\n",
         "  restore    put a backed-up version of the store back\n\n",
         "Setup\n",
-        "  setup    register Herdr, or install the agent skill\n",
+        "  setup    register with Herdr or Rex, or install the agent skill\n",
         "  update   install the latest stable release\n",
         "  guide    print the agent workflow\n\n",
         "Statuses\n",
@@ -465,6 +465,26 @@ pub fn list(result: ListResult, json: bool, terminal_width: Option<usize>) -> Cl
     }
 }
 
+/// A dispatch record in `tsk list T12 --json`: the record as stored, plus the Herdr workspace
+/// id under its original key for a Herdr dispatch, so scripts reading it keep working.
+#[derive(serde::Serialize)]
+struct DispatchJson<'a> {
+    #[serde(flatten)]
+    record: &'a crate::domain::Dispatch,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    herdr_workspace_id: Option<&'a str>,
+}
+
+impl<'a> From<&'a crate::domain::Dispatch> for DispatchJson<'a> {
+    fn from(record: &'a crate::domain::Dispatch) -> Self {
+        Self {
+            record,
+            herdr_workspace_id: (record.host == crate::domain::AgentHost::Herdr)
+                .then_some(record.session.as_str()),
+        }
+    }
+}
+
 /// Filtered listings keep the compact row schema. A directly addressed task
 /// carries its complete readable content in a stable field order.
 fn list_json(result: &ListResult) -> String {
@@ -489,7 +509,7 @@ fn list_json(result: &ListResult) -> String {
             after: &'a [crate::cli::list::AfterLink],
             before: &'a [u64],
             #[serde(skip_serializing_if = "Option::is_none")]
-            dispatch: Option<&'a crate::domain::Dispatch>,
+            dispatch: Option<DispatchJson<'a>>,
             #[serde(skip_serializing_if = "Option::is_none")]
             block: Option<BlockJson<'a>>,
             #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -516,7 +536,7 @@ fn list_json(result: &ListResult) -> String {
             thread: &row.thread,
             after: &row.after,
             before: &row.before,
-            dispatch: direct.dispatch.as_ref(),
+            dispatch: direct.dispatch.as_ref().map(DispatchJson::from),
             block: direct.block.as_ref().filter(blocks).map(BlockJson::from),
             past_blocks: direct
                 .past_blocks
@@ -1547,7 +1567,7 @@ pub(crate) fn status_name(status: HumanStatus) -> &'static str {
 pub fn dispatch_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(DISPATCH_USAGE),
-        purpose: "Launch the task's assigned agent in its own worktree and Herdr workspace, then set the task started.".into(),
+        purpose: "Launch the task's assigned agent in its own worktree and a Herdr workspace or Rex tab, then set the task started.".into(),
         groups: vec![
             group("Arguments", &[("<task>", "a task number or UUID")]),
             group(
@@ -1577,8 +1597,8 @@ pub fn dispatch_help() -> CliOutput {
         ],
         refusals: vec![
             "unknown-task, soft-deleted-task, done-task, archived-task".into(),
-            "no-assignee, unknown-agent, agent-config, already-dispatched".into(),
-            "not-in-herdr, needs-git-project, unknown-base, no-default-base, herdr-failed".into(),
+            "no-assignee, unknown-agent, agent-config, already-dispatched, other-host".into(),
+            "no-host, needs-git-project, unknown-base, no-default-base, host-failed".into(),
             "unsafe-state-dir; Windows: unsupported-platform".into(),
         ],
         exit: format!(
@@ -1595,7 +1615,7 @@ pub fn dispatch_help() -> CliOutput {
 pub fn clean_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(CLEAN_USAGE),
-        purpose: "Remove a dispatched task's worktree, and inside Herdr its workspace, without changing its status. The branch is deleted only when it is merged into the recorded base; with gh, a pull request merged at the branch tip counts.".into(),
+        purpose: "Remove a dispatched task's worktree, and inside Herdr or Rex its workspace or tab, without changing its status. The branch is deleted only when it is merged into the recorded base; with gh, a pull request merged at the branch tip counts.".into(),
         groups: vec![
             group("Arguments", &[("<task>", "a task number or UUID")]),
             group(
@@ -1617,7 +1637,7 @@ pub fn clean_help() -> CliOutput {
         ],
         refusals: vec![
             "unknown-task, not-dispatched, already-cleaned, dirty-worktree".into(),
-            "worktree-mismatch, herdr-failed".into(),
+            "worktree-mismatch, other-host, host-failed".into(),
             "Windows: files-in-use, path-too-long, removal-timed-out, partly-removed".into(),
             "--merge: gh-unavailable, no-pr, pr-not-open, pr-base-mismatch, merge-failed, merge-config".into(),
         ],
@@ -1741,12 +1761,13 @@ pub fn cleaned_merged(
             .map(|warning| format!("warning: {}\n", terminal_text(warning)))
             .unwrap_or_default();
         format!(
-            "{warning}cleaned T{}: worktree {} ({}), branch {} ({}), workspace {} ({})\n",
+            "{warning}cleaned T{}: worktree {} ({}), branch {} ({}), {} {} ({})\n",
             result.number,
             terminal_text(&result.worktree_path),
             worktree_detail,
             terminal_text(&result.branch_name),
             branch_detail,
+            crate::domain::AgentHost::noun_of(&result.workspace_id),
             terminal_text(&result.workspace_id),
             workspace_detail,
         )
@@ -1932,8 +1953,8 @@ pub fn status_help() -> CliOutput {
         ],
         refusals: vec![
             "unknown-task, soft-deleted-task, text-too-long, invalid-blocker".into(),
-            "started: after-not-done, agent-gone, needs-git-project, unknown-agent, agent-config, unknown-base, no-default-base, herdr-failed, unsafe-state-dir, and on Windows unsupported-platform".into(),
-            "done --clean: dirty-worktree, worktree-mismatch, herdr-failed, and on Windows files-in-use, path-too-long, removal-timed-out, partly-removed".into(),
+            "started: after-not-done, agent-gone, other-host, needs-git-project, unknown-agent, agent-config, unknown-base, no-default-base, host-failed, unsafe-state-dir, and on Windows unsupported-platform".into(),
+            "done --clean: the clean codes except not-dispatched and already-cleaned".into(),
             "done --merge: the --clean codes, not-dispatched, already-cleaned, gh-unavailable, no-pr, pr-not-open, pr-base-mismatch, merge-failed, merge-config".into(),
         ],
         exit: exit_line(
@@ -2573,12 +2594,16 @@ pub fn setup_help() -> CliOutput {
             .lines()
             .map(|line| line.trim_start_matches("usage:").trim().to_string())
             .collect(),
-        purpose: "Register tsk with Herdr, or install the agent skill. On a terminal, bare tsk setup offers the skill to every detected agent.".into(),
+        purpose: "Register tsk with Herdr or Rex, or install the agent skill. On a terminal, bare tsk setup offers the skill to every detected agent.".into(),
         groups: vec![
             group(
                 "Actions",
                 &[
                     ("herdr", "register the plugin and its shortcuts with Herdr"),
+                    (
+                        "rex",
+                        "add the board (alt+t) and quick-capture (alt+a) keys to the Rex config",
+                    ),
                     (
                         "agents",
                         "install or update both skills for every detected agent",
@@ -2598,7 +2623,15 @@ pub fn setup_help() -> CliOutput {
                 &[
                     (
                         "--check",
-                        "with herdr: print bound if both plugin commands are in the Herdr config, else unbound",
+                        "with herdr: print bound if both plugin commands are in the Herdr config, else unbound; with rex: bound if the Rex config loads tsk's keys",
+                    ),
+                    (
+                        "--board-key <key>",
+                        "with rex: open the board on <key> instead, in Rex notation (ctrl+b>t), or none",
+                    ),
+                    (
+                        "--capture-key <key>",
+                        "with rex: open quick capture on <key> instead, or none",
                     ),
                     ("--yes", "with agents: install without asking"),
                     ("--force", "rewrite a skill whose version already matches"),
@@ -2621,6 +2654,7 @@ pub fn setup_help() -> CliOutput {
         ],
         examples: vec![
             "tsk setup herdr".into(),
+            "tsk setup rex --board-key ctrl+b>t".into(),
             "tsk setup agents --yes".into(),
             "tsk setup claude".into(),
         ],
@@ -2628,6 +2662,7 @@ pub fn setup_help() -> CliOutput {
             "skill-exists: the installed skill already has this version".into(),
             "a symlinked skills root, skill folder, or skill file".into(),
             "Herdr setup failed".into(),
+            "Rex setup failed, or a key is taken and the terminal cannot ask".into(),
         ],
         exit: exit_line("setup done, or guidance printed", Some("refused or failed"), false),
     })
@@ -2923,10 +2958,69 @@ pub fn setup(result: crate::setup::SetupResult) -> CliOutput {
     }
 }
 
+pub fn setup_rex(result: crate::setup::rex::RexSetupResult) -> CliOutput {
+    let mut stdout = format!(
+        "    Rex config:     {}\n",
+        terminal_text(&result.config.display().to_string())
+    );
+    if let Some(backup) = result.backup {
+        stdout.push_str(&format!(
+            "    Config backup:\n        {}\n",
+            terminal_text(&backup.display().to_string())
+        ));
+    }
+    let shortcuts: Vec<String> = result
+        .shortcuts
+        .iter()
+        .map(|(keys, label)| format!("{} {label}", terminal_text(keys)))
+        .collect();
+    if shortcuts.is_empty() {
+        stdout.push_str("    Shortcuts:      none bound\n");
+    } else {
+        stdout.push_str(&format!("    Shortcuts:      {}\n", shortcuts.join(", ")));
+    }
+    if result.declined_conflicts {
+        stdout.push_str("Declined conflicts were left unchanged.\n");
+    }
+    for (key, label, source) in &result.shadowed {
+        stdout.push_str(&format!(
+            "{} {label} is taken by a later binding at {}. Move require(\"tsk\") to the end of init.lua, then run tsk setup rex again.\n",
+            terminal_text(key),
+            terminal_text(source)
+        ));
+    }
+    stdout.push_str("\nRex reloaded its config; the shortcuts work in every Rex pane.\n");
+    CliOutput {
+        stdout,
+        stderr: String::new(),
+        code: 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn dispatch_refusal_lists_use_host_neutral_codes() {
+        for (verb, output, codes) in [
+            ("dispatch", dispatch_help(), &["no-host", "host-failed"][..]),
+            ("status", status_help(), &["host-failed"][..]),
+            ("clean", clean_help(), &["host-failed"][..]),
+        ] {
+            let text = output.stdout;
+            for code in codes {
+                assert!(text.contains(code), "{verb} help lacks {code}:\n{text}");
+            }
+            for old in ["not-in-herdr", "herdr-failed"] {
+                assert!(
+                    !text.contains(old),
+                    "{verb} help still lists {old}:\n{text}"
+                );
+            }
+        }
+    }
 
     #[cfg(windows)]
     #[test]

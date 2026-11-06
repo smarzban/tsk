@@ -29,7 +29,7 @@ tsk list
 | [`tsk trash`](#trash) | Restore a deleted task |
 | [`tsk backup`](#backup) | Back the store up to git repositories |
 | [`tsk restore`](#restore) | Put a backed-up version of the store back |
-| [`tsk setup`](#setup) | Register Herdr, or install the agent skill |
+| [`tsk setup`](#setup) | Register Herdr or Rex, or install the agent skill |
 | [`tsk update`](#update) | Install the latest stable release |
 | [`tsk guide`](#guide) | Print the agent workflow |
 
@@ -213,7 +213,7 @@ A task waits while any `after` entry has `done: false`.
 | --- | --- |
 | `notes` | Notes, or `null` |
 | `steps` | Each step's `id`, `done`, `short_id` (for [`tsk steps`](#steps)), and `text` |
-| `dispatch` | Present once dispatched: `argv`, `worktree`, `branch`, `base`, `base_ref`, `base_commit`, `base_remote`, `herdr_workspace_id`, `at`, and `cleaned: true` once cleaned |
+| `dispatch` | Present once dispatched: `argv`, `worktree`, `branch`, `base`, `base_ref`, `base_commit`, `base_remote`, `host` (`herdr` or `rex`), `session` (the Herdr workspace, or the Rex tab as `<session>/<window>`), `at`, and `cleaned: true` once cleaned. A Herdr dispatch also carries `herdr_workspace_id` |
 | `past_blocks`, `past_reviews` | Closed blocks and rounds, oldest first. Each adds `closed_at` and `closed_by` |
 | `activity` | Every event on the task, newest first, below |
 
@@ -291,8 +291,9 @@ tsk status T12 ready
 | --- | --- |
 | Unassigned, already started, done, or archived | Sets the status |
 | Assigned, never dispatched | [Dispatches](#dispatch) it and prints `dispatched T12 to @claude in <worktree>` |
-| Assigned, never dispatched, but outside Herdr or on the desk | Sets the status and prints `no launch: <reason>` |
-| Dispatched, agent still running, Herdr cannot tell, or outside Herdr | Sets the status. When you start it from `blocked` or `review`, it also tries to send the agent your replies or feedback, and a second line says whether they went |
+| Assigned, never dispatched, but outside Herdr or Rex, or on the desk | Sets the status and prints `no launch: <reason>` |
+| Dispatched, agent still running, the host cannot tell, or outside Herdr or Rex | Sets the status. When you start it from `blocked` or `review`, it also tries to send the agent your replies or feedback, and a second line says whether they went |
+| Dispatched in the other host (Herdr or Rex) | Sets the status. Replies and feedback are not sent: only that host reaches the agent |
 | Dispatched, agent gone | Refuses with `agent-gone` |
 | Runs after a task that is not done | Refuses with `after-not-done`, unless `--force` |
 
@@ -454,7 +455,7 @@ tsk reply <task> <text> [--send] [--state-dir <dir>]
 - Output is `replied T12 as <author> <title>`.
 - `<author>` is your [`[board] me`](/docs/storage/#board-defaults) name, `you` by default, or the agent profile's name.
 - With `--send`, a second line says `sent to @claude` or `not sent: <reason>`. The reply is stored either way and the exit is 0. A reply that was not sent goes out later, when you unblock the task or send the review back.
-- `--send` only sends your own replies, inside Herdr, to the agent tsk dispatched for the task. To answer and unblock in one step, use the board's [reply box](/docs/board/#block-review-reply).
+- `--send` only sends your own replies, from the host the task was dispatched in, to the agent tsk dispatched for the task. To answer and unblock in one step, use the board's [reply box](/docs/board/#block-review-reply).
 
 **Refusals:** codes and exits in the [exit contract](#exit-contract).
 
@@ -464,7 +465,7 @@ tsk reply T12 "Use postgres" --send
 
 ## dispatch
 
-Launches an assigned task's agent in its own Git worktree and Herdr workspace, then sets the task `started`. [Dispatch](/docs/dispatch/#dispatch) explains names, prompts, and what the agent gets.
+Launches an assigned task's agent in its own Git worktree and a Herdr workspace or Rex tab, then sets the task `started`. [Dispatch](/docs/dispatch/#dispatch) explains names, prompts, and what the agent gets.
 
 ```text
 tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]
@@ -477,12 +478,13 @@ tsk dispatch <task> --show-prompt [--base <branch>] [--state-dir <dir>]
 | `--again` | Relaunch a dispatched task. Keeps the recorded base and recreates a cleaned worktree |
 | `--show-prompt` | Print the command and [prompt](/docs/storage/#prompt-and-placeholders) a dispatch would send. Launches nothing and saves nothing |
 
-- Dispatch needs Herdr, a task in a project that is a Git repository, and an assignee with a profile in [`config.toml`](/docs/storage/#configuration).
+- Dispatch needs Herdr or Rex, a task in a project that is a Git repository, and an assignee with a profile in [`config.toml`](/docs/storage/#configuration).
 - The base is `--base`, else the task's base, else the repository's default branch. Never the branch you run the command in. [Base branch](/docs/dispatch/#base-branch).
 - A dispatched task refuses with `already-dispatched`. Use `--again` to relaunch on purpose.
+- A task dispatched in the other host (Herdr or Rex) refuses `--again` with `other-host` until its dispatch is cleaned. Relaunch it from that host.
 - Output is `dispatched T12 to @claude in <worktree>`.
 - A refusal changes nothing. A launch that fails removes what it created ([Dispatch](/docs/dispatch/#dispatch)).
-- Exit 3 after a launch means its record was not saved. tsk then takes the launch back, and the message says `launch undone` or names what stayed. When it says `the agent may still run`, check Herdr (`herdr agent get t12-claude`) and read the task before retrying. The same holds for a `tsk status T12 started` that dispatched.
+- Exit 3 after a launch means its record was not saved. tsk then takes the launch back, and the message says `launch undone` or names what stayed. When it says `the agent may still run`, look for the agent in Herdr (`herdr agent get t12-claude`) or the Rex tab `t12-claude`, and read the task before retrying. The same holds for a `tsk status T12 started` that dispatched.
 - On Windows dispatch is a preview ([Windows](/docs/dispatch/#windows-preview)).
 
 **Refusals:** codes and exits in the [exit contract](#exit-contract).
@@ -493,11 +495,11 @@ tsk dispatch T12 --base main
 
 ### Preview the prompt
 
-`--show-prompt` works for any status, on the desk, and outside Herdr. It still needs an assignee with a profile: otherwise it refuses with `no-assignee` or `unknown-agent`.
+`--show-prompt` works for any status, on the desk, and outside Herdr or Rex. It still needs an assignee with a profile: otherwise it refuses with `no-assignee` or `unknown-agent`.
 
 - A dispatched task shows its recorded worktree, branch, and base. `--base` does not change them.
 - Any other task shows the branch, worktree, and base a first dispatch would pick, and says so. It picks them the same way, skipping branch names already taken, but from what was last fetched: the preview never fetches.
-- The worktree path assumes Herdr keeps worktrees in its default folder.
+- The worktree path follows the [worktree location](/docs/storage/#worktree-location).
 - A desk task keeps `{worktree}`, `{branch}`, and `{base}` as written, and says so.
 - `env` values never print, only their names.
 
@@ -512,7 +514,7 @@ You were dispatched to T12 (Fix the parser) in worktree …
 
 ## clean
 
-Removes a dispatched task's worktree, and inside Herdr its workspace, without changing its status. To finish and clean in one step, use `tsk status T12 done --clean`.
+Removes a dispatched task's worktree, and inside Herdr or Rex its workspace or tab, without changing its status. To finish and clean in one step, use `tsk status T12 done --clean`.
 
 ```text
 tsk clean <task> [--merge] [--json] [--state-dir <dir>]
@@ -524,6 +526,7 @@ tsk clean <task> [--merge] [--json] [--state-dir <dir>]
 | `--json` | Print the result as one JSON object |
 
 - Uncommitted changes refuse with `dirty-worktree` and nothing is touched.
+- A dispatch made in the other host (Herdr or Rex) refuses with `other-host`. Clean it up from that host.
 - The branch is deleted only when it is merged into the recorded base. With `gh`, a pull request merged at the branch tip counts too. Otherwise the branch stays and the output says why.
 - A worktree already gone counts as cleaned.
 - The task keeps its dispatch record, marked `cleaned`.
@@ -536,8 +539,8 @@ Output is one line: `cleaned T12: worktree <path> (removed), branch <name> (kept
 | `number`, `title` | The task |
 | `worktree` | `path`, and `outcome`: `removed` or `missing` |
 | `branch` | `name`, `outcome` (`removed` or `kept`), and `reason` for a kept branch |
-| `workspace` | `id`, and `outcome`: `removed`, `kept`, or `missing` |
-| `warning` | A failed fetch, or a workspace Herdr would not close; `null` otherwise |
+| `workspace` | The dispatch's Herdr workspace or Rex tab: `id`, and `outcome`: `removed`, `kept`, or `missing` |
+| `warning` | A failed fetch, or a workspace the host would not close; `null` otherwise |
 | `merge` | With `--merge`: `pr`, `url`, `method`, and `remote_branch` (`kept`, `deleted`, or `null`) |
 | `status` | With `--merge`: `done` |
 
@@ -668,11 +671,12 @@ tsk restore 3f9a1c2e
 
 ## setup
 
-Registers tsk with Herdr, or installs the agent skills: `tsk-cli` and the [coordinator skill](/docs/coordinator/).
+Registers tsk with Herdr or Rex, or installs the agent skills: `tsk-cli` and the [coordinator skill](/docs/coordinator/).
 
 ```text
 tsk setup [--json]
 tsk setup herdr [--check]
+tsk setup rex [--check] [--board-key <key>] [--capture-key <key>]
 tsk setup agents [--yes [--force]] [--json]
 tsk setup <agent> [--force] [--json]
 tsk setup --skill-dir <path> [--force] [--json]
@@ -684,6 +688,8 @@ tsk setup --detected-ids | --skill-states
 | none | In a terminal, offers the skill to every detected agent. Otherwise prints the targets |
 | `herdr` | Registers the plugin and its shortcuts with Herdr 0.9 or later. [Herdr setup details](/docs/install/#herdr-setup-details) |
 | `herdr --check` | Prints `bound` when both plugin commands are in the Herdr config, otherwise `unbound`. Changes nothing |
+| `rex` | Adds the board and quick-capture actions and keys to the Rex config, then reloads it. [Rex setup details](/docs/install/#rex-setup-details) |
+| `rex --check` | Prints `bound` when the Rex config loads tsk's actions, otherwise `unbound`. Changes nothing |
 | `agents` | Installs or updates both skills for every detected agent. `--yes` skips the question |
 | `<agent>` | Installs both skills for one agent, below |
 | `--skill-dir <path>` | Installs the skills as `<path>/tsk-cli/SKILL.md` and `<path>/tsk-coordinator/SKILL.md` |
@@ -703,6 +709,13 @@ tsk setup --detected-ids | --skill-states
 - The config is `HERDR_CONFIG_PATH`, else `$XDG_CONFIG_HOME/herdr/config.toml`, else `~/.config/herdr/config.toml`. On Windows it is `%APPDATA%\herdr\config.toml`.
 - A plugin command you already bound to another key keeps that key.
 - A shortcut that clashes with yours asks first. Without a terminal to ask in, setup stops before writing anything.
+
+`tsk setup rex` adds `alt+t` (board) and `alt+a` (quick capture) to the Rex config:
+
+- `--board-key <key>` and `--capture-key <key>` pick other keys, in Rex notation: `--board-key ctrl+b>t` is `ctrl+b`, then `t`. `none` leaves the action without a key.
+- A rerun without these flags keeps the keys the last setup chose.
+- A key that clashes with yours asks first. Without a terminal to ask in, setup stops before writing anything.
+- Setup reads your keys from the running Rex. After editing `init.lua` by hand, run `rex config reload` before setup.
 
 For the skill:
 
@@ -724,7 +737,7 @@ tsk setup claude
 
 ## update
 
-Installs the latest stable release over a copy the installer put there, then refreshes a registered Herdr plugin and outdated agent skills. A Homebrew copy prints `brew update && brew upgrade tsk` instead. Reopen a running board afterwards. [Upgrade](/docs/install/#upgrade).
+Installs the latest stable release over a copy the installer put there, then refreshes a registered Herdr plugin, bound Rex keys, and outdated agent skills. When Herdr or Rex is installed but not set up, it offers setup. A Homebrew copy prints `brew update && brew upgrade tsk` instead. Reopen a running board afterwards. [Upgrade](/docs/install/#upgrade).
 
 ```text
 tsk update
@@ -765,14 +778,14 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 | --- | --- |
 | `add` | `empty-title`, `invalid-title`, `unknown-project`, `project-archived`, `unknown-base`; in a plan also `invalid-item`, `invalid-thread`, `invalid-assignee`, `invalid-after` |
 | `status` | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker` |
-| `status … started` | `after-not-done`, `agent-gone`, and the `dispatch` codes `needs-git-project`, `unknown-agent`, `agent-config`, `unknown-base`, `no-default-base`, `herdr-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
+| `status … started` | `after-not-done`, `agent-gone`, and the `dispatch` codes `other-host`, `needs-git-project`, `unknown-agent`, `agent-config`, `unknown-base`, `no-default-base`, `host-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
 | `status … done --clean` | The `clean` codes except `not-dispatched` and `already-cleaned` |
 | `status … done --merge` | Every `clean` code, with `--merge` |
 | `edit` | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title`, `unknown-base`, `invalid-after`, `after-loop`; with `--on` also `not-blocked`, `invalid-blocker`, `text-too-long` |
 | `steps` | `unknown-task`, `soft-deleted-task`, `empty-step-text`, `invalid-step-text`, `unknown-step`, `ambiguous-step`, `same-step` |
 | `reply` | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
-| `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `not-in-herdr`, `needs-git-project`, `unknown-base`, `no-default-base`, `herdr-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
-| `clean` | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `herdr-failed`; on Windows `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
+| `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `other-host`, `no-host`, `needs-git-project`, `unknown-base`, `no-default-base`, `host-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
+| `clean` | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `other-host`, `host-failed`; on Windows `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
 | `archive`, `unarchive` | `unknown-task`, `soft-deleted-task` |
 
 `project`, `trash`, `backup`, and `restore` refuse with a message only: `tsk <command>: <message>`, exit 1. A store that cannot be read or written exits 3 from `project`, `trash`, and `restore`. `dispatch` and `clean` print `store-error` as the code of an exit 3.

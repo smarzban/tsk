@@ -5,7 +5,7 @@ use std::io::{IsTerminal, Read};
 
 use serde_json::Value;
 
-use crate::dispatch::CleanupError;
+use crate::dispatch::{CleanupError, HostKind};
 
 pub mod add;
 pub mod archive;
@@ -226,9 +226,9 @@ fn run_clean(args: Vec<String>) -> CliOutput {
     share_fetch_window(&input.state_dir);
     if input.merge {
         let (state_dir, mut host) = dispatch::system_host(input.state_dir);
-        let in_herdr = crate::dispatch::running_inside_herdr();
+        let host_kind = crate::dispatch::HostKind::detect();
         return merge_done_clean_with_host(
-            task, state_dir, "clean", input.json, in_herdr, &mut host,
+            task, state_dir, "clean", input.json, host_kind, &mut host,
         );
     }
     match clean::run(task, input.state_dir) {
@@ -246,10 +246,10 @@ pub fn merge_done_clean_with_host(
     state_dir: std::path::PathBuf,
     verb: &str,
     json: bool,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl crate::dispatch::DispatchHost,
 ) -> CliOutput {
-    let merged = match clean::merge_with_host(task, Some(state_dir.clone()), in_herdr, host) {
+    let merged = match clean::merge_with_host(task, Some(state_dir.clone()), host_kind, host) {
         Ok(merged) => merged,
         Err(refused) => return presenter::merge_rejected(verb, &refused),
     };
@@ -264,7 +264,7 @@ pub fn merge_done_clean_with_host(
     let done = status::run_done_with_host(
         task,
         Some(state_dir.clone()),
-        in_herdr,
+        host_kind,
         &crate::domain::actor_from_env(),
         host,
     );
@@ -306,7 +306,7 @@ pub fn merge_done_clean_with_host(
         output.stderr.push('\n');
     }
     share_fetch_window(&Some(state_dir.clone()));
-    match clean::run_with_host(task, Some(state_dir), in_herdr, host) {
+    match clean::run_with_host(task, Some(state_dir), host_kind, host) {
         Ok(result) => output
             .stdout
             .push_str(&presenter::cleaned_merged(result, Some(&merged), json).stdout),
@@ -372,8 +372,8 @@ fn run_status(args: Vec<String>) -> CliOutput {
     if input.merge {
         share_fetch_window(&input.state_dir);
         let (state_dir, mut host) = dispatch::system_host(input.state_dir);
-        let in_herdr = crate::dispatch::running_inside_herdr();
-        return merge_done_clean_with_host(task, state_dir, "status", false, in_herdr, &mut host);
+        let host_kind = crate::dispatch::HostKind::detect();
+        return merge_done_clean_with_host(task, state_dir, "status", false, host_kind, &mut host);
     }
     let state_dir = input.state_dir.clone();
     let outcome = if status == crate::domain::HumanStatus::Done {
@@ -687,6 +687,19 @@ fn run_setup<R: Read>(args: Vec<String>, stdin: &mut R, stdin_is_tty: bool) -> C
             Ok(false) => presenter::setup_probe("unbound\n".to_string()),
             Err(error) => presenter::setup_herdr_error(&error.to_string(), 1),
         },
+        Ok(crate::setup_agent::Command::RexCheck) => match crate::setup::rex::rex_setup_present() {
+            Ok(true) => presenter::setup_probe("bound\n".to_string()),
+            Ok(false) => presenter::setup_probe("unbound\n".to_string()),
+            Err(error) => presenter::setup_herdr_error(&error.to_string(), 1),
+        },
+        Ok(crate::setup_agent::Command::Rex(options)) => {
+            let mut reader = std::io::BufReader::new(stdin);
+            let mut stderr = std::io::stderr();
+            match crate::setup::rex::run(&options, &mut reader, &mut stderr, interactive) {
+                Ok(result) => presenter::setup_rex(result),
+                Err(error) => presenter::setup_herdr_error(&error.to_string(), 1),
+            }
+        }
         Ok(crate::setup_agent::Command::Interactive { json }) => {
             let mut reader = std::io::BufReader::new(stdin);
             let mut stderr = std::io::stderr();

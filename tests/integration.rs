@@ -47,6 +47,7 @@ mod quick_add_capture;
 mod quick_capture_process;
 mod scope_resolver;
 mod setup_herdr;
+mod setup_rex;
 mod setup_safety;
 mod store_persist;
 mod trash_store;

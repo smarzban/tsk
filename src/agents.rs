@@ -39,10 +39,10 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 # =============================================================================
 
 # Agent profiles let you assign a task to an agent (`@` or `!a name`).
-# In Herdr, starting an assigned project task (ctrl+s) dispatches it: tsk
-# creates a git worktree for the task, opens a Herdr workspace there, and runs
-# the profile's command. Outside Herdr, or on a desk task, a start only sets
-# the status.
+# In Herdr or Rex, starting an assigned project task (ctrl+s) dispatches it:
+# tsk creates a git worktree for the task, opens a Herdr workspace or Rex
+# session there, and runs the profile's command. Outside Herdr and Rex, or on
+# a desk task, a start only sets the status.
 #
 # Any agent that runs in a terminal works, including ones not listed here.
 # A profile needs only:
@@ -189,6 +189,13 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #   method  "merge" (the default), "squash", or "rebase"
 # [merge]
 # method = "merge"
+
+# Where dispatch puts each new worktree: `<worktrees>/<repo>/<directory>`.
+#   worktrees  an absolute path or one starting with `~`, outside every
+#              project; the default is the `worktrees` folder beside this
+#              file
+# [dispatch]
+# worktrees = "~/code/worktrees"
 
 # The group and sort a fresh board starts from (`g` and `s` change them for
 # the session only). `group` and `sort` set the desk; `project_group` and
@@ -969,6 +976,66 @@ impl BoardDefaults {
     }
 }
 
+/// Where dispatch checks out new worktrees: `[dispatch] worktrees` in `config.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DispatchSettings {
+    /// The worktree root, `~` expanded and absolute. `None`: `<state dir>/worktrees`.
+    pub worktrees: Option<PathBuf>,
+}
+
+impl DispatchSettings {
+    /// Read `[dispatch]` from `<state_dir>/config.toml`. A missing file, table, or key is the
+    /// default; only the `[dispatch]` table is validated, so a broken profile never blocks it.
+    pub fn load(state_dir: impl AsRef<Path>) -> Result<Self, AgentLoadError> {
+        let path = state_dir.as_ref().join(CONFIG_FILE);
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(source) => return Err(AgentLoadError::Io { path, source }),
+        };
+        Self::parse(&content)
+    }
+
+    fn parse(content: &str) -> Result<Self, AgentLoadError> {
+        let document: DocumentMut =
+            content
+                .parse()
+                .map_err(|source| AgentLoadError::MalformedToml {
+                    source: Box::new(source),
+                })?;
+        let invalid = |message: String| AgentLoadError::InvalidDocument {
+            message: format!("[dispatch] {message}"),
+        };
+        let Some(dispatch) = document.get("dispatch") else {
+            return Ok(Self::default());
+        };
+        let table = dispatch
+            .as_table_like()
+            .ok_or_else(|| invalid("must be a table".into()))?;
+        if let Some(key) = table
+            .iter()
+            .map(|(key, _)| key)
+            .find(|key| *key != "worktrees")
+        {
+            return Err(invalid(format!("unknown key {key:?}")));
+        }
+        let worktrees = match table.get("worktrees").map(|item| item.as_str()) {
+            None => None,
+            Some(None) => return Err(invalid("worktrees must be a string".into())),
+            Some(Some(raw)) => {
+                let expanded = PathBuf::from(crate::scope::expand_home(raw.trim()));
+                if !expanded.is_absolute() {
+                    return Err(invalid(format!(
+                        "worktrees {raw:?} must be an absolute path or start with ~"
+                    )));
+                }
+                Some(expanded)
+            }
+        };
+        Ok(Self { worktrees })
+    }
+}
+
 /// Typed failures from reading or validating `config.toml`.
 #[derive(Debug)]
 pub enum AgentLoadError {
@@ -1551,6 +1618,62 @@ command = ["pi"]
             MergeMethod::parse(&uncommented).expect("example parses"),
             MergeMethod::default()
         );
+    }
+
+    #[test]
+    fn dispatch_worktrees_defaults_expands_home_and_refuses_relative_paths() {
+        let dir = TempDir::new("dispatch-worktrees");
+        assert_eq!(DispatchSettings::load(dir.path()).unwrap().worktrees, None);
+        dir.write("[dispatch]\n");
+        assert_eq!(DispatchSettings::load(dir.path()).unwrap().worktrees, None);
+        let absolute = if cfg!(windows) { r"C:\wt" } else { "/srv/wt" };
+        dir.write(&format!("[dispatch]\nworktrees = '{absolute}'\n"));
+        assert_eq!(
+            DispatchSettings::load(dir.path()).unwrap().worktrees,
+            Some(PathBuf::from(absolute))
+        );
+        let home = crate::scope::expand_home("~");
+        if home != "~" {
+            dir.write("[dispatch]\nworktrees = \"~/code/wt\"\n");
+            assert_eq!(
+                DispatchSettings::load(dir.path()).unwrap().worktrees,
+                Some(PathBuf::from(home).join("code").join("wt"))
+            );
+        }
+        // A broken profile never blocks the setting, and the reverse.
+        dir.write(&format!(
+            "[dispatch]\nworktrees = '{absolute}'\n[agent.x]\nprompt = 1\n"
+        ));
+        assert!(DispatchSettings::load(dir.path()).is_ok());
+        dir.write("[dispatch]\nworktrees = 1\n[agent.x]\ncommand = [\"x\"]\n");
+        assert_eq!(AgentProfiles::load(dir.path()).unwrap().names().count(), 1);
+        for (content, needle) in [
+            (
+                "[dispatch]\nworktrees = \"code/wt\"\n",
+                "worktrees \"code/wt\" must be an absolute path or start with ~",
+            ),
+            ("[dispatch]\nworktrees = 1\n", "worktrees must be a string"),
+            ("[dispatch]\nroot = \"/x\"\n", "unknown key \"root\""),
+            ("dispatch = 1\n", "must be a table"),
+        ] {
+            let error = DispatchSettings::parse(content).unwrap_err().to_string();
+            assert!(error.starts_with("config.toml: [dispatch] "), "{error}");
+            assert!(error.contains(needle), "{error}");
+        }
+    }
+
+    #[test]
+    fn starter_dispatch_example_parses_once_uncommented() {
+        let uncommented = STARTER_CONFIG
+            .replace("# [dispatch]\n", "[dispatch]\n")
+            .replace("# worktrees = ", "worktrees = ");
+        assert!(uncommented.contains("[dispatch]\nworktrees = "));
+        if crate::scope::expand_home("~") != "~" {
+            let settings = DispatchSettings::parse(&uncommented).expect("example parses");
+            assert!(settings
+                .worktrees
+                .is_some_and(|path| path.ends_with(Path::new("code").join("worktrees"))));
+        }
     }
 
     #[test]

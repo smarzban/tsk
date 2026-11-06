@@ -70,7 +70,7 @@ import { parseCapture } from "./capture.js";
         assignee: "claude",
         dispatch: {
           worktree:
-            "~/.herdr/worktrees/launchpad/tsk-t12-rotate-refresh-tokens",
+            "~/.tsk/worktrees/launchpad/tsk-t12-rotate-refresh-tokens",
           branch: "tsk/t12-rotate-refresh-tokens",
           base: "origin/main",
           baseCommit: "4f9c2e1",
