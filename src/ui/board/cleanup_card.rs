@@ -322,10 +322,10 @@ fn possessive(names: &[String], one: &str, many: &str) -> String {
 }
 
 /// What the card calls the place an agent ran, one and many: a Herdr workspace is an `agent
-/// pane`, a Rex session an `agent session`.
+/// pane`, a Rex tab an `agent tab`.
 type PaneNoun = (&'static str, &'static str);
 const HERDR_PANE: PaneNoun = ("agent pane", "agent panes");
-const REX_PANE: PaneNoun = ("agent session", "agent sessions");
+const REX_PANE: PaneNoun = ("agent tab", "agent tabs");
 
 /// `close T9's agent pane`: a gone worktree's workspace, still open.
 fn close_panes(names: &[String], (one, many): PaneNoun) -> String {
