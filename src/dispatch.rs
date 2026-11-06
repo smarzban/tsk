@@ -7834,8 +7834,10 @@ mod tests {
     }
 
     /// The tab the stub opens for a dispatch, as the record keeps it.
+    #[cfg(unix)]
     const STUB_TAB: &str = "session:stub/window:w";
     /// The stub's log line for closing [`STUB_TAB`].
+    #[cfg(unix)]
     const STUB_TAB_CLOSE: &str =
         "session.close_window {\"session_id\":\"session:stub\",\"window_id\":\"window:w\"}";
 
@@ -8806,6 +8808,84 @@ mod tests {
             // Cleanup cannot tell whether the tab is open either.
             assert!(rex::workspace_exists(&root.join("rex"), STUB_TAB).is_err());
         }
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rex_block_list_that_names_no_block_is_never_an_empty_session() {
+        let (path, profiles) = profiles();
+        let (mut state, id, mut host, root, _) = rex_dispatched("blocks-unreadable", &profiles);
+        let number = state.get(id).and_then(|task| task.number).expect("number");
+        let readable = fs::read_to_string(root.join("blocks.json")).expect("blocks");
+        // A reply checked while the list was readable.
+        rex_reports(&root, &["idle"], "2.1.318", None);
+        let task = state.get(id).expect("task").clone();
+        let (_, running) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
+        assert!(matches!(running, AgentCheck::Running { .. }), "{running:?}");
+        // The agent exited, so a readable empty or bare tab would relaunch it.
+        rex_reports(&root, &[], "", None);
+        let legacy = |state: &mut DomainState| {
+            let mut record = state
+                .get(id)
+                .and_then(|task| task.dispatch.clone())
+                .expect("record");
+            record.session = "session:stub".into();
+            state.record_dispatch(id, record).expect("legacy record");
+        };
+        let mut legacy_state = state.clone();
+        legacy(&mut legacy_state);
+        let worktree = PathBuf::from(&state.get(id).unwrap().dispatch.clone().unwrap().worktree);
+        for answer in [
+            r#"{}"#.to_string(),
+            r#"{"blocks":{}}"#.to_string(),
+            format!(r#"{{"blocks":[{{"label":"t{number}-implementer","window_id":"window:w"}}]}}"#),
+        ] {
+            fs::write(root.join("blocks.json"), &answer).expect("blocks");
+            for state in [&mut state, &mut legacy_state] {
+                let task = state.get(id).expect("task").clone();
+                let (route, check) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
+                assert_eq!(route, StartRoute::Plain, "{answer}");
+                assert!(
+                    matches!(check, AgentCheck::Unreachable { .. }),
+                    "{answer}: {check:?}"
+                );
+                fs::write(root.join("rex.log"), "").expect("log");
+                let error = run_with_host(state, id, &profiles, true, HostKind::Rex, &mut host)
+                    .expect_err("refused");
+                assert!(error.to_string().contains("no readable blocks"), "{error}");
+                let log = rex_log(&root);
+                assert!(
+                    !log.contains("new_window")
+                        && !log.contains("new_split")
+                        && !log.contains("session.create"),
+                    "{answer}: {log}"
+                );
+                // A reply is not typed into a session whose blocks cannot be read.
+                let delivery = deliver_reply(&task, &running, "unblocked", Some("yes"), &mut host);
+                assert!(
+                    matches!(&delivery, Some(Delivery::Unreachable(_))),
+                    "{answer}: {delivery:?}"
+                );
+                assert!(!rex_log(&root).contains("block.event"), "{answer}");
+            }
+            // Cleanup of a dispatch from before tabs cannot tell what the session holds: it
+            // refuses before the worktree, and the session stays.
+            fs::write(root.join("rex.log"), "").expect("log");
+            let error = clean_with_host(&mut legacy_state, id, HostKind::Rex, &mut host)
+                .expect_err("refused");
+            assert!(error.to_string().contains("no readable blocks"), "{error}");
+            assert!(!rex_log(&root).contains("session kill"), "{answer}");
+            assert!(worktree.exists(), "{answer}: the worktree stays");
+            assert!(rex::workspace_exists(&root.join("rex"), "session:stub").is_err());
+        }
+        // An empty list stays a readable, empty session.
+        fs::write(root.join("blocks.json"), r#"{"blocks":[]}"#).expect("blocks");
+        let task = legacy_state.get(id).expect("task").clone();
+        let (route, _) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
+        assert!(matches!(route, StartRoute::AgentGone { .. }), "{route:?}");
+        fs::write(root.join("blocks.json"), readable).expect("blocks");
         fs::remove_dir_all(root).expect("cleanup");
         fs::remove_dir_all(path).expect("cleanup");
     }
