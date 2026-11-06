@@ -141,7 +141,7 @@ A refusal prints a stable code first: `tsk status: unknown-task: T12 is not on t
 the code, never the message. `tsk help <command>` lists each command's codes. `project`, `trash`,
 `backup`, and `restore` refuse with a message only. After exit 3 from `dispatch`, or from a start that
 dispatched, a message saying `the agent may still run` means it may run without its record: look for
-its workspace or tab (`herdr agent get t12-<assignee>` in Herdr, `rex window ls` in Rex) and
+its workspace or tab (`herdr agent get t12-<assignee>` in Herdr, `rex window ls -A` in Rex) and
 read the task before retrying.
 
 ## Refine a task
