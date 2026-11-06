@@ -16,6 +16,7 @@ your agent the task number when you are ready. New tasks start in the open inbox
 
 In Herdr, `prefix+t` opens or focuses your workspace's board, even across tabs.
 Other workspaces keep their own view of the same tasks. `prefix+a` opens quick capture.
+In Rex, `alt+t` opens the board beside the focused pane and `alt+a` opens quick capture.
 Click a task's `T` number to copy it, then paste it into your agent conversation.
 
 ### Room to think
@@ -23,18 +24,18 @@ Click a task's `T` number to copy it, then paste it into your agent conversation
 ![A wide tsk board with the selected task's notes and steps open alongside it](docs/images/wide-task-page.png)
 
 In a wide pane, click a task or press `→` or `l` to open it beside the board; `←` or `h`
-brings you back. `Enter` opens the task full screen and `Esc` returns. Without Herdr,
-run `tsk` in any terminal.
+brings you back. `Enter` opens the task full screen and `Esc` returns. Outside Herdr
+or Rex, run `tsk` in any terminal.
 
 ### From task to implementation
 
 Define your agents once in `config.toml`, press `@` to assign a task, and press
 `ctrl+s` to start it. Starting an assigned task dispatches it: tsk creates a Git
-worktree and a Herdr workspace for the task and launches the agent there.
-`ctrl+d` marks the task done; on a live dispatch it offers the cleanup card. Cleanup
-closes the workspace and removes the worktree, and deletes the branch only when it is
-merged. It never touches uncommitted changes. Dispatch runs in Herdr; on Windows it
-is a preview.
+worktree and a Herdr workspace or Rex tab for the task and launches the agent
+there. `ctrl+d` marks the task done; on a live dispatch it offers the cleanup card.
+Cleanup closes the workspace or tab and removes the worktree, and deletes the branch
+only when it is merged. It never touches uncommitted changes. Dispatch runs in Herdr or
+Rex; on Windows it is a preview. [Dispatch](https://gettsk.sh/docs/dispatch/).
 
 ## Quickstart
 
@@ -58,8 +59,8 @@ Windows 10/11 (ARM64 or x86-64), in a PowerShell window:
 irm https://www.gettsk.sh/install.ps1 | iex
 ```
 
-The installers add tsk to your PATH and offer to set up Herdr and your coding agents
-when they find them. If prompted, reopen your terminal. Options, upgrades, and
+The installers add tsk to your PATH and offer to set up Herdr, Rex, and your coding
+agents when they find them. If prompted, reopen your terminal. Options, upgrades, and
 uninstall are in the [install guide](https://gettsk.sh/docs/install/).
 
 ### Add to Herdr
@@ -70,6 +71,11 @@ uninstall are in the [install guide](https://gettsk.sh/docs/install/).
 tsk setup herdr
 herdr server reload-config
 ```
+
+### Add to Rex
+
+With [Rex](https://www.superlogical.com/rex/) running, `tsk setup rex` binds `alt+t` to the
+board and `alt+a` to quick capture. [Rex setup](https://gettsk.sh/docs/install/#add-to-rex).
 
 ### Give your agent the skill
 
@@ -87,7 +93,7 @@ name it: `tsk setup pi`, or `omp`, `claude`, `cursor`, `grok`, `codex`, or `open
 
 ### Open the board
 
-Run `tsk`, or press `prefix+t` in Herdr. No project setup needed: inside a Git
+Run `tsk`, or press `prefix+t` in Herdr or `alt+t` in Rex. No project setup needed: inside a Git
 repository, tsk opens that project. Outside Git, it opens your desk, with the current
 directory one tab away.
 
@@ -97,7 +103,7 @@ directory one tab away.
 tsk add -t "your task title"
 ```
 
-Or press `+` on the board, `prefix+a` in Herdr, or ask your agent: “Add a task to fix
+Or press `+` on the board, `prefix+a` in Herdr, `alt+a` in Rex, or ask your agent: “Add a task to fix
 the login timeout, with steps to reproduce the bug.”
 
 ## Usage

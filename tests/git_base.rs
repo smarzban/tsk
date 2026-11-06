@@ -5,6 +5,7 @@ use crate::stub;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tsk_tui::dispatch::HostKind;
 use tsk_tui::git_base::*;
 static SEQ: AtomicU64 = AtomicU64::new(0);
 struct Repo {
@@ -241,12 +242,15 @@ fn cleanup_fetches_recorded_upstream_without_a_local_pull_and_keeps_squash_branc
         base_ref: Some("refs/remotes/origin/main".into()),
         base_commit: Some(initial_local.clone()),
         base_remote: Some("origin".into()),
-        herdr_workspace_id: "not-used".into(),
+        host: tsk_tui::domain::AgentHost::Herdr,
+        session: "not-used".into(),
         at: std::time::SystemTime::now(),
         cleaned: false,
     };
     let mut host = SystemDispatchHost::in_state_dir(r.root.join("state"));
-    let inspection = host.inspect_cleanup(&r.local, &record, false).unwrap();
+    let inspection = host
+        .inspect_cleanup(&r.local, &record, HostKind::Standalone)
+        .unwrap();
     assert!(
         inspection.branch_merged,
         "merge is visible after fetch without pull"
@@ -283,7 +287,7 @@ fn cleanup_fetches_recorded_upstream_without_a_local_pull_and_keeps_squash_branc
     };
     assert!(
         !host
-            .inspect_cleanup(&r.local, &record, false)
+            .inspect_cleanup(&r.local, &record, HostKind::Standalone)
             .unwrap()
             .branch_merged
     );
@@ -417,7 +421,8 @@ fn footer_default_cache_refreshes_after_dispatch_updates_origin_head() {
                 base_ref: Some(base.full_ref),
                 base_commit: base.commit,
                 base_remote: base.remote,
-                herdr_workspace_id: "not-opened".into(),
+                host: tsk_tui::domain::AgentHost::Herdr,
+                session: "not-opened".into(),
                 at: std::time::SystemTime::now(),
                 cleaned: false,
             },
@@ -605,7 +610,7 @@ fn fresh_validation_fetches_remote_but_board_validation_is_local_only() {
 }
 
 #[test]
-fn dispatch_exact_base_ref_is_optional_in_v6_and_round_trips() {
+fn dispatch_exact_base_ref_is_optional_and_round_trips() {
     use tsk_tui::domain::{Dispatch, STORE_FORMAT_VERSION};
     let r = repo();
     let old = serde_json::json!({
@@ -613,7 +618,7 @@ fn dispatch_exact_base_ref_is_optional_in_v6_and_round_trips() {
         "herdr_workspace_id": "unused", "at": [0, 0]
     });
     let mut dispatch: Dispatch = serde_json::from_value(old).unwrap();
-    assert_eq!(STORE_FORMAT_VERSION, 6);
+    assert_eq!(STORE_FORMAT_VERSION, 16);
     assert_eq!(dispatch.base_ref, None);
     assert!(serde_json::to_value(&dispatch)
         .unwrap()
@@ -690,13 +695,14 @@ fn cleanup_confirmed_during_a_background_check_waits_for_that_one_fetch() {
         base_ref: Some("refs/remotes/origin/main".into()),
         base_commit: None,
         base_remote: Some("origin".into()),
-        herdr_workspace_id: "not-used".into(),
+        host: tsk_tui::domain::AgentHost::Herdr,
+        session: "not-used".into(),
         at: std::time::SystemTime::now(),
         cleaned: false,
     };
     let mut host = SystemDispatchHost::in_state_dir(r.root.join("state"));
     let cached = host
-        .inspect_cleanup_cached(&r.local, &record, false)
+        .inspect_cleanup_cached(&r.local, &record, HostKind::Standalone)
         .unwrap();
     assert!(cached.branch_merged && cached.warning.is_none());
     assert!(!counter.exists(), "cached inspection never fetches");
@@ -709,7 +715,9 @@ fn cleanup_confirmed_during_a_background_check_waits_for_that_one_fetch() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     // `y` arrives mid-fetch: its inspection waits for that fetch and shares its failure.
-    let confirmed = host.inspect_cleanup(&r.local, &record, false).unwrap();
+    let confirmed = host
+        .inspect_cleanup(&r.local, &record, HostKind::Standalone)
+        .unwrap();
     assert_eq!(
         std::fs::read_to_string(&counter).unwrap().lines().count(),
         1
@@ -788,14 +796,15 @@ fn a_background_merge_check_sees_a_remote_merge_the_cached_refs_miss() {
         base_ref: Some("refs/remotes/origin/main".into()),
         base_commit: None,
         base_remote: Some("origin".into()),
-        herdr_workspace_id: "not-used".into(),
+        host: tsk_tui::domain::AgentHost::Herdr,
+        session: "not-used".into(),
         at: std::time::SystemTime::now(),
         cleaned: false,
     };
     let mut host = SystemDispatchHost::in_state_dir(r.root.join("state"));
     assert!(
         !host
-            .inspect_cleanup_cached(&r.local, &record, false)
+            .inspect_cleanup_cached(&r.local, &record, HostKind::Standalone)
             .unwrap()
             .branch_merged,
         "the cached refs predate the remote merge"

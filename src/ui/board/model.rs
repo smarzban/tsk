@@ -1773,7 +1773,10 @@ impl BulkDispatchRun {
                 .unrecorded
                 .iter()
                 .map(|(identifier, workspace)| {
-                    format!("{identifier} (agent running in workspace {workspace})")
+                    format!(
+                        "{identifier} (agent running in {} {workspace})",
+                        crate::domain::AgentHost::noun_of(workspace)
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -2076,6 +2079,20 @@ impl CleanupRun {
         format!("cleaning {} of {total}…", (landed + 1).min(total.max(1)))
     }
 
+    /// What this run's agents ran in: a Herdr `workspace` or a Rex `session`. A cleanup only
+    /// touches records of the host it runs in, so every row shares one.
+    pub fn noun(&self) -> &'static str {
+        self.plan
+            .first()
+            .map(|row| row.record.host)
+            .or_else(|| {
+                self.rows
+                    .iter()
+                    .find_map(|row| row.inspected.as_ref().map(|record| record.host))
+            })
+            .map_or("workspace", crate::domain::AgentHost::noun)
+    }
+
     /// The merge `m` made for a task, if any.
     pub fn merged_for(&self, identifier: &str) -> Option<&MergedPr> {
         self.merged
@@ -2108,7 +2125,7 @@ impl CleanupRun {
                     "cleaned".into()
                 });
                 match workspace {
-                    Some(Ok(())) => parts.push("workspace closed".into()),
+                    Some(Ok(())) => parts.push(format!("{} closed", self.noun())),
                     Some(Err(why)) => parts.push(why.clone()),
                     None => {}
                 }
@@ -2255,19 +2272,16 @@ impl CleanupRun {
             }
             if closed > 0 {
                 parts.push(format!(
-                    "{closed} {} closed",
-                    if closed == 1 {
-                        "workspace"
-                    } else {
-                        "workspaces"
-                    }
+                    "{closed} {}{} closed",
+                    self.noun(),
+                    if closed == 1 { "" } else { "s" }
                 ));
             }
             if !open.is_empty() {
                 parts.push(if named {
-                    format!("workspace kept {}", open.join(", "))
+                    format!("{} kept {}", self.noun(), open.join(", "))
                 } else {
-                    format!("workspace kept {}", open.len())
+                    format!("{} kept {}", self.noun(), open.len())
                 });
             }
             parts.join(" · ")

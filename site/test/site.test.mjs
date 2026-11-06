@@ -402,7 +402,7 @@ test("landing agents section points at markdown twins", async () => {
   assert.doesNotMatch(page, /class="band[^"]*" id="agents"/);
 });
 
-test("quickstarts use the installer, Herdr setup, and task capture", async () => {
+test("quickstarts use the installer, Herdr and Rex setup, and task capture", async () => {
   for (const file of ["../../README.md", "../src/content/docs/docs/install.md", "../src/pages/index.astro"]) {
     const text = await read(file);
     const commands = text.replaceAll("&amp;", "&").replaceAll("&#123;", "{").replaceAll("&#125;", "}");
@@ -411,7 +411,7 @@ test("quickstarts use the installer, Herdr setup, and task capture", async () =>
     // Defender flags `powershell -c "irm ... | iex"` as Trojan:Win32/Commando.A!ml; document the in-session form.
     assert.ok(!commands.includes('powershell -c "irm'), file);
     assert.ok(!text.includes("https://gettsk.sh/install.ps1"), file);
-    for (const command of ["brew install smarzban/tap/tsk", "tsk setup herdr", "herdr server reload-config", 'tsk add -t "your task title"', "prefix+t", "prefix+a"]) {
+    for (const command of ["brew install smarzban/tap/tsk", "tsk setup herdr", "herdr server reload-config", 'tsk add -t "your task title"', "prefix+t", "prefix+a", "tsk setup rex", "alt+t", "alt+a"]) {
       assert.ok(text.includes(command), `${file}: ${command}`);
     }
     assert.ok(!text.includes("-o install-tsk.sh"), file);

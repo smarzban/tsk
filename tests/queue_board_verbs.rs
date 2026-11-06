@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tsk_tui::dispatch::HostKind;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
@@ -189,7 +190,7 @@ impl DispatchHost for CleanupHost {
         &mut self,
         _: &Path,
         _: &Dispatch,
-        _: bool,
+        _: HostKind,
     ) -> Result<CleanupInspection, String> {
         self.inspections += 1;
         self.inspection
@@ -197,7 +198,7 @@ impl DispatchHost for CleanupHost {
             .ok_or_else(|| "inspection missing".into())
     }
 
-    fn remove_herdr_worktree(&mut self, _: &str) -> Result<(), String> {
+    fn remove_host_worktree(&mut self, _: &str) -> Result<(), String> {
         self.removed += 1;
         Ok(())
     }
@@ -352,7 +353,8 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
                 base_commit: None,
                 base_remote: None,
                 base_ref: None,
-                herdr_workspace_id: "w1".into(),
+                host: tsk_tui::domain::AgentHost::Herdr,
+                session: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
             },
@@ -385,7 +387,7 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
         ..CleanupHost::default()
     };
     assert_eq!(
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, first, true, &mut host)
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, first, HostKind::Herdr, &mut host)
             .expect("bulk bypass"),
         CleanupOffer::None
     );
@@ -408,7 +410,7 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
     .expect("select dispatched task");
     apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open page");
     assert_eq!(
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, first, true, &mut host)
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, first, HostKind::Herdr, &mut host)
             .expect("task page is cursor-only despite retained marks"),
         CleanupOffer::Prompted
     );
@@ -417,7 +419,7 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
 
     apply_intent(&mut domain, &mut model, BoardIntent::CloseLayer, None).expect("close page");
     assert_eq!(
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, first, true, &mut host)
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, first, HostKind::Herdr, &mut host)
             .expect("offer"),
         CleanupOffer::Prompted
     );
@@ -444,7 +446,7 @@ fn cleanup_prompt_is_cursor_only_and_dirty_confirmation_still_completes() {
         !screen.contains("remove worktree"),
         "a dirty card never claims anything goes:\n{screen}"
     );
-    let run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+    let run = confirm_cleanup_with_host(&mut domain, &mut model, true, HostKind::Herdr, &mut host)
         .expect("completion")
         .expect("card")
         .run
@@ -494,7 +496,7 @@ impl DispatchHost for MergeCheckHost {
         &mut self,
         _: &Path,
         _: &Dispatch,
-        _: bool,
+        _: HostKind,
     ) -> Result<CleanupInspection, String> {
         Ok(self.fetched.clone())
     }
@@ -503,7 +505,7 @@ impl DispatchHost for MergeCheckHost {
         &mut self,
         _: &Path,
         _: &Dispatch,
-        _: bool,
+        _: HostKind,
     ) -> Result<CleanupInspection, String> {
         Ok(self.cached.clone())
     }
@@ -512,7 +514,7 @@ impl DispatchHost for MergeCheckHost {
         Some(self.check.clone())
     }
 
-    fn remove_herdr_worktree(&mut self, _: &str) -> Result<(), String> {
+    fn remove_host_worktree(&mut self, _: &str) -> Result<(), String> {
         Ok(())
     }
 
@@ -543,7 +545,8 @@ fn dispatched_board_for_merge_check(label: &str) -> (DomainState, BoardModel, uu
                 base_commit: None,
                 base_remote: Some("origin".into()),
                 base_ref: Some("refs/remotes/origin/main".into()),
-                herdr_workspace_id: "w1".into(),
+                host: tsk_tui::domain::AgentHost::Herdr,
+                session: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
             },
@@ -589,7 +592,7 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
     let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("card-check");
     let mut host = merge_check_host(false, true);
     assert_eq!(
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
             .expect("offer"),
         CleanupOffer::Prompted
     );
@@ -621,7 +624,8 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
     // Esc drops the check with its card; a late verdict reaches no other prompt.
     apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("cancel");
     host.check = MergeCheck::default();
-    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("reoffer");
+    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
+        .expect("reoffer");
     let stale = host.check.clone();
     apply_intent(&mut domain, &mut model, BoardIntent::CancelCleanup, None).expect("cancel");
     stale.complete(MergeVerdict {
@@ -640,12 +644,14 @@ fn cleanup_card_opens_from_cached_refs_and_a_background_check_fills_merged_statu
 fn a_confirmed_card_reports_each_row_and_esc_closes_it_once_finished() {
     let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("progress");
     let mut host = merge_check_host(true, true);
-    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("offer");
-    let mut run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
-        .expect("completion")
-        .expect("card")
-        .run
-        .expect("y plans a run");
+    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
+        .expect("offer");
+    let mut run =
+        confirm_cleanup_with_host(&mut domain, &mut model, true, HostKind::Herdr, &mut host)
+            .expect("completion")
+            .expect("card")
+            .run
+            .expect("y plans a run");
     run.started = true;
     run.rows[0].state = CleanupRowState::Removing;
     model.begin_cleanup_run(run);
@@ -680,12 +686,14 @@ fn a_refused_cleanup_on_the_card_says_why_once_for_every_refusal() {
     // Some refusals carry `kept:` in their CLI wording; the card writes its own lead.
     let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("kept-once");
     let mut host = merge_check_host(true, true);
-    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("offer");
-    let mut run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
-        .expect("completion")
-        .expect("card")
-        .run
-        .expect("y plans a run");
+    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
+        .expect("offer");
+    let mut run =
+        confirm_cleanup_with_host(&mut domain, &mut model, true, HostKind::Herdr, &mut host)
+            .expect("completion")
+            .expect("card")
+            .run
+            .expect("y plans a run");
     run.started = true;
     run.settled = true;
     model.begin_cleanup_run(run);
@@ -712,16 +720,17 @@ fn cleanup_completed_while_still_checking_never_deletes_on_the_cached_verdict() 
     // Cached refs say merged, but no check has confirmed it (a queued `y` past its bound).
     let (mut domain, mut model, id, dir) = dispatched_board_for_merge_check("confirm-early");
     let mut host = merge_check_host(true, false);
-    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).expect("offer");
+    offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
+        .expect("offer");
     assert!(model.cleanup_prompt().unwrap().checking());
-    let plan = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+    let plan = confirm_cleanup_with_host(&mut domain, &mut model, true, HostKind::Herdr, &mut host)
         .expect("completion")
         .expect("card")
         .run
         .expect("y plans the clean row")
         .plan;
     let job = CleanupJob::new(plan.len());
-    tsk_tui::dispatch::run_cleanup_job(&job, &plan, true, &mut host);
+    tsk_tui::dispatch::run_cleanup_job(&job, &plan, HostKind::Herdr, &mut host);
     let (slots, settled) = job.snapshot().expect("job idle");
     assert!(settled);
     let CleanupSlot::Done(Ok(result)) = &slots[0] else {
@@ -753,7 +762,8 @@ fn missing_worktree_converges_cleaned_and_done_in_one_board_save_without_a_popup
                 base_commit: None,
                 base_remote: None,
                 base_ref: None,
-                herdr_workspace_id: "w1".into(),
+                host: tsk_tui::domain::AgentHost::Herdr,
+                session: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
             },
@@ -789,7 +799,7 @@ fn missing_worktree_converges_cleaned_and_done_in_one_board_save_without_a_popup
     };
 
     assert!(matches!(
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
             .expect("missing worktree converges"),
         CleanupOffer::MissingConverged { .. }
     ));
@@ -826,7 +836,8 @@ fn cleanup_offer_skips_done_and_archived_tasks_without_inspection_or_mutation() 
                     base_commit: None,
                     base_remote: None,
                     base_ref: None,
-                    herdr_workspace_id: "w1".into(),
+                    host: tsk_tui::domain::AgentHost::Herdr,
+                    session: "w1".into(),
                     at: SystemTime::now(),
                     cleaned: false,
                 },
@@ -868,7 +879,7 @@ fn cleanup_offer_skips_done_and_archived_tasks_without_inspection_or_mutation() 
         };
 
         assert_eq!(
-            offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
                 .expect("no offer"),
             CleanupOffer::None
         );
@@ -893,7 +904,8 @@ fn cleanup_offer_defers_to_the_archived_project_read_only_refusal() {
                 base_commit: None,
                 base_remote: None,
                 base_ref: None,
-                herdr_workspace_id: "w1".into(),
+                host: tsk_tui::domain::AgentHost::Herdr,
+                session: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
             },
@@ -930,7 +942,7 @@ fn cleanup_offer_defers_to_the_archived_project_read_only_refusal() {
     };
 
     assert_eq!(
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
             .expect("read-only skips cleanup"),
         CleanupOffer::None
     );
@@ -962,7 +974,8 @@ fn successful_popup_cleanup_saves_completion_first_and_undo_reverses_only_status
                 base_commit: None,
                 base_remote: None,
                 base_ref: None,
-                herdr_workspace_id: "w1".into(),
+                host: tsk_tui::domain::AgentHost::Herdr,
+                session: "w1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
             },
@@ -997,10 +1010,11 @@ fn successful_popup_cleanup_saves_completion_first_and_undo_reverses_only_status
         ..CleanupHost::default()
     };
     assert_eq!(
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host).unwrap(),
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
+            .unwrap(),
         CleanupOffer::Prompted
     );
-    let run = confirm_cleanup_with_host(&mut domain, &mut model, true, true, &mut host)
+    let run = confirm_cleanup_with_host(&mut domain, &mut model, true, HostKind::Herdr, &mut host)
         .unwrap()
         .unwrap()
         .run
@@ -1019,7 +1033,7 @@ fn successful_popup_cleanup_saves_completion_first_and_undo_reverses_only_status
         &mut domain,
         &mut model,
         &mut recovery,
-        true,
+        HostKind::Herdr,
         &mut host,
     );
     assert!(!recovery.is_pending());
@@ -1062,7 +1076,8 @@ fn dispatched_task_page_renders_the_record_and_assigned_legend() {
                 base_commit: None,
                 base_remote: None,
                 base_ref: None,
-                herdr_workspace_id: "w9".into(),
+                host: tsk_tui::domain::AgentHost::Herdr,
+                session: "w9".into(),
                 at: SystemTime::now(),
                 cleaned: false,
             },
@@ -1111,7 +1126,8 @@ fn dispatched_task_page_hides_record_during_notes_edit_and_restores_it_in_view_m
                 base_commit: None,
                 base_remote: None,
                 base_ref: None,
-                herdr_workspace_id: "w9".into(),
+                host: tsk_tui::domain::AgentHost::Herdr,
+                session: "w9".into(),
                 at: SystemTime::now(),
                 cleaned: false,
             },

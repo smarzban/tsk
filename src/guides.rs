@@ -97,7 +97,7 @@ pub const CATALOG: [Guide; 4] = [
                 **Hand a task to an agent**\n\
                 - Agent profiles in `config.toml`, beside your tasks (`~/.tsk` on macOS and Linux), say how to launch each agent. Remove the `#` from a starter example to use it.\n\
                 - Press `@` on a task to assign it to a profile.\n\
-                - In Herdr, `ctrl+s` on an assigned project task starts it and launches the agent in its own Git worktree.\n\
+                - In Herdr or Rex, `ctrl+s` on an assigned project task starts it and launches the agent in its own Git worktree.\n\
                 - When the agent blocks, press `r` on the task to answer, then `ctrl+s` to send the answer and unblock.\n\
                 - When it sends work to review, mark each check with `Enter`. `ctrl+d` approves; `r` then `ctrl+s` sends it back with feedback.\n\
                 \n\

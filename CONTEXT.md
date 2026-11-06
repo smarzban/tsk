@@ -184,18 +184,18 @@ this file names things.
 - **unassigned**: carrying no assignee.
 - **dispatch**: what starting an assigned, never-dispatched task does (`ctrl+s`,
   `tsk status T12 started`, `tsk dispatch`). It creates a worktree from the task's base,
-  launches the assignee's profile there in a Herdr workspace, records the launch on the
+  launches the assignee's profile there in a Herdr workspace or a Rex tab (in the session tsk runs in), records the launch on the
   task, and sets `started`.
 - **start route**: how a start treats a task: plain for an unassigned task, a running agent,
   or the agent's own start; dispatch for an assigned task never dispatched; ask (board) or
   refuse `agent-gone` (CLI) when a dispatched agent is gone.
 - **dispatch record**: what dispatch writes on the task: the rendered command, worktree
-  path, branch, base and starting commit, Herdr workspace, and time. It stays through later
+  path, branch, base and starting commit, host (Herdr or Rex) and its workspace or tab (a bare session for a Rex dispatch from before tabs), and time. It stays through later
   status changes and is marked cleaned after cleanup; a stale record renders as-is.
 - **dispatched**: carrying a dispatch record. Independent of human status.
 - **base**: the branch a dispatch starts from: the task's explicit base, otherwise the
   repository's remote default (`origin/HEAD`).
-- **cleanup**: removing a dispatch's worktree, Herdr workspace, and merged branch, offered
+- **cleanup**: removing a dispatch's worktree, Herdr workspace or Rex tab, and merged branch, offered
   when the task is completed. It never removes uncommitted work or a branch it cannot
   confirm is merged, by Git ancestry or, through `gh`, a pull request merged at exactly the
   branch tip.

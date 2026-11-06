@@ -1,11 +1,11 @@
 ---
 title: Dispatch
-description: Hand a task to an agent in its own worktree and Herdr workspace, then merge and clean up.
+description: Hand a task to an agent in its own worktree and a Herdr workspace or Rex tab, then merge and clean up.
 ---
 
-Dispatch hands a task to a coding agent. The agent gets its own Git branch, worktree, and Herdr workspace. When you complete the task, tsk tidies them up.
+Dispatch hands a task to a coding agent. The agent gets its own Git branch, worktree, and a Herdr workspace or Rex tab. When you complete the task, tsk tidies them up.
 
-Dispatch needs [Herdr](/docs/install/#add-to-herdr), a task in a project that is a Git repository, and an agent assignee. Assigning works everywhere. On Windows, dispatch is a [preview](#windows-preview).
+Dispatch needs [Herdr](/docs/install/#add-to-herdr) or [Rex](/docs/install/#add-to-rex), a task in a project that is a Git repository, and an agent assignee. Assigning works everywhere. On Windows, dispatch is a [preview](#windows-preview).
 
 ## Assign
 
@@ -51,11 +51,13 @@ The picker lists every person ever assigned, so a typo stays. In the picker, sel
 Start an assigned task to dispatch it: `ctrl+s`, palette **set status: started**, or [`tsk status T12 started`](/docs/cli/#status). A dispatch:
 
 1. creates a branch and worktree from the task's [base branch](#base-branch),
-2. opens a Herdr workspace in the worktree,
+2. opens a Herdr workspace in the worktree, or in Rex a tab there, in the session you dispatch from,
 3. runs the assignee's profile command there,
 4. records the dispatch on the task and sets it to started, in one save.
 
-If the launch fails, the task stays unstarted with no dispatch, and the status row says why. tsk removes the worktree, workspace, and new branch that launch created. A worktree with changes stays, but its workspace still closes. The message names anything left. A started task with a live dispatch shows `◉` instead of `●`.
+If the launch fails, the task stays unstarted with no dispatch, and the status row says why. tsk removes the worktree, workspace, and new branch that launch created. A worktree with changes stays, but its workspace or tab still closes. The message names anything left. A started task with a live dispatch shows `◉` instead of `●`.
+
+If Rex answers without naming the tab it opened, the worktree and branch stay, since the agent may run there. Check the session before you dispatch again.
 
 The agent's instructions come from the profile's prompt. Without one, a default prompt asks it to open a pull request into the base and set the task to review. A profile's `prompt_append` adds your own lines to the default, and a project's settings can add more and name who gets the review. See [prompt and placeholders](/docs/storage/#prompt-and-placeholders) and [project settings](/docs/storage/#project-settings). `tsk dispatch T12 --show-prompt` prints what an agent would get.
 
@@ -74,10 +76,10 @@ start undone · T12 back to ready · @claude kept running
 | Assigned to an agent, never dispatched | Dispatches |
 | Dispatched, agent still running | Sets started |
 | Dispatched, agent gone | Asks first: [relaunch](#relaunch) |
-| Assigned, outside Herdr or on the desk | Sets started; the status row says why nothing launched |
+| Assigned, outside Herdr or Rex, or on the desk | Sets started; the status row says why nothing launched |
 | Done or archived | Sets started; never launches |
 
-When Herdr cannot say whether the agent still runs, the start is plain and launches nothing. Outside Herdr the status row reads `started · no launch: not in Herdr`. Other refusals leave the task unstarted: an unknown agent, a base that cannot be resolved, or a Git or Herdr failure.
+When the host cannot say whether the agent still runs, the start is plain and launches nothing. Outside Herdr or Rex the status row reads `started · no launch: outside Herdr or Rex`. Other refusals leave the task unstarted: an unknown agent, a base that cannot be resolved, or a Git, Herdr, or Rex failure.
 
 ### Names
 
@@ -88,12 +90,16 @@ Names come from the task number and title. For T12 `Fix login timeout`, assigned
 | Branch | `tsk/t12-fix-login-timeout` |
 | Worktree directory | `tsk-t12-fix-login-timeout` |
 | Herdr workspace | `T12 Fix login timeout` |
-| Herdr agent | `t12-claude` |
+| Herdr agent, Rex tab and its pane | `t12-claude` |
 
 - The title part keeps whole words within 30 characters.
 - The worktree directory keeps only ASCII letters and digits.
 - When a name is taken, tsk appends `-2`, `-3`, and so on.
+- The worktree goes under `<worktrees>/<repo>/`, such as `~/.tsk/worktrees/app/tsk-t12-fix-login-timeout`. `<worktrees>` is the `worktrees` folder in the [state directory](/docs/storage/#location), or the folder set in [`[dispatch]`](/docs/storage/#worktree-location).
 - tsk names the agent once Herdr detects it, so `herdr agent get t12-claude` finds it. If Herdr detects no agent within 30 seconds, it stays unnamed.
+- In Rex, the tab opens in the session you dispatch from, without taking focus. The tab and its pane carry the agent name from the start. tsk finds the agent by its pane name, so renaming the tab is safe.
+- In Rex, the pane stays open after the agent exits, so an error it printed stays readable. Cleanup closes the tab, never the session.
+- A Rex dispatch made before tabs keeps its own session: tsk checks and relaunches into that whole session. Cleanup closes that session only while it holds one tab with the task's agent and no other task's pane. Otherwise it closes nothing: close the session yourself once its work is done, and cleanup finishes.
 
 The task page shows the worktree, the branch, and where the dispatch started, such as `from origin/main @ 3333b79`.
 
@@ -134,7 +140,7 @@ A launch row reads like `@claude  from default (main)`, with `checking…` while
 
 ## Relaunch
 
-Starting a dispatched task whose agent is gone opens a card. The agent is gone when its workspace was closed, its pane has no agent, or its worktree was cleaned up.
+Starting a dispatched task whose agent is gone opens a card. The agent is gone when its workspace or Rex tab was closed, its pane has no agent, or its worktree was cleaned up. In Rex, it is also gone when its pane was closed and nothing else in its tab runs a program.
 
 ```text
 @claude is no longer running.
@@ -142,14 +148,26 @@ Starting a dispatched task whose agent is gone opens a card. The agent is gone w
 ▸ y  relaunch @claude in the same worktree · start T12
   n  start T12 · don't relaunch @claude
 
-worktree  ~/.herdr/worktrees/app/tsk-t12-fix-login-timeout
+worktree  ~/.tsk/worktrees/app/tsk-t12-fix-login-timeout
 
                                         esc cancel
 ```
 
 `y` relaunches and starts, `n` only starts, and `Esc` changes nothing. Palette **dispatch again** relaunches the cursor task without asking.
 
-A relaunch keeps the recorded base and names, even if the task's base changed since. It opens a new workspace on the kept worktree. After a cleanup, it recreates the worktree from the kept branch, or from the original starting commit when the branch was deleted.
+A relaunch keeps the recorded base and names, even if the task's base changed since. In Herdr, it opens a new workspace on the kept worktree when the old one is closed. After a cleanup, it recreates the worktree from the kept branch, or from the original starting commit when the branch was deleted.
+
+In Rex, a relaunch picks where the agent runs from what is left in its tab. Panes in your other tabs never count:
+
+| Tab | Relaunch |
+| --- | --- |
+| Holds a bare shell in the worktree, as after a Rex restart | Runs the agent in that shell |
+| The agent exited and its pane stayed open | Opens a new agent pane in the same tab, then closes the old one. Your other panes stay |
+| The agent's pane was closed, and every other pane in the tab holds a bare shell or a finished program | Opens a new agent pane in the same tab. Your other panes stay |
+| Closed, or no pane left in it, while its session is open | Opens a new tab in that session |
+| Its session is closed | Opens a new tab in the session you relaunch from |
+| Something else runs in the agent's pane, or its shell left the worktree | Refuses and launches nothing |
+| No pane carries the task's agent name, and another pane in the tab runs a program | Refuses, naming that pane and its program: it may be the agent renamed. Quit it or close that pane to relaunch |
 
 ## Decision cards
 
@@ -174,19 +192,19 @@ PR #42 is still open:
   y  don't merge · mark done · remove worktree and agent pane · keep the branch and the PR open
   n  don't merge · mark done · keep everything
 
-worktree  ~/.herdr/worktrees/app/tsk-t12-fix-login-timeout
+worktree  ~/.tsk/worktrees/app/tsk-t12-fix-login-timeout
 branch    tsk/t12-fix-login-timeout
 
                                                      esc cancel
 ```
 
-On the card, **agent pane** means the dispatch's Herdr workspace.
+On the card, **agent pane** means the dispatch's Herdr workspace. For a Rex dispatch the card says **agent tab**.
 
 | Where the branch stands | Options |
 | --- | --- |
 | Open pull request | `m` merges it ([below](#merge-the-pull-request)); `y` keeps the branch and pull request; `n` keeps everything |
-| Merged, such as `Merged into main ✓` | `y` removes the worktree, branch, and workspace; `n` keeps everything |
-| Not merged, or the merge cannot be confirmed | `y` removes the worktree and workspace and keeps the branch; `n` keeps everything |
+| Merged, such as `Merged into main ✓` | `y` removes the worktree, branch, and workspace or tab; `n` keeps everything |
+| Not merged, or the merge cannot be confirmed | `y` removes the worktree and workspace or tab, and keeps the branch; `n` keeps everything |
 | Uncommitted files in the worktree | Only `n`: commit or discard them first to tidy up |
 
 Every option marks the task done, and options that do not apply are left out. Without the GitHub CLI (`gh`) logged in, the card never mentions a pull request.
@@ -197,14 +215,14 @@ The task is marked done at once. Cleanup runs in the background while the board 
 
 - `ctrl+d` refuses while a cleanup runs.
 - Quitting waits for a running cleanup, up to 30 seconds.
-- A worktree that is already gone is marked cleaned without a card, and its branch is kept. Inside Herdr, its workspace closes.
+- A worktree that is already gone is marked cleaned without a card, and its branch is kept. Inside Herdr or Rex, its workspace or tab closes.
 - Done tasks, archived tasks, and archived project views complete without a card.
 
 Completion is one save and one undo step, saved before any worktree is touched. `ctrl+u` reverts the status. It cannot un-merge a pull request or restore a removed worktree.
 
 ### What cleanup removes
 
-Cleanup closes the dispatch's Herdr workspace and removes its worktree. It deletes the branch only when the branch is merged into the recorded base:
+Cleanup closes the dispatch's Herdr workspace or Rex tab and removes its worktree. It never closes your other tabs, or your Rex session unless it is a [dispatch made before tabs](#names) holding only that task's agent. In Rex, it removes only a worktree Git lists at the recorded path, in the folder dispatch names for the branch. It deletes the branch only when the branch is merged into the recorded base:
 
 - It fetches the base first, so a merge on GitHub counts without a local pull.
 - A squash or rebase merge leaves no Git ancestry, so with `gh` logged in, cleanup asks GitHub. It deletes the branch only when the pull request merged into the recorded base and its head is exactly the local branch tip.
@@ -230,7 +248,7 @@ Each option line names the tasks it touches. What each key does to each task:
 | `y` | Done, tidy | Done, full tidy | Done, tidy | Unchanged |
 | `n` | Done | Done | Done | Done |
 
-A full tidy removes the worktree, branch, and workspace; a tidy keeps the branch. Tasks without a dispatch are marked done under every key. One failure never stops the others, and the status row ends with a count that names the tasks that kept something. `Esc` keeps the marks.
+A full tidy removes the worktree, branch, and workspace or tab; a tidy keeps the branch. Tasks without a dispatch are marked done under every key. One failure never stops the others, and the status row ends with a count that names the tasks that kept something. `Esc` keeps the marks.
 
 ## Merge the pull request
 
@@ -250,7 +268,7 @@ Quitting waits for a running merge. On a marked set, `m` merges each open pull r
 
 ## Windows (preview)
 
-Herdr on Windows is a preview, and so is dispatch there.
+Herdr on Windows is a preview, and so is dispatch there. Rex [does not run on Windows](/docs/install/#rex-setup-details).
 
 - A profile's `command` must find an `.exe` or a PowerShell script. A batch file (`.cmd`, `.bat`) is refused, because cmd.exe could run task text as commands. Dispatch refuses it with `agent-config` before it creates anything. When tsk cannot see where the command leads, the workspace opens and its pane refuses instead.
 - A PowerShell script works as a shim that hands its arguments to a program, like the `.ps1` files npm installs. A script that reads `$args` itself sees the arguments escaped.

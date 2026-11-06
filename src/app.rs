@@ -14,7 +14,7 @@ use crate::agents::AgentProfiles;
 use crate::context::{build_snapshot, InvocationSnapshot, RawHostContext};
 use crate::dispatch::{
     self, BranchCleanup, CleanupError, CleanupResult, DispatchError, DispatchHost, DispatchResult,
-    SystemDispatchHost, WorktreeCleanup,
+    HostKind, SystemDispatchHost, WorktreeCleanup,
 };
 use crate::domain::{DomainError, DomainState, HumanStatus};
 use crate::save_recovery::SaveRecovery;
@@ -412,14 +412,15 @@ fn run_board_loop(
         loop {
             // Apply completed branch discovery and cleanup checks only on the board thread,
             // before painting.
+            let host_kind = dispatch::HostKind::detect();
             board_background_step(
                 &store,
                 &mut domain,
                 &mut model,
                 &mut save_recovery,
-                dispatch::running_inside_herdr(),
+                host_kind,
                 &mut board_dispatch_host(&store),
-                &mut |naming| drop(dispatch::spawn_agent_naming(naming)),
+                &mut |naming| drop(dispatch::spawn_agent_naming(host_kind, naming)),
             )?;
             if model.quit_after_cleanup_due() {
                 break;
@@ -2220,11 +2221,11 @@ pub fn dispatch_task_with_host(
     id: uuid::Uuid,
     profiles: &AgentProfiles,
     again: bool,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> Result<DispatchResult, DispatchError> {
     model.clear_marks();
-    dispatch::run_with_host(domain, id, profiles, again, in_herdr, host)
+    dispatch::run_with_host(domain, id, profiles, again, host_kind, host)
 }
 
 pub use crate::ui::board::CLEANUP_BUSY;
@@ -2252,7 +2253,7 @@ pub fn offer_cleanup_prompt_with_host(
     domain: &mut DomainState,
     model: &mut BoardModel,
     id: uuid::Uuid,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> Result<CleanupOffer, CleanupError> {
     if model.bulk_verb_active() || model.focus_is_archived() {
@@ -2278,10 +2279,10 @@ pub fn offer_cleanup_prompt_with_host(
     // fresh answer sitting over pre-fetch ancestry with nothing left to refresh it.
     let merge_check = begin_cleanup_merge_check(task, record, host);
     // Cached refs only: the card opens at once and the background check fills merged status.
-    let preview = dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host)?;
+    let preview = dispatch::inspect_cleanup_cached_with_host(domain, id, host_kind, host)?;
     if !preview.inspection.worktree_exists {
-        let workspace = dispatch::untouched_workspace(in_herdr, &preview.inspection);
-        let close_workspace = in_herdr && preview.inspection.workspace_exists;
+        let workspace = dispatch::untouched_workspace(host_kind, &preview.inspection);
+        let close_workspace = host_kind.is_hosted() && preview.inspection.workspace_exists;
         domain
             .record_dispatch_cleaned(id, crate::domain::CleanupOutcome::Missing)
             .and_then(|()| domain.complete_after_cleanup(id))
@@ -2296,7 +2297,7 @@ pub fn offer_cleanup_prompt_with_host(
             worktree_path: preview.record.worktree,
             branch_name: preview.record.branch,
             base: preview.record.base.or(preview.record.base_ref),
-            workspace_id: preview.record.herdr_workspace_id,
+            workspace_id: preview.record.session,
             worktree: WorktreeCleanup::Missing,
             branch: BranchCleanup::Kept,
             workspace,
@@ -2324,7 +2325,7 @@ fn close_converged_workspace(
     host: &mut impl DispatchHost,
 ) -> String {
     let (workspace, warning) = if close_workspace {
-        dispatch::close_orphaned_workspace(host, &result.workspace_id)
+        dispatch::close_orphaned_workspace(host, &result.workspace_id, result.number)
     } else {
         (result.workspace, None)
     };
@@ -2333,7 +2334,10 @@ fn close_converged_workspace(
         "worktree already gone".to_string(),
     ];
     if workspace == dispatch::WorkspaceCleanup::Removed {
-        parts.push("workspace closed".into());
+        parts.push(format!(
+            "{} closed",
+            crate::domain::AgentHost::noun_of(&result.workspace_id)
+        ));
     }
     parts.push("branch kept".into());
     parts.extend(warning);
@@ -2343,13 +2347,13 @@ fn close_converged_workspace(
 /// Close each workspace a marked set's gone worktrees left open, once its completion is
 /// saved: how many closed, and why each other one stayed open.
 fn close_converged_workspaces(
-    workspaces: &[String],
+    workspaces: &[(String, u64)],
     host: &mut impl DispatchHost,
 ) -> (usize, Vec<String>) {
     let mut closed = 0;
     let mut warnings = Vec::new();
-    for workspace_id in workspaces {
-        match dispatch::close_orphaned_workspace(host, workspace_id) {
+    for (workspace_id, number) in workspaces {
+        match dispatch::close_orphaned_workspace(host, workspace_id, *number) {
             (dispatch::WorkspaceCleanup::Removed, _) => closed += 1,
             (_, warning) => warnings.extend(warning),
         }
@@ -2475,7 +2479,7 @@ pub enum BulkCleanupOffer {
     MissingConverged {
         done: usize,
         missing: usize,
-        workspaces: Vec<String>,
+        workspaces: Vec<(String, u64)>,
     },
 }
 
@@ -2485,7 +2489,7 @@ pub enum BulkCleanupOffer {
 pub fn offer_bulk_cleanup_prompt_with_host(
     domain: &mut DomainState,
     model: &mut BoardModel,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> Result<BulkCleanupOffer, DomainError> {
     if !model.bulk_verb_active() || model.focus_is_archived() {
@@ -2532,10 +2536,10 @@ pub fn offer_bulk_cleanup_prompt_with_host(
         // Check before the snapshot, as the single card does, so a fetch landing between the
         // two still has a check left to refresh the row.
         let merge_check = begin_cleanup_merge_check(task, record, host);
-        match dispatch::inspect_cleanup_cached_with_host(domain, id, in_herdr, host) {
+        match dispatch::inspect_cleanup_cached_with_host(domain, id, host_kind, host) {
             Ok(preview) if !preview.inspection.worktree_exists => {
-                if in_herdr && preview.inspection.workspace_exists {
-                    workspaces.push(preview.record.herdr_workspace_id.clone());
+                if host_kind.is_hosted() && preview.inspection.workspace_exists {
+                    workspaces.push((preview.record.session.clone(), preview.number));
                     bulk.missing_panes.push(identifier.clone());
                 }
                 bulk.missing.push((id, identifier, preview.record));
@@ -2574,8 +2578,9 @@ pub struct CleanupConfirmed {
     /// `n`: the status-row outcome.
     pub message: Option<String>,
     /// `y`: a marked set's tasks whose worktree was already gone and whose workspace is still
-    /// open, identifier and workspace id. They close once the completion is saved.
-    pub workspaces: Vec<(String, String)>,
+    /// open, identifier, workspace id, and task number. They close once the completion is
+    /// saved.
+    pub workspaces: Vec<(String, String, u64)>,
 }
 
 /// Apply a cleanup card's choice to the domain: complete the card's task, or the whole marked
@@ -2588,7 +2593,7 @@ pub fn confirm_cleanup_with_host(
     domain: &mut DomainState,
     model: &mut BoardModel,
     clean: bool,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> Result<Option<CleanupConfirmed>, DomainError> {
     let Some(prompt) = model.cleanup_prompt().cloned() else {
@@ -2679,7 +2684,7 @@ pub fn confirm_cleanup_with_host(
                 .and_then(|task| task.dispatch.as_ref())
                 .is_some_and(|record| record == inspected);
             let still_missing = if same_dispatch {
-                dispatch::inspect_cleanup_cached_with_host(domain, *id, in_herdr, host)
+                dispatch::inspect_cleanup_cached_with_host(domain, *id, host_kind, host)
                     .ok()
                     .filter(|preview| !preview.inspection.worktree_exists)
             } else {
@@ -2689,8 +2694,8 @@ pub fn confirm_cleanup_with_host(
                 domain.record_dispatch_cleaned(*id, crate::domain::CleanupOutcome::Missing)?;
                 missing += 1;
                 // `n` keeps what the dispatch left, its workspace included.
-                if clean && in_herdr && preview.inspection.workspace_exists {
-                    workspaces.push((identifier.clone(), preview.record.herdr_workspace_id));
+                if clean && host_kind.is_hosted() && preview.inspection.workspace_exists {
+                    workspaces.push((identifier.clone(), preview.record.session, preview.number));
                 }
             }
         }
@@ -2790,11 +2795,11 @@ fn confirm_cleanup_and_save(
     save_recovery: &mut SaveRecovery<DomainState>,
     baseline: DomainState,
     choice: CleanupChoice,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
     name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) {
-    let confirmed = match confirm_cleanup_with_host(domain, model, choice.clean, in_herdr, host) {
+    let confirmed = match confirm_cleanup_with_host(domain, model, choice.clean, host_kind, host) {
         Ok(confirmed) => confirmed,
         Err(error) => {
             model.close_popup();
@@ -2804,7 +2809,7 @@ fn confirm_cleanup_and_save(
     };
     let dispatch_running = model.bulk_dispatch_running();
     // Completion is durable before any worktree is touched.
-    let released = match save_releasing(store, domain, dispatch_running, in_herdr, host) {
+    let released = match save_releasing(store, domain, dispatch_running, host_kind, host) {
         Ok(released) => released,
         Err(error) => {
             model.close_popup();
@@ -2821,8 +2826,8 @@ fn confirm_cleanup_and_save(
             workspaces,
             ..
         }) => {
-            for (identifier, workspace_id) in workspaces {
-                let closed = match dispatch::close_orphaned_workspace(host, &workspace_id) {
+            for (identifier, workspace_id, number) in workspaces {
+                let closed = match dispatch::close_orphaned_workspace(host, &workspace_id, number) {
                     (_, Some(warning)) => Err(warning),
                     _ => Ok(()),
                 };
@@ -2831,7 +2836,7 @@ fn confirm_cleanup_and_save(
             run.merged = choice.merges.merged;
             run.unmerged.splice(0..0, choice.merges.unmerged);
             model.begin_cleanup_run(run);
-            poll_cleanup_runs(store, domain, model, save_recovery, in_herdr, host);
+            poll_cleanup_runs(store, domain, model, save_recovery, host_kind, host);
         }
         // Worktrees kept on purpose are still kept: the outcome stays until the next action.
         Some(CleanupConfirmed {
@@ -2902,7 +2907,7 @@ fn land_cleanup_merges_with_host(
     domain: &mut DomainState,
     model: &mut BoardModel,
     save_recovery: &mut SaveRecovery<DomainState>,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
     name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) {
@@ -2914,7 +2919,7 @@ fn land_cleanup_merges_with_host(
         domain,
         model,
         save_recovery,
-        in_herdr,
+        host_kind,
         host,
         name_agent,
     );
@@ -2924,7 +2929,7 @@ fn land_cleanup_merges_with_host(
             domain,
             seat,
             save_recovery,
-            in_herdr,
+            host_kind,
             host,
             name_agent,
         );
@@ -2937,7 +2942,7 @@ fn land_cleanup_merges_on(
     domain: &mut DomainState,
     board: &mut BoardModel,
     save_recovery: &mut SaveRecovery<DomainState>,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
     name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) {
@@ -3036,7 +3041,7 @@ fn land_cleanup_merges_on(
             clean: true,
             merges: report,
         },
-        in_herdr,
+        host_kind,
         host,
         name_agent,
     );
@@ -3049,7 +3054,7 @@ fn start_due_cleanup(
     store: &TaskStore,
     domain: &DomainState,
     model: &mut BoardModel,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) {
     let (job, plan) = {
@@ -3079,7 +3084,7 @@ fn start_due_cleanup(
         (job, run.plan.clone())
     };
     if !plan.is_empty() {
-        host.begin_cleanup(job, plan, in_herdr);
+        host.begin_cleanup(job, plan, host_kind);
     }
 }
 
@@ -3094,7 +3099,7 @@ pub fn poll_cleanup_runs(
     domain: &mut DomainState,
     model: &mut BoardModel,
     save_recovery: &mut SaveRecovery<DomainState>,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) {
     if !model.cleanup_running() {
@@ -3105,7 +3110,7 @@ pub fn poll_cleanup_runs(
     if save_recovery.is_pending() {
         return;
     }
-    start_due_cleanup(store, domain, model, in_herdr, host);
+    start_due_cleanup(store, domain, model, host_kind, host);
     // A preview's card counts only while the preview is painted and focused: a parked one
     // (narrowed frame) is invisible and unreachable, so its run reports on the visible board.
     let preview_focused = model.project_right_seat_focused();
@@ -3234,12 +3239,12 @@ pub fn finish_queued_cleanup_with_host(
     domain: &mut DomainState,
     model: &mut BoardModel,
     save_recovery: &mut SaveRecovery<DomainState>,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> io::Result<()> {
     model.poll_cleanup_check();
     model.present_save_recovery(save_recovery.error());
-    poll_cleanup_runs(store, domain, model, save_recovery, in_herdr, host);
+    poll_cleanup_runs(store, domain, model, save_recovery, host_kind, host);
     model.present_save_recovery(save_recovery.error());
     Ok(())
 }
@@ -3252,14 +3257,14 @@ fn save_releasing(
     store: &TaskStore,
     domain: &mut DomainState,
     dispatch_running: bool,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> Result<Vec<dispatch::Released>, crate::store::StoreError> {
     dispatch::save_releasing_with_host(
         store,
         domain,
         crate::domain::OWNER,
-        in_herdr,
+        host_kind,
         dispatch_running.then_some(dispatch::NO_LAUNCH_DISPATCH_RUNNING),
         host,
     )
@@ -3304,7 +3309,7 @@ fn run_board_dispatch(
     baseline: DomainState,
     target: Option<uuid::Uuid>,
     again: bool,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
     name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) {
@@ -3339,7 +3344,7 @@ fn run_board_dispatch(
         }
     };
     let previous = domain.get(target).map(|task| task.status);
-    match dispatch::run_with_host(domain, target, &profiles, again, in_herdr, host) {
+    match dispatch::run_with_host(domain, target, &profiles, again, host_kind, host) {
         Ok(result) => {
             if let Some(previous) = previous.filter(|status| *status != HumanStatus::Started) {
                 if let Err(error) = domain.push_start_undo(target, previous) {
@@ -3380,8 +3385,8 @@ fn start_moves(task: &crate::domain::Task, any_status: bool) -> bool {
 /// Whether a start of `task` would launch its agent: assigned, never dispatched, not done, not
 /// archived, and dispatch can work here. A done task set back to started is a status
 /// correction and never launches.
-fn start_launches(task: &crate::domain::Task, in_herdr: bool) -> bool {
-    start_assigns_a_launch(task) && dispatch::launch_unavailable(task, in_herdr).is_none()
+fn start_launches(task: &crate::domain::Task, host_kind: HostKind) -> bool {
+    start_assigns_a_launch(task) && dispatch::launch_unavailable(task, host_kind).is_none()
 }
 
 /// Assigned, never dispatched, not done, not archived: a start that would launch if it could.
@@ -3394,9 +3399,9 @@ fn start_assigns_a_launch(task: &crate::domain::Task) -> bool {
 
 /// Why a start of `task` launches nothing although it is assigned and never dispatched:
 /// outside Herdr, or a desk task. Such a start is plain and says why.
-fn start_no_launch(task: &crate::domain::Task, in_herdr: bool) -> Option<&'static str> {
+fn start_no_launch(task: &crate::domain::Task, host_kind: HostKind) -> Option<&'static str> {
     start_assigns_a_launch(task)
-        .then(|| dispatch::launch_unavailable(task, in_herdr))
+        .then(|| dispatch::launch_unavailable(task, host_kind))
         .flatten()
 }
 
@@ -3439,7 +3444,7 @@ fn route_board_start(
     save_recovery: &mut SaveRecovery<DomainState>,
     baseline: &DomainState,
     any_status: bool,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
     name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) -> bool {
@@ -3458,7 +3463,7 @@ fn route_board_start(
         return true;
     }
     let launches = |task: &crate::domain::Task| {
-        start_moves(task, any_status) && start_launches(task, in_herdr)
+        start_moves(task, any_status) && start_launches(task, host_kind)
     };
     if model.bulk_verb_active() {
         // A set where nothing would launch is the plain batch, with no card and no
@@ -3473,7 +3478,7 @@ fn route_board_start(
                 .filter_map(|id| domain.get(*id))
                 .filter(|task| start_moves(task, any_status))
                 .filter_map(|task| {
-                    start_no_launch(task, in_herdr).map(|reason| {
+                    start_no_launch(task, host_kind).map(|reason| {
                         (
                             task.board_identifier()
                                 .unwrap_or_else(|| "task".to_string()),
@@ -3506,14 +3511,14 @@ fn route_board_start(
                 &corrections,
                 any_status,
                 false,
-                in_herdr,
+                host_kind,
                 host,
             ) {
                 model.set_message(started.with_delivery(message));
             }
             return true;
         }
-        return open_bulk_start_card(domain, model, store, &targets, any_status, in_herdr, host);
+        return open_bulk_start_card(domain, model, store, &targets, any_status, host_kind, host);
     }
     let Some(task) = targets.first().and_then(|id| domain.get(*id)) else {
         return false;
@@ -3525,7 +3530,7 @@ fn route_board_start(
     {
         return false;
     }
-    match dispatch::start_route(task, crate::domain::OWNER, in_herdr, host) {
+    match dispatch::start_route(task, crate::domain::OWNER, host_kind, host) {
         dispatch::StartRoute::Plain => false,
         dispatch::StartRoute::NoLaunch { reason } => {
             let target = task.id;
@@ -3539,7 +3544,7 @@ fn route_board_start(
                 &[],
                 any_status,
                 false,
-                in_herdr,
+                host_kind,
                 host,
             ) {
                 model.set_message(started.with_delivery(dispatch::no_launch_message(reason)));
@@ -3556,7 +3561,7 @@ fn route_board_start(
                 baseline.clone(),
                 Some(target),
                 false,
-                in_herdr,
+                host_kind,
                 host,
                 name_agent,
             );
@@ -3640,7 +3645,7 @@ fn approve_review(
     save_recovery: &mut SaveRecovery<DomainState>,
     id: uuid::Uuid,
     quick_capture: bool,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
     name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) -> io::Result<()> {
@@ -3663,7 +3668,7 @@ fn approve_review(
             BoardIntent::ReplySave,
             save_recovery,
             quick_capture,
-            in_herdr,
+            host_kind,
             host,
             name_agent,
         )?;
@@ -3674,7 +3679,7 @@ fn approve_review(
     } else {
         model.close_reply_box();
     }
-    match offer_cleanup_prompt_with_host(domain, model, id, in_herdr, host) {
+    match offer_cleanup_prompt_with_host(domain, model, id, host_kind, host) {
         Ok(CleanupOffer::Prompted) => {
             adopt_merge_method(store, model);
             return Ok(());
@@ -3687,7 +3692,7 @@ fn approve_review(
                 return Ok(());
             };
             let dispatch_running = model.bulk_dispatch_running();
-            let released = match save_releasing(store, domain, dispatch_running, in_herdr, host) {
+            let released = match save_releasing(store, domain, dispatch_running, host_kind, host) {
                 Ok(released) => released,
                 Err(error) => {
                     fail_board_save(domain, model, save_recovery, baseline, error.to_string());
@@ -3720,7 +3725,7 @@ fn approve_review(
         BoardIntent::ApproveReview(id),
         save_recovery,
         quick_capture,
-        in_herdr,
+        host_kind,
         host,
         name_agent,
     )?;
@@ -3732,7 +3737,7 @@ fn approve_review(
 fn reply_unblock_route(
     domain: &DomainState,
     model: &BoardModel,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> Option<(uuid::Uuid, dispatch::StartRoute, dispatch::AgentCheck)> {
     let id = model.reply_task_id()?;
@@ -3740,7 +3745,7 @@ fn reply_unblock_route(
     if task.agent_assignee().is_none() || task.archived {
         return None;
     }
-    let (route, check) = dispatch::start_route_checked(task, crate::domain::OWNER, in_herdr, host);
+    let (route, check) = dispatch::start_route_checked(task, crate::domain::OWNER, host_kind, host);
     Some((id, route, check))
 }
 
@@ -3802,7 +3807,7 @@ fn closing_candidates(
 fn deliver_closed_records(
     domain: &DomainState,
     candidates: &[(uuid::Uuid, usize)],
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> Option<String> {
     let mut lines = Vec::new();
@@ -3828,7 +3833,7 @@ fn deliver_closed_records(
         let Some(assignee) = task.agent_assignee() else {
             continue;
         };
-        let (_, check) = dispatch::start_route_checked(task, crate::domain::OWNER, in_herdr, host);
+        let (_, check) = dispatch::start_route_checked(task, crate::domain::OWNER, host_kind, host);
         let text = message.text.as_deref();
         if let Some(delivery) = dispatch::deliver_reply(task, &check, message.label, text, host) {
             let status = if task.status == HumanStatus::Ready {
@@ -3941,7 +3946,7 @@ fn start_plain_and_save(
     corrections: &[uuid::Uuid],
     any_status: bool,
     bulk_card: bool,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> Option<PlainStart> {
     let mut moving = Vec::new();
@@ -3959,7 +3964,7 @@ fn start_plain_and_save(
         {
             continue;
         }
-        if start_launches(task, in_herdr) {
+        if start_launches(task, host_kind) {
             refused.push(
                 task.board_identifier()
                     .unwrap_or_else(|| "task".to_string()),
@@ -4000,7 +4005,7 @@ fn start_plain_and_save(
     }
     model.sync_from_domain(domain);
     record_notice_dismissals_without_blocking_persist(store, domain);
-    let delivered = deliver_closed_records(domain, &closing, in_herdr, host);
+    let delivered = deliver_closed_records(domain, &closing, host_kind, host);
     if let Some(line) = &delivered {
         model.set_message(line.clone());
     }
@@ -4047,14 +4052,14 @@ fn check_marked_dispatches(
     domain: &DomainState,
     ids: impl IntoIterator<Item = uuid::Uuid>,
     profiles: &AgentProfiles,
-    in_herdr: bool,
+    host_kind: HostKind,
 ) -> (Vec<dispatch::EligibleDispatch>, Vec<(String, String)>) {
     let mut ids = ids.into_iter().collect::<Vec<_>>();
     ids.sort_by_key(|id| domain.get(*id).and_then(|task| task.number));
     let mut launch = Vec::new();
     let mut skipped = Vec::new();
     for id in ids {
-        match dispatch::check_task(domain, id, profiles, in_herdr) {
+        match dispatch::check_task(domain, id, profiles, host_kind) {
             Ok(eligible) => launch.push(eligible),
             Err(error) => {
                 let identifier = domain
@@ -4080,7 +4085,7 @@ fn open_bulk_start_card(
     store: &TaskStore,
     targets: &[uuid::Uuid],
     any_status: bool,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> bool {
     if model.bulk_dispatch_running() {
@@ -4109,10 +4114,10 @@ fn open_bulk_start_card(
         .collect::<Vec<_>>();
     let (launching, start_only): (Vec<_>, Vec<_>) = starting
         .into_iter()
-        .partition(|task| start_launches(task, in_herdr));
+        .partition(|task| start_launches(task, host_kind));
     let no_launch = start_only
         .iter()
-        .filter_map(|task| start_no_launch(task, in_herdr).map(|reason| (task.id, reason)))
+        .filter_map(|task| start_no_launch(task, host_kind).map(|reason| (task.id, reason)))
         .collect::<Vec<_>>();
     let start_only = start_only
         .into_iter()
@@ -4145,7 +4150,7 @@ fn open_bulk_start_card(
         no_launch,
         any_status,
         &profiles,
-        in_herdr,
+        host_kind,
         host,
     );
     true
@@ -4162,10 +4167,10 @@ pub fn open_bulk_dispatch_card(
     no_launch: Vec<(uuid::Uuid, &'static str)>,
     any_status: bool,
     profiles: &AgentProfiles,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) {
-    let (launch, skipped) = check_marked_dispatches(domain, launching, profiles, in_herdr);
+    let (launch, skipped) = check_marked_dispatches(domain, launching, profiles, host_kind);
     if launch.is_empty() && start_only.is_empty() {
         model.set_message(crate::ui::board::nothing_to_dispatch(&skipped));
         return;
@@ -4207,7 +4212,7 @@ fn start_bulk_dispatch(
     model: &mut BoardModel,
     save_recovery: &mut SaveRecovery<DomainState>,
     baseline: DomainState,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
     name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) -> io::Result<()> {
@@ -4223,7 +4228,7 @@ fn start_bulk_dispatch(
             baseline,
             Some(relaunch.task_id),
             true,
-            in_herdr,
+            host_kind,
             host,
             name_agent,
         );
@@ -4250,7 +4255,7 @@ fn start_bulk_dispatch(
             &prompt.corrections,
             prompt.any_status,
             true,
-            in_herdr,
+            host_kind,
             host,
         ) else {
             return Ok(());
@@ -4289,7 +4294,7 @@ fn start_bulk_dispatch(
         domain,
         prompt.launch.iter().map(|eligible| eligible.id),
         &profiles,
-        in_herdr,
+        host_kind,
     );
     model.clear_marks();
     if jobs.is_empty() {
@@ -4367,7 +4372,7 @@ pub fn land_bulk_dispatch_with_host(
             settle_saved_launch(&mut run, pending, name_agent);
         } else {
             run.unrecorded
-                .push((pending.identifier, pending.record.herdr_workspace_id));
+                .push((pending.identifier, pending.record.session));
         }
     }
     let landed = run.batch.take_landed();
@@ -4481,19 +4486,19 @@ fn board_background_step(
     domain: &mut DomainState,
     model: &mut BoardModel,
     save_recovery: &mut SaveRecovery<DomainState>,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
     name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) -> io::Result<()> {
     model.poll_base_picker_results();
     model.poll_dispatch_checks();
-    finish_queued_cleanup_with_host(store, domain, model, save_recovery, in_herdr, host)?;
+    finish_queued_cleanup_with_host(store, domain, model, save_recovery, host_kind, host)?;
     land_cleanup_merges_with_host(
         store,
         domain,
         model,
         save_recovery,
-        in_herdr,
+        host_kind,
         host,
         name_agent,
     );
@@ -4502,7 +4507,7 @@ fn board_background_step(
 
 /// The real dispatch host for a board: launchers live beside the board's own store.
 fn board_dispatch_host(store: &TaskStore) -> SystemDispatchHost {
-    SystemDispatchHost::in_state_dir(store.path())
+    SystemDispatchHost::detected(store.path())
 }
 
 /// Apply a board intent. Returns `true` when the board loop should quit.
@@ -4519,6 +4524,7 @@ fn handle_board_intent(
     save_recovery: &mut SaveRecovery<DomainState>,
     quick_capture: bool,
 ) -> io::Result<bool> {
+    let host_kind = dispatch::HostKind::detect();
     handle_board_intent_with_host(
         store,
         domain,
@@ -4526,10 +4532,10 @@ fn handle_board_intent(
         intent,
         save_recovery,
         quick_capture,
-        dispatch::running_inside_herdr(),
+        host_kind,
         &mut board_dispatch_host(store),
         // Detached: the board never waits on Herdr's agent detection.
-        &mut |naming| drop(dispatch::spawn_agent_naming(naming)),
+        &mut |naming| drop(dispatch::spawn_agent_naming(host_kind, naming)),
     )
 }
 
@@ -4549,7 +4555,7 @@ fn handle_board_intent_with_host(
     intent: BoardIntent,
     save_recovery: &mut SaveRecovery<DomainState>,
     quick_capture: bool,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
     name_agent: &mut dyn FnMut(dispatch::AgentNaming),
 ) -> io::Result<bool> {
@@ -4664,7 +4670,7 @@ fn handle_board_intent_with_host(
                 save_recovery,
                 id,
                 quick_capture,
-                in_herdr,
+                host_kind,
                 host,
                 name_agent,
             )?;
@@ -4680,7 +4686,7 @@ fn handle_board_intent_with_host(
     }
 
     if intent == BoardIntent::Complete && !save_recovery.is_pending() && model.bulk_verb_active() {
-        match offer_bulk_cleanup_prompt_with_host(domain, model, in_herdr, host) {
+        match offer_bulk_cleanup_prompt_with_host(domain, model, host_kind, host) {
             Ok(BulkCleanupOffer::Prompted) => {
                 adopt_merge_method(store, model);
                 return Ok(false);
@@ -4691,14 +4697,20 @@ fn handle_board_intent_with_host(
                 workspaces,
             }) => {
                 let dispatch_running = model.bulk_dispatch_running();
-                let released = match save_releasing(store, domain, dispatch_running, in_herdr, host)
-                {
-                    Ok(released) => released,
-                    Err(error) => {
-                        fail_board_save(domain, model, save_recovery, baseline, error.to_string());
-                        return Ok(false);
-                    }
-                };
+                let released =
+                    match save_releasing(store, domain, dispatch_running, host_kind, host) {
+                        Ok(released) => released,
+                        Err(error) => {
+                            fail_board_save(
+                                domain,
+                                model,
+                                save_recovery,
+                                baseline,
+                                error.to_string(),
+                            );
+                            return Ok(false);
+                        }
+                    };
                 model.sync_from_domain(domain);
                 let (closed, warnings) = close_converged_workspaces(&workspaces, host);
                 let mut parts = vec![
@@ -4706,7 +4718,10 @@ fn handle_board_intent_with_host(
                     format!("{} already gone", plural(missing, "worktree")),
                 ];
                 if closed > 0 {
-                    parts.push(format!("{} closed", plural(closed, "workspace")));
+                    let noun = workspaces
+                        .first()
+                        .map_or("workspace", |(id, _)| crate::domain::AgentHost::noun_of(id));
+                    parts.push(format!("{} closed", plural(closed, noun)));
                 }
                 parts.extend(warnings);
                 model.set_message(with_released(
@@ -4730,7 +4745,7 @@ fn handle_board_intent_with_host(
 
     if intent == BoardIntent::Complete && !save_recovery.is_pending() {
         if let Some(target) = model.selected_id() {
-            match offer_cleanup_prompt_with_host(domain, model, target, in_herdr, host) {
+            match offer_cleanup_prompt_with_host(domain, model, target, host_kind, host) {
                 Ok(CleanupOffer::Prompted) => {
                     adopt_merge_method(store, model);
                     return Ok(false);
@@ -4741,7 +4756,7 @@ fn handle_board_intent_with_host(
                 }) => {
                     let dispatch_running = model.bulk_dispatch_running();
                     let released =
-                        match save_releasing(store, domain, dispatch_running, in_herdr, host) {
+                        match save_releasing(store, domain, dispatch_running, host_kind, host) {
                             Ok(released) => released,
                             Err(error) => {
                                 fail_board_save(
@@ -4798,7 +4813,7 @@ fn handle_board_intent_with_host(
             save_recovery,
             baseline,
             CleanupChoice { clean, merges },
-            in_herdr,
+            host_kind,
             host,
             name_agent,
         );
@@ -4824,7 +4839,7 @@ fn handle_board_intent_with_host(
                 start.intent,
                 save_recovery,
                 quick_capture,
-                in_herdr,
+                host_kind,
                 host,
                 name_agent,
             );
@@ -4839,7 +4854,7 @@ fn handle_board_intent_with_host(
             model,
             save_recovery,
             baseline,
-            in_herdr,
+            host_kind,
             host,
             name_agent,
         )?;
@@ -4863,7 +4878,7 @@ fn handle_board_intent_with_host(
                 &[],
                 relaunch.any_status,
                 false,
-                in_herdr,
+                host_kind,
                 host,
             );
         }
@@ -4879,7 +4894,7 @@ fn handle_board_intent_with_host(
             baseline,
             dispatch_target,
             true,
-            in_herdr,
+            host_kind,
             host,
             name_agent,
         );
@@ -4911,7 +4926,7 @@ fn handle_board_intent_with_host(
             save_recovery,
             &baseline,
             intent != BoardIntent::PrimaryVerb,
-            in_herdr,
+            host_kind,
             host,
             name_agent,
         )
@@ -4931,7 +4946,7 @@ fn handle_board_intent_with_host(
         // Route against the durable record: an assignment made elsewhere must launch.
         domain.merge_tasks_from_disk(&baseline);
         model.sync_from_domain(domain);
-        match reply_unblock_route(domain, model, in_herdr, host) {
+        match reply_unblock_route(domain, model, host_kind, host) {
             None => intent,
             Some((id, dispatch::StartRoute::Plain, check)) => {
                 deliver_to = Some((id, check));
@@ -4998,7 +5013,7 @@ fn handle_board_intent_with_host(
         },
         |state| {
             released.extend(
-                save_releasing(store, state, dispatch_running, in_herdr, host)
+                save_releasing(store, state, dispatch_running, host_kind, host)
                     .map_err(|error| error.to_string())?,
             );
             Ok(())
@@ -5027,14 +5042,14 @@ fn handle_board_intent_with_host(
                     .filter(|task| task.agent_assignee().is_some() && !task.archived)
                     .map(|task| {
                         let route =
-                            dispatch::start_route(task, crate::domain::OWNER, in_herdr, host);
+                            dispatch::start_route(task, crate::domain::OWNER, host_kind, host);
                         (target, route)
                     });
             }
             if let Some(target) = model.pending_reply_delivery.take() {
                 deliver_to = domain.get(target).map(|task| {
                     let (_, check) =
-                        dispatch::start_route_checked(task, crate::domain::OWNER, in_herdr, host);
+                        dispatch::start_route_checked(task, crate::domain::OWNER, host_kind, host);
                     (target, check)
                 });
             }
@@ -5059,7 +5074,7 @@ fn handle_board_intent_with_host(
             deliver_reply_after_start(domain, model, target, &check, host);
         }
         if !save_recovery.is_pending() {
-            if let Some(line) = deliver_closed_records(domain, &closing, in_herdr, host) {
+            if let Some(line) = deliver_closed_records(domain, &closing, host_kind, host) {
                 model.set_message(line);
             }
         }
@@ -5085,7 +5100,7 @@ fn handle_board_intent_with_host(
                         &[],
                         true,
                         false,
-                        in_herdr,
+                        host_kind,
                         host,
                     );
                     if let (Some(_), dispatch::StartRoute::NoLaunch { reason }) = (started, route) {
@@ -5104,7 +5119,7 @@ fn handle_board_intent_with_host(
                         baseline,
                         Some(target),
                         false,
-                        in_herdr,
+                        host_kind,
                         host,
                         name_agent,
                     );
@@ -12433,6 +12448,7 @@ mod projects_view_tests {
 
 #[cfg(test)]
 mod quick_assign_tests {
+    use crate::dispatch::HostKind;
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
@@ -12582,7 +12598,7 @@ mod quick_assign_tests {
             &mut self,
             _: &Path,
             _: &crate::domain::Dispatch,
-            _: bool,
+            _: HostKind,
         ) -> Result<crate::dispatch::CleanupInspection, String> {
             if !self.cleanup {
                 return Err("cleanup inspection is not supported".into());
@@ -12777,7 +12793,7 @@ mod quick_assign_tests {
             intent,
             &mut recovery,
             false,
-            true,
+            HostKind::Herdr,
             host,
             &mut |_| {},
         )
@@ -12825,7 +12841,8 @@ mod quick_assign_tests {
                     base_ref: None,
                     base_commit: None,
                     base_remote: None,
-                    herdr_workspace_id: workspace.into(),
+                    host: crate::domain::AgentHost::Herdr,
+                    session: workspace.into(),
                     at: std::time::SystemTime::now(),
                     cleaned: false,
                 },
@@ -13555,7 +13572,7 @@ mod quick_assign_tests {
         summary.add(
             "ready",
             &message("unblocked", 1),
-            &dispatch::Delivery::NotInHerdr,
+            &dispatch::Delivery::NoHost,
         );
         assert_eq!(
             summary.line(),
@@ -13865,7 +13882,7 @@ mod quick_assign_tests {
                     intent,
                     recovery,
                     false,
-                    true,
+                    HostKind::Herdr,
                     &mut host,
                     &mut |_| {},
                 )
@@ -15644,7 +15661,8 @@ mod quick_assign_tests {
                     base_ref: None,
                     base_commit: None,
                     base_remote: None,
-                    herdr_workspace_id: "w0".into(),
+                    host: crate::domain::AgentHost::Herdr,
+                    session: "w0".into(),
                     at: std::time::SystemTime::now(),
                     cleaned: false,
                 },
@@ -16130,7 +16148,7 @@ mod quick_assign_tests {
             BoardIntent::ReplySaveUnblock,
             &mut recovery,
             false,
-            false,
+            HostKind::Standalone,
             &mut host,
             &mut |_| {},
         )
@@ -16139,7 +16157,7 @@ mod quick_assign_tests {
         assert!(host.root_queries.is_empty(), "Herdr is never asked");
         assert_eq!(
             model.message(),
-            Some("started · reply not sent: not in Herdr")
+            Some("started · reply not sent: outside Herdr or Rex")
         );
         let saved = temp.store.load().expect("reload");
         assert_eq!(
@@ -16368,7 +16386,7 @@ mod quick_assign_tests {
             intent,
             &mut recovery,
             false,
-            false,
+            HostKind::Standalone,
             &mut host,
             &mut |_| {},
         )
@@ -16456,7 +16474,7 @@ mod quick_assign_tests {
                     intent,
                     recovery,
                     false,
-                    true,
+                    HostKind::Herdr,
                     host,
                     &mut |_| {},
                 )
@@ -16514,7 +16532,7 @@ mod quick_assign_tests {
             intent,
             recovery,
             false,
-            true,
+            HostKind::Herdr,
             host,
             &mut |_| {},
         )
@@ -16845,7 +16863,7 @@ mod quick_assign_tests {
                 .get(ids[0])
                 .and_then(|task| task.dispatch.clone())
                 .expect("record");
-            record.herdr_workspace_id = "w5".into();
+            record.session = "w5".into();
             other.record_dispatch(ids[0], record).expect("relaunch");
         });
         let name = host.names.remove("w0:p1").expect("old agent");
@@ -16924,7 +16942,7 @@ mod quick_assign_tests {
             intent,
             &mut recovery,
             false,
-            true,
+            HostKind::Herdr,
             &mut host,
             &mut |naming| names.push(naming.name),
         )
@@ -16993,12 +17011,15 @@ mod quick_assign_tests {
             intent,
             &mut recovery,
             false,
-            false,
+            HostKind::Standalone,
             &mut host,
             &mut |_| {},
         )
         .expect("start");
-        assert_eq!(model.message(), Some("started · no launch: not in Herdr"));
+        assert_eq!(
+            model.message(),
+            Some("started · no launch: outside Herdr or Rex")
+        );
         let saved = temp.store.load().expect("reload");
         let task = saved.get(ids[0]).expect("task");
         assert_eq!(task.status, HumanStatus::Started);
@@ -17030,7 +17051,7 @@ mod quick_assign_tests {
             BoardIntent::PrimaryVerb,
             &mut recovery,
             false,
-            false,
+            HostKind::Standalone,
             &mut host,
             &mut |_| {},
         )
@@ -17042,7 +17063,9 @@ mod quick_assign_tests {
             .expect("number");
         assert_eq!(
             model.message().map(str::to_string),
-            Some(format!("started · no launch: not in Herdr (T{number})"))
+            Some(format!(
+                "started · no launch: outside Herdr or Rex (T{number})"
+            ))
         );
         let saved = temp.store.load().expect("reload");
         for id in &ids {
@@ -17066,12 +17089,15 @@ mod quick_assign_tests {
             BoardIntent::ReplySaveUnblock,
             &mut recovery,
             false,
-            false,
+            HostKind::Standalone,
             &mut host,
             &mut |_| {},
         )
         .expect("reply");
-        assert_eq!(model.message(), Some("started · no launch: not in Herdr"));
+        assert_eq!(
+            model.message(),
+            Some("started · no launch: outside Herdr or Rex")
+        );
         let saved = temp.store.load().expect("reload");
         assert_eq!(
             saved.get(ids[0]).expect("task").status,
@@ -17272,7 +17298,7 @@ mod quick_assign_tests {
             .get(ids[0])
             .and_then(|task| task.dispatch.clone())
             .expect("record");
-        assert_eq!(record.herdr_workspace_id, "w2");
+        assert_eq!(record.session, "w2");
         assert_eq!(record.worktree, "/tmp/tsk-start-earlier");
         assert_eq!(record.branch, "tsk/earlier");
         assert_eq!(
@@ -18398,6 +18424,7 @@ mod quick_assign_tests {
     /// The bulk start card (`ctrl+s` on a marked set where a start would launch).
     mod bulk_dispatch {
         use super::*;
+        use crate::dispatch::HostKind;
         use crate::dispatch::{AgentNaming, EligibleDispatch, GitChecks, LaunchBatch};
         use crate::domain::Dispatch;
         #[cfg(unix)]
@@ -18441,7 +18468,8 @@ mod quick_assign_tests {
                 base_ref: None,
                 base_commit: None,
                 base_remote: None,
-                herdr_workspace_id: "w0".into(),
+                host: crate::domain::AgentHost::Herdr,
+                session: "w0".into(),
                 at: std::time::SystemTime::now(),
                 cleaned: false,
             }
@@ -18473,7 +18501,7 @@ mod quick_assign_tests {
                 intent,
                 recovery,
                 false,
-                true,
+                HostKind::Herdr,
                 host,
                 &mut |naming| names.push(naming),
             )
@@ -18608,8 +18636,12 @@ mod quick_assign_tests {
             marked(&mut domain, &mut model, &temp, &ids);
             // The desk task is not painted in this project's lens, so it cannot be marked here;
             // the card's check skips it with the single-task refusal wherever it is marked.
-            let (launch, skipped) =
-                super::super::check_marked_dispatches(&domain, [desk], &temp.profiles(), true);
+            let (launch, skipped) = super::super::check_marked_dispatches(
+                &domain,
+                [desk],
+                &temp.profiles(),
+                HostKind::Herdr,
+            );
             assert!(launch.is_empty());
             assert_eq!(
                 skipped,
@@ -19387,7 +19419,7 @@ mod quick_assign_tests {
                     &mut domain,
                     &mut model,
                     &mut recovery,
-                    true,
+                    HostKind::Herdr,
                     &mut host,
                     &mut |naming| names.push(naming),
                 )
@@ -19979,8 +20011,9 @@ mod quick_assign_tests {
             temp.store
                 .reload_merge_save(&mut domain)
                 .expect("number the task");
-            let eligible = crate::dispatch::check_task(&domain, id, &temp.profiles(), true)
-                .expect("eligible before the git check");
+            let eligible =
+                crate::dispatch::check_task(&domain, id, &temp.profiles(), HostKind::Herdr)
+                    .expect("eligible before the git check");
             let board_thread = std::thread::current().id();
             let mut host = SystemDispatchHost::in_state_dir(temp.dir.join("host-state"));
 
@@ -20069,7 +20102,7 @@ mod quick_assign_tests {
                 &mut domain,
                 &mut model,
                 &mut recovery,
-                true,
+                HostKind::Herdr,
                 &mut host,
                 &mut |_| {},
             )
@@ -20466,7 +20499,7 @@ mod quick_assign_tests {
                     intent,
                     recovery,
                     false,
-                    true,
+                    HostKind::Herdr,
                     host,
                     &mut |_| {},
                 )
@@ -21940,6 +21973,7 @@ mod quick_assign_tests {
 
 #[cfg(test)]
 mod queued_cleanup_tests {
+    use crate::dispatch::HostKind;
     use std::cell::Cell;
     use std::path::Path;
     use std::rc::Rc;
@@ -22002,7 +22036,7 @@ mod queued_cleanup_tests {
             &mut self,
             _: &Path,
             _: &Dispatch,
-            _: bool,
+            _: HostKind,
         ) -> Result<CleanupInspection, String> {
             panic!("the board must not fetch on its own thread")
         }
@@ -22010,7 +22044,7 @@ mod queued_cleanup_tests {
             &mut self,
             _: &Path,
             _: &Dispatch,
-            _: bool,
+            _: HostKind,
         ) -> Result<CleanupInspection, String> {
             if self.fetch_lands_during_snapshot {
                 self.fresh.set(true);
@@ -22031,7 +22065,7 @@ mod queued_cleanup_tests {
         fn begin_merge_check(&mut self, _: &Path, _: &Dispatch) -> Option<MergeCheck> {
             (!self.fresh.get()).then(|| self.check.clone())
         }
-        fn remove_herdr_worktree(&mut self, _: &str) -> Result<(), String> {
+        fn remove_host_worktree(&mut self, _: &str) -> Result<(), String> {
             self.removed += 1;
             Ok(())
         }
@@ -22082,7 +22116,8 @@ mod queued_cleanup_tests {
                     base_commit: None,
                     base_remote: Some("origin".into()),
                     base_ref: Some("refs/remotes/origin/main".into()),
-                    herdr_workspace_id: "w1".into(),
+                    host: crate::domain::AgentHost::Herdr,
+                    session: "w1".into(),
                     at: SystemTime::now(),
                     cleaned: false,
                 },
@@ -22107,7 +22142,7 @@ mod queued_cleanup_tests {
             intent,
             &mut recovery,
             false,
-            true,
+            HostKind::Herdr,
             host,
             &mut |_| {},
         )
@@ -22123,7 +22158,7 @@ mod queued_cleanup_tests {
         host: &mut CheckHost,
     ) {
         let mut recovery = SaveRecovery::new();
-        finish_queued_cleanup_with_host(store, domain, model, &mut recovery, true, host)
+        finish_queued_cleanup_with_host(store, domain, model, &mut recovery, HostKind::Herdr, host)
             .expect("loop step");
         assert!(!recovery.is_pending());
     }
@@ -22144,7 +22179,7 @@ mod queued_cleanup_tests {
         let mut model = BoardModel::from_domain(&domain, None);
         let mut host = CheckHost::new(false);
         assert_eq!(
-            offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+            offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
                 .expect("offer"),
             CleanupOffer::Prompted
         );
@@ -22192,7 +22227,7 @@ mod queued_cleanup_tests {
         let (dir, store, mut domain, id) = setup("bound");
         let mut model = BoardModel::from_domain(&domain, None);
         let mut host = CheckHost::new(true);
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
             .expect("offer");
         press(
             &store,
@@ -22231,7 +22266,7 @@ mod queued_cleanup_tests {
         let (dir, store, mut domain, id) = setup("cancel");
         let mut model = BoardModel::from_domain(&domain, None);
         let mut host = CheckHost::new(true);
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
             .expect("offer");
         press(
             &store,
@@ -22281,7 +22316,7 @@ mod queued_cleanup_tests {
                 &mut domain,
                 model.input_target_mut(),
                 id,
-                true,
+                HostKind::Herdr,
                 &mut host
             )
             .expect("offer"),
@@ -22330,8 +22365,14 @@ mod queued_cleanup_tests {
         let mut model = BoardModel::from_domain(&domain, None);
         focus_project_preview(&mut domain, &mut model);
         let mut host = CheckHost::new(false);
-        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
-            .expect("offer");
+        offer_cleanup_prompt_with_host(
+            &mut domain,
+            model.input_target_mut(),
+            id,
+            HostKind::Herdr,
+            &mut host,
+        )
+        .expect("offer");
         press(
             &store,
             &mut domain,
@@ -22385,8 +22426,14 @@ mod queued_cleanup_tests {
         let mut model = BoardModel::from_domain(&domain, None);
         focus_project_preview(&mut domain, &mut model);
         let mut host = CheckHost::new(false);
-        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
-            .expect("offer");
+        offer_cleanup_prompt_with_host(
+            &mut domain,
+            model.input_target_mut(),
+            id,
+            HostKind::Herdr,
+            &mut host,
+        )
+        .expect("offer");
         press(
             &store,
             &mut domain,
@@ -22403,7 +22450,7 @@ mod queued_cleanup_tests {
             BoardIntent::Quit,
             &mut recovery,
             false,
-            true,
+            HostKind::Herdr,
             &mut host,
             &mut |_| {},
         )
@@ -22420,8 +22467,14 @@ mod queued_cleanup_tests {
         focus_project_preview(&mut domain, &mut model);
         // Cached refs say merged, but the check never lands: the branch will be kept.
         let mut host = CheckHost::new(true);
-        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
-            .expect("offer");
+        offer_cleanup_prompt_with_host(
+            &mut domain,
+            model.input_target_mut(),
+            id,
+            HostKind::Herdr,
+            &mut host,
+        )
+        .expect("offer");
         press(
             &store,
             &mut domain,
@@ -22462,8 +22515,14 @@ mod queued_cleanup_tests {
         // Cached refs say merged, but the check never lands: the branch is kept, so the
         // finished card stays open until Esc.
         let mut host = CheckHost::new(true);
-        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
-            .expect("offer");
+        offer_cleanup_prompt_with_host(
+            &mut domain,
+            model.input_target_mut(),
+            id,
+            HostKind::Herdr,
+            &mut host,
+        )
+        .expect("offer");
         press(
             &store,
             &mut domain,
@@ -22550,7 +22609,7 @@ mod queued_cleanup_tests {
             BoardIntent::ConfirmEdit,
             &mut recovery,
             false,
-            true,
+            HostKind::Herdr,
             &mut host,
             &mut |_| {},
         );
@@ -22562,8 +22621,15 @@ mod queued_cleanup_tests {
 
         super::sync_frame_presentation(ratatui::layout::Rect::new(0, 0, 60, 24), model);
         assert!(!model.project_right_seat_focused());
-        finish_queued_cleanup_with_host(store, domain, model, &mut recovery, true, &mut host)
-            .expect("loop step");
+        finish_queued_cleanup_with_host(
+            store,
+            domain,
+            model,
+            &mut recovery,
+            HostKind::Herdr,
+            &mut host,
+        )
+        .expect("loop step");
         assert_eq!(
             model.input_mode(),
             crate::ui::board::BoardInputMode::SaveRecovery
@@ -22594,7 +22660,7 @@ mod queued_cleanup_tests {
         )
         .expect("answer");
         let mut host = CheckHost::new(false);
-        finish_queued_cleanup_with_host(store, domain, model, recovery, true, &mut host)
+        finish_queued_cleanup_with_host(store, domain, model, recovery, HostKind::Herdr, &mut host)
             .expect("loop step");
     }
 
@@ -22687,7 +22753,7 @@ mod queued_cleanup_tests {
             &mut domain,
             &mut model,
             &mut recovery,
-            true,
+            HostKind::Herdr,
             &mut host,
         )
         .expect("loop step");
@@ -22746,7 +22812,7 @@ mod queued_cleanup_tests {
         let (dir, store, mut domain, id) = setup("failed-check");
         let mut model = BoardModel::from_domain(&domain, None);
         let mut host = CheckHost::new(false);
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
             .expect("offer");
         // The ancestry query timed out: the check lands, but it confirmed nothing.
         host.check.complete(MergeVerdict {
@@ -22777,7 +22843,7 @@ mod queued_cleanup_tests {
         let (dir, store, mut domain, id) = setup("offline-check");
         let mut model = BoardModel::from_domain(&domain, None);
         let mut host = CheckHost::new(true);
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
             .expect("offer");
         // The fetch failed: the refs on disk read as merged, but the remote may have been
         // force-pushed since.
@@ -22819,7 +22885,7 @@ mod queued_cleanup_tests {
         let (dir, store, mut domain, id) = setup("relaunched");
         let mut model = BoardModel::from_domain(&domain, None);
         let mut host = CheckHost::new(true);
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
             .expect("offer");
         host.check.complete(verdict(true));
         tick(&store, &mut domain, &mut model, &mut host);
@@ -22833,7 +22899,7 @@ mod queued_cleanup_tests {
         let mut other = store.load().expect("load");
         let mut relaunched = other.get(id).unwrap().dispatch.clone().unwrap();
         relaunched.cleaned = false;
-        relaunched.herdr_workspace_id = "w2".into();
+        relaunched.session = "w2".into();
         relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
         other
             .record_dispatch(id, relaunched.clone())
@@ -22883,8 +22949,14 @@ mod queued_cleanup_tests {
         }
         assert!(model.project_right_seat_focused());
         let mut host = CheckHost::new(false);
-        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
-            .expect("offer");
+        offer_cleanup_prompt_with_host(
+            &mut domain,
+            model.input_target_mut(),
+            id,
+            HostKind::Herdr,
+            &mut host,
+        )
+        .expect("offer");
         press(
             &store,
             &mut domain,
@@ -22934,8 +23006,14 @@ mod queued_cleanup_tests {
                 .expect("stage right");
         }
         let mut host = CheckHost::new(false);
-        offer_cleanup_prompt_with_host(&mut domain, model.input_target_mut(), id, true, &mut host)
-            .expect("offer");
+        offer_cleanup_prompt_with_host(
+            &mut domain,
+            model.input_target_mut(),
+            id,
+            HostKind::Herdr,
+            &mut host,
+        )
+        .expect("offer");
         press(
             &store,
             &mut domain,
@@ -22957,7 +23035,7 @@ mod queued_cleanup_tests {
             &mut domain,
             &mut model,
             &mut recovery,
-            true,
+            HostKind::Herdr,
             &mut host,
         );
         std::fs::set_permissions(&dir, permissions(0o755)).expect("writable again");
@@ -22983,7 +23061,7 @@ mod queued_cleanup_tests {
             BoardIntent::RetrySave,
             &mut recovery,
             false,
-            true,
+            HostKind::Herdr,
             &mut host,
             &mut |_| {},
         )
@@ -22994,7 +23072,7 @@ mod queued_cleanup_tests {
             &mut domain,
             &mut model,
             &mut recovery,
-            true,
+            HostKind::Herdr,
             &mut host,
         )
         .expect("loop step");
@@ -23013,7 +23091,7 @@ mod queued_cleanup_tests {
         let mut model = BoardModel::from_domain(&domain, None);
         let mut host = CheckHost::new(false);
         host.fetch_lands_during_snapshot = true;
-        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, true, &mut host)
+        offer_cleanup_prompt_with_host(&mut domain, &mut model, id, HostKind::Herdr, &mut host)
             .expect("offer");
         assert!(
             model.cleanup_prompt().unwrap().checking(),
@@ -23036,7 +23114,7 @@ mod bulk_cleanup_tests {
     };
     use crate::dispatch::{
         run_cleanup_job, run_cleanup_row, CleanupError, CleanupInspection, CleanupJob,
-        CleanupPlanRow, CreatedWorktree, DispatchHost, MergeCheck, MergeVerdict,
+        CleanupPlanRow, CreatedWorktree, DispatchHost, HostKind, MergeCheck, MergeVerdict,
     };
     use crate::domain::{
         Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope, UndoEntry,
@@ -23089,7 +23167,7 @@ mod bulk_cleanup_tests {
             &mut self,
             _: &Path,
             _: &Dispatch,
-            _: bool,
+            _: HostKind,
         ) -> Result<CleanupInspection, String> {
             panic!("the board must not fetch on its own thread")
         }
@@ -23097,7 +23175,7 @@ mod bulk_cleanup_tests {
             &mut self,
             _: &Path,
             record: &Dispatch,
-            _: bool,
+            _: HostKind,
         ) -> Result<CleanupInspection, String> {
             Ok(CleanupInspection {
                 unreachable_remote: None,
@@ -23106,7 +23184,7 @@ mod bulk_cleanup_tests {
                 dirty_files: Vec::new(),
                 checked_out_elsewhere: false,
                 branch_merged: self.cached_merged,
-                workspace_exists: !self.gone_workspaces.contains(&record.herdr_workspace_id),
+                workspace_exists: !self.gone_workspaces.contains(&record.session),
                 target_matches: true,
                 warning: None,
                 base_available: true,
@@ -23120,14 +23198,14 @@ mod bulk_cleanup_tests {
                     .clone(),
             )
         }
-        fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
+        fn remove_host_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
             if self.fail.contains(workspace_id) {
                 return Err(format!("herdr could not remove {workspace_id}"));
             }
             self.removed.push(workspace_id.to_string());
             Ok(())
         }
-        fn close_herdr_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
+        fn close_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
             if let Some(error) = self.close_error.clone() {
                 return Err(error);
             }
@@ -23138,11 +23216,16 @@ mod bulk_cleanup_tests {
             self.deleted.push(branch.to_string());
             Ok(())
         }
-        fn begin_cleanup(&mut self, job: CleanupJob, plan: Vec<CleanupPlanRow>, in_herdr: bool) {
+        fn begin_cleanup(
+            &mut self,
+            job: CleanupJob,
+            plan: Vec<CleanupPlanRow>,
+            host_kind: HostKind,
+        ) {
             if self.hold {
                 self.held = Some((job, plan));
             } else {
-                run_cleanup_job(&job, &plan, in_herdr, self);
+                run_cleanup_job(&job, &plan, host_kind, self);
             }
         }
         fn root_pane(&mut self, _: &str) -> Result<String, crate::dispatch::RootPaneError> {
@@ -23162,7 +23245,7 @@ mod bulk_cleanup_tests {
         /// The worker finishes row `index`; the job settles once every row is done.
         fn release(&mut self, index: usize) {
             let (job, plan) = self.held.clone().expect("held job");
-            run_cleanup_row(&job, index, &plan[index], true, self);
+            run_cleanup_row(&job, index, &plan[index], HostKind::Herdr, self);
             let (slots, _) = job.snapshot().expect("job idle");
             if slots
                 .iter()
@@ -23210,7 +23293,8 @@ mod bulk_cleanup_tests {
             base_commit: None,
             base_remote: Some("origin".into()),
             base_ref: Some("refs/remotes/origin/main".into()),
-            herdr_workspace_id: format!("w-{label}"),
+            host: crate::domain::AgentHost::Herdr,
+            session: format!("w-{label}"),
             at: SystemTime::now(),
             cleaned: false,
         }
@@ -23294,7 +23378,7 @@ mod bulk_cleanup_tests {
             intent,
             &mut recovery,
             false,
-            true,
+            HostKind::Herdr,
             host,
             &mut |_| {},
         )
@@ -23309,7 +23393,7 @@ mod bulk_cleanup_tests {
             &mut board.domain,
             &mut board.model,
             &mut recovery,
-            true,
+            HostKind::Herdr,
             host,
         )
         .expect("loop step");
@@ -23821,7 +23905,7 @@ mod bulk_cleanup_tests {
             .expect("save cleaned");
         let mut other = board.store.load().expect("load");
         let mut relaunched = dispatched("clean");
-        relaunched.herdr_workspace_id = "w-clean-2".into();
+        relaunched.session = "w-clean-2".into();
         relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
         other
             .record_dispatch(board.ids[0], relaunched.clone())
@@ -23866,7 +23950,7 @@ mod bulk_cleanup_tests {
             offer_bulk_cleanup_prompt_with_host(
                 &mut board.domain,
                 &mut board.model,
-                true,
+                HostKind::Herdr,
                 &mut host
             )
             .expect("offer"),
@@ -24076,7 +24160,7 @@ mod bulk_cleanup_tests {
             BoardIntent::Quit,
             &mut recovery,
             false,
-            true,
+            HostKind::Herdr,
             &mut host,
             &mut |_| {},
         )
@@ -24131,7 +24215,7 @@ mod bulk_cleanup_tests {
                 &mut board.domain,
                 &mut board.model,
                 id,
-                true,
+                HostKind::Herdr,
                 &mut host
             )
             .expect("offer"),
@@ -24148,7 +24232,7 @@ mod bulk_cleanup_tests {
         // Another process relaunches T1 after `y`, before the worker reaches it.
         let mut other = board.store.load().expect("load");
         let mut relaunched = dispatched("clean");
-        relaunched.herdr_workspace_id = "w-clean-2".into();
+        relaunched.session = "w-clean-2".into();
         relaunched.at = SystemTime::now() + std::time::Duration::from_secs(1);
         other
             .record_dispatch(board.ids[0], relaunched.clone())
@@ -24249,7 +24333,7 @@ mod bulk_cleanup_tests {
                 &mut board.domain,
                 board.model.input_target_mut(),
                 id,
-                true,
+                HostKind::Herdr,
                 &mut host
             )
             .expect("offer"),
@@ -24371,8 +24455,8 @@ mod merge_cleanup_tests {
     use crate::agents::MergeMethod;
     use crate::dispatch::pr::{MergeJob, PrState};
     use crate::dispatch::{
-        BranchDeletion, CleanupInspection, CreatedWorktree, DispatchHost, MergeRow, PrLookup,
-        PullRequest,
+        BranchDeletion, CleanupInspection, CreatedWorktree, DispatchHost, HostKind, MergeRow,
+        PrLookup, PullRequest,
     };
     use crate::domain::{Dispatch, DomainState, HumanStatus, ProvenanceOrigin, TaskScope};
     use crate::save_recovery::SaveRecovery;
@@ -24436,15 +24520,15 @@ mod merge_cleanup_tests {
             &mut self,
             project: &Path,
             record: &Dispatch,
-            in_herdr: bool,
+            host_kind: HostKind,
         ) -> Result<CleanupInspection, String> {
-            self.inspect_cleanup_cached(project, record, in_herdr)
+            self.inspect_cleanup_cached(project, record, host_kind)
         }
         fn inspect_cleanup_cached(
             &mut self,
             _: &Path,
             record: &Dispatch,
-            _: bool,
+            _: HostKind,
         ) -> Result<CleanupInspection, String> {
             if self.uninspectable.contains(&record.branch) {
                 return Err("git status failed".into());
@@ -24462,11 +24546,11 @@ mod merge_cleanup_tests {
                 base_available: true,
             })
         }
-        fn remove_herdr_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
+        fn remove_host_worktree(&mut self, workspace_id: &str) -> Result<(), String> {
             self.removed.push(workspace_id.to_string());
             Ok(())
         }
-        fn close_herdr_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
+        fn close_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
             self.closed.push(workspace_id.to_string());
             Ok(())
         }
@@ -24596,7 +24680,8 @@ mod merge_cleanup_tests {
                             base_commit: None,
                             base_remote: Some("origin".into()),
                             base_ref: Some("refs/remotes/origin/main".into()),
-                            herdr_workspace_id: format!("w-{title}"),
+                            host: crate::domain::AgentHost::Herdr,
+                            session: format!("w-{title}"),
                             at: SystemTime::now(),
                             cleaned: false,
                         },
@@ -24643,7 +24728,7 @@ mod merge_cleanup_tests {
             intent,
             &mut recovery,
             false,
-            true,
+            HostKind::Herdr,
             host,
             &mut |_| {},
         )
@@ -24660,7 +24745,7 @@ mod merge_cleanup_tests {
             &mut board.domain,
             &mut board.model,
             &mut recovery,
-            true,
+            HostKind::Herdr,
             host,
             &mut |_| {},
         )
@@ -24952,7 +25037,7 @@ mod merge_cleanup_tests {
             &mut board.domain,
             board.model.input_target_mut(),
             id,
-            true,
+            HostKind::Herdr,
             &mut host,
         )
         .expect("offer");
@@ -24964,7 +25049,7 @@ mod merge_cleanup_tests {
             BoardIntent::MergeCleanup,
             &mut recovery,
             false,
-            true,
+            HostKind::Herdr,
             &mut host,
             &mut |_| {},
         )

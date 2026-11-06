@@ -4,6 +4,7 @@
 //! click that runs, and a dim `esc cancel` line instead of a footer key list.
 
 use std::time::Duration;
+use tsk_tui::dispatch::HostKind;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::backend::TestBackend;
@@ -110,8 +111,8 @@ fn bulk_launching() -> BoardModel {
     let store = TaskStore::new(&dir);
     store.save(&state).expect("save");
     let state = store.load().expect("numbered");
-    let eligible =
-        tsk_tui::dispatch::check_task(&state, launch, &profiles, true).expect("eligible");
+    let eligible = tsk_tui::dispatch::check_task(&state, launch, &profiles, HostKind::Herdr)
+        .expect("eligible");
     let _ = std::fs::remove_dir_all(&dir);
     let mut prompt = DispatchPrompt::start_anyway(StartAnywayPrompt {
         waiting: Vec::new(),

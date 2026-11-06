@@ -35,7 +35,8 @@ fn record(number: u64) -> Dispatch {
         base_ref: Some("refs/remotes/origin/main".into()),
         base_commit: None,
         base_remote: Some("origin".into()),
-        herdr_workspace_id: "w1".into(),
+        host: tsk_tui::domain::AgentHost::Herdr,
+        session: "w1".into(),
         at: std::time::SystemTime::UNIX_EPOCH,
         cleaned: false,
     }
@@ -604,6 +605,32 @@ fn h_the_finished_card_says_what_happened_and_reports_the_remote_branch_truthful
         assert_says(&model, &[line, "esc close"]);
         assert!(options(&model).is_empty());
     }
+}
+
+/// `row` dispatched in Rex: its pane is the agent's Rex session.
+fn in_rex(mut row: CleanupRow) -> CleanupRow {
+    if let Some(record) = row.inspected.as_mut() {
+        record.host = tsk_tui::domain::AgentHost::Rex;
+        record.session = "session:s1".into();
+    }
+    row
+}
+
+#[test]
+fn a_rex_dispatch_card_names_the_agent_tab() {
+    assert_says(
+        &single(in_rex(open_pr(7, 193))),
+        &[
+            "▸ m squash-merge PR #193 to main · mark done · remove worktree, branch and agent tab",
+            "y don't merge · mark done · remove worktree and agent tab · keep the branch and the PR open",
+        ],
+    );
+    assert_says(
+        &bulk(vec![in_rex(merged(8, 190)), in_rex(row(9))], &[]),
+        &["▸ y mark all 2 done · remove their worktrees and agent tabs · delete T8's branch · keep T9's branch"],
+    );
+    let said = body(&single(in_rex(merged(7, 194))), 110, 40);
+    assert!(!said.contains("agent pane"), "{said}");
 }
 
 /// T7 open PR, T8 already merged, T9 not merged, T10 uncommitted.

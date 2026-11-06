@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::cli::parser::TaskAddress;
-use crate::dispatch::{self, Delivery, DispatchHost, StartRoute};
+use crate::dispatch::{self, Delivery, DispatchHost, HostKind, StartRoute};
 use crate::domain::{actor_from_env, BlockKey, DomainError, DomainState, OWNER};
 use crate::store::{default_state_dir, TaskStore};
 
@@ -73,9 +73,13 @@ impl SendOutcome {
                 delivery: Delivery::NotInPane,
             } => format!("not sent: @{assignee} is not in its pane"),
             Self::NotDelivered {
-                delivery: Delivery::NotInHerdr,
+                delivery: Delivery::NoHost,
                 ..
-            } => format!("not sent: {}", dispatch::NO_LAUNCH_NOT_IN_HERDR),
+            } => format!("not sent: {}", dispatch::NO_LAUNCH_NO_HOST),
+            Self::NotDelivered {
+                delivery: Delivery::OtherHost(host),
+                ..
+            } => format!("not sent: {}", dispatch::other_host(*host, "reply")),
             Self::NotDelivered { assignee, .. } => format!("not sent: could not reach @{assignee}"),
             Self::Skipped(reason) => format!("not sent: {reason}"),
         }
@@ -97,7 +101,7 @@ pub fn run_send(
         text,
         Some(state_dir),
         &actor_from_env(),
-        dispatch::running_inside_herdr(),
+        dispatch::HostKind::detect(),
         &mut host,
     )
 }
@@ -107,14 +111,14 @@ pub fn run_send_with_host(
     text: &str,
     state_dir: Option<PathBuf>,
     by: &str,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> Result<(ReplyResult, SendOutcome), ReplyError> {
     let result = run_as(target, text, state_dir.clone(), by)?;
     let store = TaskStore::new(state_dir.unwrap_or_else(default_state_dir));
     let outcome = match store.load() {
         Ok(state) => match state.tasks().iter().find(|task| target.matches(task)) {
-            Some(task) => send(task, text, &result.by, in_herdr, host),
+            Some(task) => send(task, text, &result.by, host_kind, host),
             None => SendOutcome::Skipped("the task is gone".into()),
         },
         Err(error) => SendOutcome::Skipped(format!("could not read the board: {error}")),
@@ -144,7 +148,7 @@ fn send(
     task: &crate::domain::Task,
     text: &str,
     by: &str,
-    in_herdr: bool,
+    host_kind: HostKind,
     host: &mut impl DispatchHost,
 ) -> SendOutcome {
     let skip = |reason: &str| SendOutcome::Skipped(reason.to_string());
@@ -157,7 +161,7 @@ fn send(
     if task.dispatch.is_none() {
         return skip("never dispatched; a start dispatches it");
     }
-    let check = match dispatch::start_route_checked(task, OWNER, in_herdr, host) {
+    let check = match dispatch::start_route_checked(task, OWNER, host_kind, host) {
         (StartRoute::AgentGone { .. }, _) => {
             return SendOutcome::Skipped(format!("@{assignee} is gone"))
         }
@@ -243,7 +247,7 @@ mod tests {
     use crate::cli::parser::TaskAddress;
     use crate::cli::status::{StartFlags, StartOutcome};
     use crate::dispatch::{
-        CreatedWorktree, Delivery, DispatchHost, PaneAgent, PromptError, RootPaneError,
+        CreatedWorktree, Delivery, DispatchHost, HostKind, PaneAgent, PromptError, RootPaneError,
     };
     use crate::domain::{
         BlockDraft, Dispatch, DomainState, HumanStatus, ProvenanceOrigin, ReviewDraft, TaskScope,
@@ -295,7 +299,8 @@ mod tests {
                             base_ref: None,
                             base_commit: None,
                             base_remote: None,
-                            herdr_workspace_id: "w0".into(),
+                            host: crate::domain::AgentHost::Herdr,
+                            session: "w0".into(),
                             at: std::time::SystemTime::now(),
                             cleaned: false,
                         },
@@ -430,7 +435,7 @@ mod tests {
         number: u64,
         text: &str,
         by: &str,
-        in_herdr: bool,
+        host_kind: HostKind,
         host: &mut Host,
     ) -> SendOutcome {
         run_send_with_host(
@@ -438,15 +443,21 @@ mod tests {
             text,
             Some(temp.0.clone()),
             by,
-            in_herdr,
+            host_kind,
             host,
         )
         .expect("reply stored")
         .1
     }
 
-    fn send(temp: &Temp, number: u64, by: &str, in_herdr: bool, host: &mut Host) -> SendOutcome {
-        send_text(temp, number, "use postgres", by, in_herdr, host)
+    fn send(
+        temp: &Temp,
+        number: u64,
+        by: &str,
+        host_kind: HostKind,
+        host: &mut Host,
+    ) -> SendOutcome {
+        send_text(temp, number, "use postgres", by, host_kind, host)
     }
 
     #[test]
@@ -454,9 +465,16 @@ mod tests {
         let temp = Temp::new("sent");
         let number = temp.blocked(true);
         let mut host = running(&temp, number);
-        let outcome = send(&temp, number, "you", true, &mut host);
+        let outcome = send(&temp, number, "you", HostKind::Herdr, &mut host);
         assert_eq!(outcome.line(), "sent to @builder");
-        let outcome = send_text(&temp, number, "add an index", "you", true, &mut host);
+        let outcome = send_text(
+            &temp,
+            number,
+            "add an index",
+            "you",
+            HostKind::Herdr,
+            &mut host,
+        );
         assert_eq!(outcome.line(), "sent to @builder");
         assert_eq!(
             host.prompts,
@@ -489,11 +507,11 @@ mod tests {
         let probe = temp.blocked(true);
         let named = || running(&temp, probe);
         // (dispatched, author, in Herdr, host, line, prompts)
-        let cases: Vec<(bool, &str, bool, Host, &str, usize)> = vec![
+        let cases: Vec<(bool, &str, HostKind, Host, &str, usize)> = vec![
             (
                 true,
                 "you",
-                true,
+                HostKind::Herdr,
                 Host {
                     prompt_error: Some(PromptError::AgentBlocked),
                     ..named()
@@ -504,7 +522,7 @@ mod tests {
             (
                 true,
                 "you",
-                true,
+                HostKind::Herdr,
                 Host {
                     prompt_error: Some(PromptError::Failed("herdr: boom".into())),
                     ..named()
@@ -515,7 +533,7 @@ mod tests {
             (
                 true,
                 "you",
-                true,
+                HostKind::Herdr,
                 Host {
                     root_failed: true,
                     ..named()
@@ -526,7 +544,7 @@ mod tests {
             (
                 true,
                 "you",
-                true,
+                HostKind::Herdr,
                 Host {
                     name: Some("reviewer".into()),
                     ..named()
@@ -537,7 +555,7 @@ mod tests {
             (
                 true,
                 "you",
-                true,
+                HostKind::Herdr,
                 Host {
                     name: None,
                     ..named()
@@ -548,7 +566,7 @@ mod tests {
             (
                 true,
                 "you",
-                true,
+                HostKind::Herdr,
                 Host {
                     gone: true,
                     ..named()
@@ -559,30 +577,67 @@ mod tests {
             (
                 false,
                 "you",
-                true,
+                HostKind::Herdr,
                 named(),
                 "not sent: never dispatched; a start dispatches it",
                 0,
             ),
-            (true, "you", false, named(), "not sent: not in Herdr", 0),
+            (
+                true,
+                "you",
+                HostKind::Standalone,
+                named(),
+                "not sent: outside Herdr or Rex",
+                0,
+            ),
             (
                 true,
                 "reviewer",
-                true,
+                HostKind::Herdr,
                 named(),
                 "not sent: only your replies are sent",
                 0,
             ),
+            // Dispatched in Herdr, replied from Rex: Rex never asks after Herdr's agent.
+            (
+                true,
+                "you",
+                HostKind::Rex,
+                named(),
+                "not sent: dispatched in Herdr; reply from Herdr",
+                0,
+            ),
         ];
-        for (dispatched, by, in_herdr, mut host, line, sends) in cases {
+        for (dispatched, by, host_kind, mut host, line, sends) in cases {
             let temp = Temp::new("not-sent");
             let number = temp.blocked(dispatched);
             assert_eq!(number, probe, "each fresh board numbers its task alike");
             host.state = Some(temp.0.clone());
-            let outcome = send(&temp, number, by, in_herdr, &mut host);
+            let outcome = send(&temp, number, by, host_kind, &mut host);
             assert_eq!(outcome.line(), line);
             assert_eq!(host.prompts.len(), sends, "{line}");
             assert_eq!(temp.status(number), HumanStatus::Blocked);
+            if host_kind == HostKind::Rex {
+                assert!(
+                    matches!(&outcome, SendOutcome::NotDelivered { delivery, .. }
+                    if *delivery == Delivery::OtherHost(crate::domain::AgentHost::Herdr))
+                );
+            }
+            if dispatched && by == "you" {
+                let state = TaskStore::new(&temp.0).load().expect("load");
+                let task = state
+                    .tasks()
+                    .iter()
+                    .find(|task| task.number == Some(number))
+                    .expect("task");
+                let replies = &task.block.as_ref().expect("block").replies;
+                assert!(
+                    replies
+                        .iter()
+                        .any(|reply| reply.text == "use postgres" && !reply.sent),
+                    "{line}: the reply stays unsent"
+                );
+            }
             if sends == 1 {
                 assert!(matches!(outcome, SendOutcome::NotDelivered { delivery, .. }
                     if delivery != Delivery::Sent));
@@ -615,7 +670,7 @@ mod tests {
             TaskAddress::Number(number),
             StartFlags::default(),
             Some(temp.0.clone()),
-            true,
+            HostKind::Herdr,
             actor,
             host,
         )
@@ -717,7 +772,7 @@ mod tests {
             let (_, line) = crate::cli::status::run_ready_with_host(
                 TaskAddress::Number(number),
                 Some(temp.0.clone()),
-                true,
+                HostKind::Herdr,
                 "you",
                 &mut host,
             )
@@ -747,7 +802,7 @@ mod tests {
         let number = temp.blocked(true);
         let mut host = running(&temp, number);
         assert_eq!(
-            send(&temp, number, "you", true, &mut host).line(),
+            send(&temp, number, "you", HostKind::Herdr, &mut host).line(),
             "sent to @builder"
         );
         saved_replies(&temp, number, &["add an index"]);
@@ -792,7 +847,14 @@ mod tests {
             .expect("fail");
         store.reload_merge_save(&mut state).expect("save");
         let mut host = running(&temp, number);
-        send_text(&temp, number, "fix the peak", "you", true, &mut host);
+        send_text(
+            &temp,
+            number,
+            "fix the peak",
+            "you",
+            HostKind::Herdr,
+            &mut host,
+        );
         start(&temp, number, "you", &mut host);
         assert_eq!(
             host.prompts,
@@ -821,7 +883,7 @@ mod tests {
             ..running(&temp, number)
         };
         assert_eq!(
-            send(&temp, number, "you", true, &mut host).line(),
+            send(&temp, number, "you", HostKind::Herdr, &mut host).line(),
             "sent to @builder"
         );
         let state = TaskStore::new(&temp.0).load().expect("load");
@@ -847,7 +909,7 @@ mod tests {
             let mut host = running(&temp, number);
             host.prompt_error = Some(error.clone());
             assert!(matches!(
-                send(&temp, number, "you", true, &mut host),
+                send(&temp, number, "you", HostKind::Herdr, &mut host),
                 SendOutcome::NotDelivered { .. }
             ));
             host.prompt_error = None;

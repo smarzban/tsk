@@ -1834,7 +1834,8 @@ fn direct_json_includes_the_full_existing_dispatch_base_and_commit() {
                 base_commit: Some("0123456789abcdef".into()),
                 base_remote: None,
                 base_ref: None,
-                herdr_workspace_id: "workspace-1".into(),
+                host: tsk_tui::domain::AgentHost::Herdr,
+                session: "workspace-1".into(),
                 at: SystemTime::now(),
                 cleaned: false,
             },
@@ -1854,6 +1855,33 @@ fn direct_json_includes_the_full_existing_dispatch_base_and_commit() {
     let rows: Vec<serde_json::Value> = serde_json::from_str(&output.stdout).expect("JSON rows");
     assert_eq!(rows[0]["dispatch"]["base"], "origin/main");
     assert_eq!(rows[0]["dispatch"]["base_commit"], "0123456789abcdef");
+    assert_eq!(rows[0]["dispatch"]["host"], "herdr");
+    assert_eq!(rows[0]["dispatch"]["session"], "workspace-1");
+    assert_eq!(
+        rows[0]["dispatch"]["herdr_workspace_id"], "workspace-1",
+        "a Herdr dispatch keeps its workspace id under the original key"
+    );
+
+    // A Rex dispatch names its session only.
+    let mut record = state.get(id).unwrap().dispatch.clone().unwrap();
+    record.host = tsk_tui::domain::AgentHost::Rex;
+    record.session = "session:s1".into();
+    state
+        .record_dispatch(id, record)
+        .expect("record Rex dispatch");
+    TaskStore::new(&dir).save(&state).expect("save");
+    let output = list(&[
+        "tsk".into(),
+        "list".into(),
+        "T1".into(),
+        "--json".into(),
+        "--state-dir".into(),
+        state_dir_arg(&dir),
+    ]);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&output.stdout).expect("JSON rows");
+    assert_eq!(rows[0]["dispatch"]["host"], "rex");
+    assert_eq!(rows[0]["dispatch"]["session"], "session:s1");
+    assert!(rows[0]["dispatch"].get("herdr_workspace_id").is_none());
 
     let _ = std::fs::remove_dir_all(dir);
 }
