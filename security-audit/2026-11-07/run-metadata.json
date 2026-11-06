@@ -1,0 +1,108 @@
+{
+  "run_id": "run-1",
+  "repo": "smarzban/tsk",
+  "target": "/agent/repos/tsk",
+  "source_ref": {
+    "commit": "94b1dc6f864c064f69631d240b1e91c9bece2cdd",
+    "branch": "main",
+    "delta_from": "8d714a201280318f92ed42d26d20bf233a1f5baf",
+    "delta_to": "94b1dc6f864c064f69631d240b1e91c9bece2cdd",
+    "worktree_dirty": false,
+    "note": "HEAD matches the requested audit commit"
+  },
+  "profile": "standard",
+  "scope": "scoped delta of 8d714a201280318f92ed42d26d20bf233a1f5baf..94b1dc6f864c064f69631d240b1e91c9bece2cdd and code those changes touch, plus carried windows-state-dir-acl and a same-source recheck that prior closed findings (backup scheme-prefix, terminal-control escaping) remain closed",
+  "scope_paths": [
+    "src/dispatch.rs",
+    "src/dispatch/host.rs",
+    "src/dispatch/rex.rs",
+    "src/dispatch/pr.rs",
+    "src/agents.rs",
+    "src/app.rs",
+    "src/cli/archive.rs",
+    "src/cli/clean.rs",
+    "src/cli/dispatch.rs",
+    "src/cli/list.rs",
+    "src/cli/mod.rs",
+    "src/cli/presenter.rs",
+    "src/cli/reply.rs",
+    "src/cli/status.rs",
+    "src/domain/block.rs",
+    "src/domain/task.rs",
+    "src/scope.rs",
+    "src/setup.rs",
+    "src/setup/rex.lua",
+    "src/setup/rex.rs",
+    "src/setup_agent.rs",
+    "src/store.rs",
+    "src/fsperm.rs",
+    "src/ui/board/cleanup_card.rs",
+    "src/ui/board/draw.rs",
+    "src/ui/board/model.rs",
+    "src/backup.rs",
+    "src/ui/mod.rs",
+    "site/public/install.sh",
+    "site/public/board-demo.js",
+    "site/package.json",
+    "site/package-lock.json",
+    "skills/tsk-cli/SKILL.md",
+    "skills/tsk-coordinator/SKILL.md"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md",
+    "DATA-ISOLATION-AND-LIFECYCLE.md",
+    "AI-AND-LLM.md",
+    "SUPPLY-CHAIN-AND-RELEASE.md"
+  ],
+  "prior_run_paths": [
+    "/home/ubuntu/security-audit-skill/tsk/run-1/prior/coverage-ledger.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-1/prior/findings.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-1/prior/architecture.md",
+    "/home/ubuntu/security-audit-skill/tsk/run-1/prior/REPORT.md",
+    "/home/ubuntu/security-audit-skill/tsk/run-1/prior/NEEDS-VALIDATION.md",
+    "origin/security-audit/2026-10-23:security-audit/2026-10-23/"
+  ],
+  "prior_source_ref": "8d714a201280318f92ed42d26d20bf233a1f5baf",
+  "shared_file_owners": {
+    "run-metadata.json": "parent",
+    "architecture.md": "parent",
+    "coverage-ledger.json": "parent",
+    "findings.json": "parent",
+    "REPORT.md": "parent",
+    "FINDINGS-DETAIL.md": "parent",
+    "NEEDS-VALIDATION.md": "parent"
+  },
+  "run_status": "complete",
+  "sandbox_notes": "Preliminary: unshare --user --map-root-user --mount --net can remount a bind read-only. bwrap and firejail are absent. User systemd bus is absent. ulimit can set cpu, nproc, file size, and virtual memory. Disk quota via cgroup is not yet shown. Target code has not been executed.",
+  "agent_spend": {
+    "budget": null,
+    "judgment_invocations": {
+      "reconnaissance": 4,
+      "hunters_wave_1": 4,
+      "post_wave_critic": 1,
+      "phase3_verifier": 1,
+      "final_clean_critic": 1,
+      "phase5_verifier": 1,
+      "total": 12
+    },
+    "file_save_followups": 5,
+    "notes": "No second hunter wave. Post-wave and final-clean critics both returned no missing units and no reassignment."
+  },
+  "sandbox": {
+    "target_code_executed": false,
+    "reason": "unshare can create a user, mount, and net namespace and remount a bind read-only. bubblewrap and firejail are absent. A user systemd bus is absent, so a disk quota was not enforced together with an empty environment, a read-only toolchain, scratch-only writes, and explicit CPU, memory, process, file-size, and wall-clock limits."
+  },
+  "validators": {
+    "validate-findings.cjs": "PASS",
+    "validate-coverage-ledger.cjs": "PASS"
+  },
+  "coverage": {
+    "covered": 13,
+    "candidate": 1,
+    "out_of_scope": 8,
+    "blocked": 0,
+    "deferred": 0
+  }
+}

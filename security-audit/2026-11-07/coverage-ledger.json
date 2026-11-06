@@ -1,0 +1,2019 @@
+[
+  {
+    "coverage_id": ".github%2Fworkflows%2Fci.yml%23pull_request::.github%2Fworkflows%2Fci.yml%23permissions::.github%2Fworkflows::ATTACK-CLASSES.md%23Access%20control",
+    "canonical_refs": {
+      "surface": ".github/workflows/ci.yml#pull_request",
+      "boundary": ".github/workflows/ci.yml#permissions",
+      "subsystem": ".github/workflows",
+      "attack_class": "ATTACK-CLASSES.md#Access control"
+    },
+    "surface": "GitHub Actions workflows",
+    "boundary": "Workflow permissions",
+    "subsystem": ".github/workflows",
+    "attack_class": "Untrusted PR code reaching secrets",
+    "starting_paths": [
+      ".github/workflows/ci.yml",
+      ".github/workflows/release.yml"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: security-relevant source for this surface was not edited between 8d714a2 and 94b1dc6. Not re-closed as covered."
+    ],
+    "hardening": [],
+    "assignment_note": "out-of-scope"
+  },
+  {
+    "coverage_id": "CHANGELOG.md%23Unreleased::src%2Fmain.rs%23main::repository-delta-2026-11-07::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "CHANGELOG.md#Unreleased",
+      "boundary": "src/main.rs#main",
+      "subsystem": "repository-delta-2026-11-07",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "Delta added lines for secrets and debug gates",
+    "boundary": "No production debug switch in main",
+    "subsystem": "repository-delta-2026-11-07",
+    "attack_class": "Obvious exposures in the audited diff",
+    "starting_paths": [
+      "CHANGELOG.md",
+      "src/dispatch.rs",
+      "src/dispatch/rex.rs",
+      "src/setup/rex.rs",
+      "src/agents.rs",
+      "site/public/install.sh"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "Workflows are an out-of-scope unit. This unit is the diff text."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-supply-recheck",
+    "reviewed_paths": [
+      "CHANGELOG.md",
+      "src/agents.rs",
+      "src/dispatch.rs",
+      "src/dispatch/rex.rs",
+      "src/setup/rex.rs",
+      "site/public/install.sh",
+      "src/main.rs",
+      "src/app.rs",
+      ".gitignore",
+      "site/.gitignore"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-supply-recheck",
+        "reviewed_paths": [
+          "CHANGELOG.md",
+          "src/agents.rs",
+          "src/dispatch.rs",
+          "src/dispatch/rex.rs",
+          "src/setup/rex.rs",
+          "site/public/install.sh"
+        ],
+        "invariant": "Added lines in the assigned delta contain no hardcoded password, API key, token, or private key that production code would accept.",
+        "method": "source",
+        "result": "Added lines in CHANGELOG.md, src/dispatch.rs, src/dispatch/rex.rs, src/setup/rex.rs, src/agents.rs, and site/public/install.sh have no Bearer token, PEM block, or live key. The only secret-like strings in src/agents.rs are test fixtures at lines 2048 and 2165 (TSK_TEST_KEY and API_TOKEN) inside cfg-test launcher checks. src/dispatch/rex.rs and src/setup/rex.rs have no password, secret, apikey, or Bearer matches.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-supply-recheck",
+        "reviewed_paths": [
+          "src/dispatch/rex.rs",
+          "src/setup/rex.rs",
+          "src/agents.rs",
+          "site/public/install.sh"
+        ],
+        "invariant": "The delta adds no TODO, FIXME, HACK, or XXX comment that skips authentication, validation, or a permission check.",
+        "method": "source",
+        "result": "Those four files have no TODO, FIXME, HACK, or XXX comments. The added-line scan of the assigned delta did not match a security TODO.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-supply-recheck",
+        "reviewed_paths": [
+          "src/main.rs",
+          "src/app.rs"
+        ],
+        "invariant": "main has no production debug or dev switch that an environment variable, query, or header can enable.",
+        "method": "source",
+        "result": "src/main.rs is not in the delta. main at line 12 only passes TSK_MODE into route. src/app.rs:44 defines MODE_ENV as TSK_MODE, and resolve_mode_from at lines 60-76 selects Capture only when the value is capture, otherwise Board. That is the quick-capture surface, not a debug, auth-bypass, or verbose-error gate. No /debug, /admin, /health, or metrics endpoint exists in this binary.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-supply-recheck",
+        "reviewed_paths": [
+          ".gitignore",
+          "site/.gitignore"
+        ],
+        "invariant": "The repo does not commit .env, credential, pem, or key files, and gitignore covers local env files.",
+        "method": "source",
+        "result": "No .env, .pem, or .key file is present. .gitignore lines 13-14 ignore .env and .env.*, and site/.gitignore lines 16-17 and 34 do the same. No production seed credential is wired to main.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-supply-recheck",
+        "reviewed_paths": [
+          "site/public/install.sh",
+          "src/main.rs"
+        ],
+        "invariant": "The delta does not add eval of untrusted input, a wildcard CORS or cookie surface, an open redirect, or a production stack-trace response.",
+        "method": "source",
+        "result": "install.sh has no eval. Its four sh -c calls (lines 219, 289, 352, and 422) run the fixed string exec <>/dev/tty. curl uses --proto '=https' --proto-redir '=https' --tlsv1.2. There is no HTTP server, cookie, CORS header, or redirect parameter. CLI failures print formatted messages from main, not a panic trace or SQL error.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "site/public/install.sh fetches SHA256SUMS from the same GitHub release URL as the tarball. The compare fails closed, and curl pins HTTPS with TLS 1.2. The script does not check a signature detached from that release. The trust root visible in source is that repository's release over GitHub HTTPS.",
+      "site/package.json still uses caret ranges. The committed lockfile pins astro 7.4.7 and @astrojs/markdown-remark 7.3.6 to registry.npmjs.org tarballs with sha512 integrity. Package contents and known CVEs were not fetched.",
+      "terminal_text encodes char::is_control only. Bidirectional and other format characters in a stored project path remain in a list label. That path is one the operator stored."
+    ],
+    "assignment_note": "h-supply-recheck"
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Fboard-demo.js%23innerHTML::site%2Fpublic%2Fboard-demo.js%23esc::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/board-demo.js#innerHTML",
+      "boundary": "site/public/board-demo.js#esc",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Board demo innerHTML",
+    "boundary": "esc before innerHTML",
+    "subsystem": "site/public",
+    "attack_class": "DOM XSS in the static board demo",
+    "starting_paths": [
+      "site/public/board-demo.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: board-demo.js changes one displayed worktree string. esc() and innerHTML construction were not edited. Not re-closed as covered."
+    ],
+    "hardening": [],
+    "assignment_note": "out-of-scope"
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Fgithub-stars.js%23fetch::site%2Fpublic%2Fgithub-stars.js%23textContent::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/github-stars.js#fetch",
+      "boundary": "site/public/github-stars.js#textContent",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "GitHub stars script",
+    "boundary": "textContent sink",
+    "subsystem": "site/public",
+    "attack_class": "DOM or cross-origin injection via the stars widget",
+    "starting_paths": [
+      "site/public/github-stars.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: security-relevant source for this surface was not edited between 8d714a2 and 94b1dc6. Not re-closed as covered."
+    ],
+    "hardening": [],
+    "assignment_note": "out-of-scope"
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Finstall.sh%23setup%20rex::site%2Fpublic%2Finstall.sh%23SHA256SUMS::site::SUPPLY-CHAIN-AND-RELEASE.md%23Release%20and%20update%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/install.sh#setup rex",
+      "boundary": "site/public/install.sh#SHA256SUMS",
+      "subsystem": "site",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes"
+    },
+    "surface": "Installer setup rex and the site lockfile bump",
+    "boundary": "SHA256SUMS check and pinned npm versions",
+    "subsystem": "site/public/install.sh",
+    "attack_class": "Command injection or an unbound dependency in the delta",
+    "starting_paths": [
+      "site/public/install.sh",
+      "site/package.json",
+      "site/package-lock.json"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Dependency and build-input attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "The installer is a shell script, not a webview."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-supply-recheck",
+    "reviewed_paths": [
+      "site/public/install.sh",
+      "site/package.json",
+      "site/package-lock.json"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-supply-recheck",
+        "reviewed_paths": [
+          "site/public/install.sh"
+        ],
+        "invariant": "The new setup rex path does not interpolate installer or Rex output into a shell command.",
+        "method": "source",
+        "result": "maybe_setup_rex and refresh_rex (lines 252-325) run \"$tsk_bin\" setup rex with the binary path and the fixed arguments quoted. rex_state is matched as a case word and accepted only as bound or unbound. setup_out and setup_error are printed with printf %s. rex_board_key is taken from that output by sed and printed at line 459 with printf '%s'. The custom-directory row is also printf %s. Version is restricted at line 39 to vX.Y.Z before it enters the download URL. No command injection sink was added.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-supply-recheck",
+        "reviewed_paths": [
+          "site/public/install.sh"
+        ],
+        "invariant": "The archive is installed only after a single well-formed SHA256SUMS digest matches a local hash, and a mismatch leaves the existing install in place.",
+        "method": "source",
+        "result": "The checksum block at lines 54-63 is unchanged by this delta and is still present. The script downloads tsk-$version-$target.tar.gz and SHA256SUMS from https://github.com/smarzban/tsk/releases/download/$version over TLS 1.2 with curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL. awk selects field 1 only when field 2 equals that archive name. The expected digest must be one line of 64 lowercase hex, and the local sha256sum or shasum -a 256 must equal it. Failure calls fail, so the staged binary is not moved into place. tar -xOzf extracts only the tsk member to stdout.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-supply-recheck",
+        "reviewed_paths": [
+          "site/package.json",
+          "site/package-lock.json"
+        ],
+        "invariant": "The Astro bump is consumed from a lockfile that pins registry tarball identity, not from a floating range at install time.",
+        "method": "source",
+        "result": "site/package.json moves astro from ^7.1.6 to ^7.4.7 and adds @astrojs/markdown-remark ^7.3.6. site/package-lock.json is lockfileVersion 3. node_modules/astro is version 7.4.7 resolved to https://registry.npmjs.org/astro/-/astro-7.4.7.tgz with a sha512 integrity at line 2462. node_modules/@astrojs/markdown-remark is version 7.3.6 with the same registry host and an integrity at line 251. No resolved URL uses http, git, file, or link. The documented site install is npm ci, which installs the lockfile. The caret ranges do not unbound that install. Package contents and CVEs were not fetched.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "site/public/install.sh fetches SHA256SUMS from the same GitHub release URL as the tarball. The compare fails closed, and curl pins HTTPS with TLS 1.2. The script does not check a signature detached from that release. The trust root visible in source is that repository's release over GitHub HTTPS.",
+      "site/package.json still uses caret ranges. The committed lockfile pins astro 7.4.7 and @astrojs/markdown-remark 7.3.6 to registry.npmjs.org tarballs with sha512 integrity. Package contents and known CVEs were not fetched.",
+      "terminal_text encodes char::is_control only. Bidirectional and other format characters in a stored project path remain in a list label. That path is one the operator stored."
+    ],
+    "assignment_note": "h-supply-recheck"
+  },
+  {
+    "coverage_id": "src%2Fagents.rs%23shell_script::src%2Fagents.rs%23shell_quote::src%2Fagents.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/agents.rs#shell_script",
+      "boundary": "src/agents.rs#shell_quote",
+      "subsystem": "src/agents.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Unix and Windows launcher scripts",
+    "boundary": "shell_quote and the typed launch line",
+    "subsystem": "src/agents.rs",
+    "attack_class": "Shell or PowerShell injection from task text or profile env",
+    "starting_paths": [
+      "src/agents.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules",
+      "AI-AND-LLM.md#Core discipline",
+      "AI-AND-LLM.md#Tool and action attack classes",
+      "AI-AND-LLM.md#Universal moves",
+      "AI-AND-LLM.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-rex",
+    "reviewed_paths": [
+      "src/agents.rs",
+      "src/dispatch.rs",
+      "src/fsperm.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-rex",
+        "reviewed_paths": [
+          "src/agents.rs"
+        ],
+        "invariant": "Task title, notes, steps, worktree, branch, base, prompt text, and profile env values are data in the Unix launcher and never PowerShell syntax in the Windows launcher.",
+        "method": "source",
+        "result": "shell_quote (src/agents.rs:1272) wraps every env key, env value, and argv element in POSIX single quotes and escapes an embedded quote as '\\''. NUL is dropped and cannot terminate an argument. shell_script (src/agents.rs:610) puts only the launcher path in the login shell's -c string; env exports and exec argv are written after the login guard and run under /bin/sh. unix_env_refusal (src/agents.rs:673) rejects env keys that are not POSIX names before launch. powershell_script (src/agents.rs:650) base64-encodes every env key, env value, program, and argument with the standard alphabet inside PowerShell single quotes. TskProgram (src/agents.rs:707) refuses a name that resolves only to .cmd or .bat. render (src/agents.rs:569) copies env without template substitution, so task fields cannot enter env. parse_profile (src/agents.rs:1114) refuses an empty command array.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-rex",
+        "reviewed_paths": [
+          "src/dispatch.rs",
+          "src/fsperm.rs"
+        ],
+        "invariant": "The pane shell parses only an allowlisted launch line, and the launcher file another OS user cannot replace is the script that holds those quotes.",
+        "method": "source",
+        "result": "sh_launch_line (src/dispatch.rs:1309) and powershell_launch_line (src/dispatch.rs:1272) refuse a non-absolute path and any control character, $, backtick, backslash (Unix), %, \", !, or curly double quote in the path. launch_with_host (src/dispatch.rs:4261) runs that check on state_dir/launchers/dispatch-check before creating a worktree, including Rex. launcher_stem (src/dispatch.rs:1253) keeps only ASCII alphanumerics, hyphen, and underscore in the real filename, so the real path cannot add a metacharacter the check path did not have. run_launch (src/dispatch.rs:4590) types only that line for Herdr and for a Rex relaunch into a shell. The Rex command path (src/dispatch.rs:4558) passes [/bin/sh, launcher] as argv; the same pre-check covers the directory embedded in shell_script's login line. write_launcher (src/dispatch.rs:1824) creates the Unix script with create_private_file mode 0600 (src/fsperm.rs:173) under a 0700 directory.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "close_legacy_session kills a one-window pre-tab session that has this task's agent label and no other t<n>- label, even when a non-agent block shares that window. Cleanup is the same OS user's action on a session the dispatch opened; the id parser still refuses any other session shape.",
+      "prompt reads the agent report and label, then pastes in a later rex process. An exit in that gap could land the owner's reply in an idle terminal. The agent already runs as that user, and the paste is still JSON rather than a shell line."
+    ],
+    "assignment_note": "h-rex"
+  },
+  {
+    "coverage_id": "src%2Fbackup.rs%23scheme_token::src%2Fbackup.rs%23credentials::src%2Fbackup.rs::ATTACK-CLASSES.md%23Cryptography%20and%20secrets",
+    "canonical_refs": {
+      "surface": "src/backup.rs#scheme_token",
+      "boundary": "src/backup.rs#credentials",
+      "subsystem": "src/backup.rs",
+      "attack_class": "ATTACK-CLASSES.md#Cryptography and secrets"
+    },
+    "surface": "Backup URL scheme token",
+    "boundary": "scheme_token strips a prefixed https userinfo",
+    "subsystem": "src/backup.rs",
+    "attack_class": "Credential disclosure from a backup URL whose scheme is not at byte zero",
+    "starting_paths": [
+      "src/backup.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Cryptography and secrets",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Deep-link, callback, and navigation attack classes",
+        "reason": "Backup URLs are git remotes, not OS deep links."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-supply-recheck",
+    "reviewed_paths": [
+      "src/backup.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-supply-recheck",
+        "reviewed_paths": [
+          "src/backup.rs"
+        ],
+        "invariant": "scheme_token still treats the trailing ASCII scheme before the first :// as http(s), so a bare or user:password userinfo is stripped when https is not at byte zero.",
+        "method": "source",
+        "result": "The previously closed control is still present. src/backup.rs is not in the delta. scheme_token at lines 1159-1167 still returns the trailing ASCII alphanumeric, plus, hyphen, or dot run. credentials at lines 1137-1153 calls it and sets http when that token equals http or https, ignoring ASCII case. A colon-free userinfo on http(s) is a secret, and a user:password userinfo is dropped entirely for http(s). without_credentials at lines 1080-1083 rebuilds scheme://host without that userinfo. sanitized_config at lines 1054-1069 writes that stripped URL before a backup push. redacted at lines 1100-1113 uses the same scheme_token so a prefixed URL is masked. The regression cases at lines 2901-2943 still expect a leading space or newline before https://dummy-token@ and https://me:pw@ to become a credential-free URL and a *** display.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-supply-recheck",
+        "reviewed_paths": [
+          "src/backup.rs"
+        ],
+        "invariant": "Git clone, set-url, fetch, and ls-remote receive only the stripped remote.url, with an http(s) login only in the helper environment.",
+        "method": "source",
+        "result": "Remote::of at lines 1552-1582 still calls without_credentials and scheme_token. When the URL has no secret it keeps the original string and login None. When it does, url is the stripped value and the percent-decoded username and password go to Login. A newline, CR, or NUL in those fields is refused at lines 1572-1579. sync_clone at lines 1398-1419 passes remote.url after -- to remote set-url and git clone. remote_command at lines 1615-1625 puts the login in TSK_BACKUP_HOST, TSK_BACKUP_USERNAME, and TSK_BACKUP_PASSWORD and passes the fixed CREDENTIAL_HELPER. ls-remote at line 775 also uses remote.url after --. The closed scheme-prefix strip still sits on the git argv and .git/config path.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "site/public/install.sh fetches SHA256SUMS from the same GitHub release URL as the tarball. The compare fails closed, and curl pins HTTPS with TLS 1.2. The script does not check a signature detached from that release. The trust root visible in source is that repository's release over GitHub HTTPS.",
+      "site/package.json still uses caret ranges. The committed lockfile pins astro 7.4.7 and @astrojs/markdown-remark 7.3.6 to registry.npmjs.org tarballs with sha512 integrity. Package contents and known CVEs were not fetched.",
+      "terminal_text encodes char::is_control only. Bidirectional and other format characters in a stored project path remain in a list label. That path is one the operator stored."
+    ],
+    "assignment_note": "h-supply-recheck"
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fpresenter.rs%23present::src%2Fui%2Fmod.rs%23terminal_text::src%2Fcli%2Fpresenter.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/cli/presenter.rs#present",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/cli/presenter.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "CLI presenter lines for Rex and project labels",
+    "boundary": "terminal_text before a status or list line is printed",
+    "subsystem": "src/cli/presenter.rs",
+    "attack_class": "Terminal control injection from a new presenter string",
+    "starting_paths": [
+      "src/cli/presenter.rs",
+      "src/ui/mod.rs",
+      "src/cli/list.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "Presenter output is a terminal, not a webview."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-supply-recheck",
+    "reviewed_paths": [
+      "src/ui/mod.rs",
+      "src/ui/edit.rs",
+      "src/cli/presenter.rs",
+      "src/cli/list.rs",
+      "src/domain/task.rs",
+      "src/setup/rex.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-supply-recheck",
+        "reviewed_paths": [
+          "src/ui/mod.rs",
+          "src/ui/edit.rs"
+        ],
+        "invariant": "terminal_text still encodes every C0 and C1 control before a human line is painted, and list wrapping uses that encoder.",
+        "method": "source",
+        "result": "The previously closed control is still present. src/ui/mod.rs is not in the delta. terminal_text at lines 17-30 still maps char::is_control, which is Unicode Cc (C0, U+007F, and C1), to \\u{XXXX}. The tests at lines 237-255 still require ESC, BEL, and U+0085 to be encoded. wrap_text in src/ui/edit.rs lines 625-654 still calls terminal_text on every character before the painted row is built, including notes that append_direct_details passes through append_wrapped. Line breaks are consumed as row boundaries before that encode, so a raw CR or LF is not left in the row.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-supply-recheck",
+        "reviewed_paths": [
+          "src/cli/presenter.rs",
+          "src/cli/list.rs",
+          "src/domain/task.rs",
+          "src/setup/rex.rs"
+        ],
+        "invariant": "New Rex and project-label presenter strings pass through terminal_text before they are printed.",
+        "method": "source",
+        "result": "The control still covers the new strings. distinct_scope_labels is printed with terminal_text at presenter.rs lines 802, 861, 865, and 899-903. ListError::UnknownProject and ArchiveCliError::UnknownProject encode detail at lines 2542-2543 and 2573-2576. setup_rex at lines 2980-3010 encodes the config path, backup path, shortcut keys, shadowed key, and source. Shortcut labels are the static strings board and quick capture from src/setup/rex.rs line 776. cleaned_merged at lines 1771-1780 encodes worktree path, branch name, branch reason, warning, and workspace id. AgentHost::noun_of at src/domain/task.rs lines 94-98 returns only the static words session, workspace, or tab. Dispatch JSON is serde_json, which escapes C0. No new human presenter line emits an unencoded C0 or C1 control.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "site/public/install.sh fetches SHA256SUMS from the same GitHub release URL as the tarball. The compare fails closed, and curl pins HTTPS with TLS 1.2. The script does not check a signature detached from that release. The trust root visible in source is that repository's release over GitHub HTTPS.",
+      "site/package.json still uses caret ranges. The committed lockfile pins astro 7.4.7 and @astrojs/markdown-remark 7.3.6 to registry.npmjs.org tarballs with sha512 integrity. Package contents and known CVEs were not fetched.",
+      "terminal_text encodes char::is_control only. Bidirectional and other format characters in a stored project path remain in a list label. That path is one the operator stored."
+    ],
+    "assignment_note": "h-supply-recheck"
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fupdate.rs%23run_for::src%2Fcli%2Fupdate.rs%23hardened_curl::src%2Fcli%2Fupdate.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/cli/update.rs#run_for",
+      "boundary": "src/cli/update.rs#hardened_curl",
+      "subsystem": "src/cli/update.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Release update client",
+    "boundary": "hardened curl and the installer handoff",
+    "subsystem": "src/cli/update.rs",
+    "attack_class": "Installer script substitution",
+    "starting_paths": [
+      "src/cli/update.rs",
+      "src/update.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: security-relevant source for this surface was not edited between 8d714a2 and 94b1dc6. Not re-closed as covered."
+    ],
+    "hardening": [],
+    "assignment_note": "out-of-scope"
+  },
+  {
+    "coverage_id": "src%2Fcontext.rs%23HERDR_PLUGIN_CONTEXT_JSON::src%2Fboard_pane.rs%23is_flag_safe_pane_id::src%2Fcontext.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/context.rs#HERDR_PLUGIN_CONTEXT_JSON",
+      "boundary": "src/board_pane.rs#is_flag_safe_pane_id",
+      "subsystem": "src/context.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Herdr plugin context JSON",
+    "boundary": "Pane id allowlist",
+    "subsystem": "src/context.rs",
+    "attack_class": "Host-injected capture context",
+    "starting_paths": [
+      "src/context.rs",
+      "src/board_pane.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: security-relevant source for this surface was not edited between 8d714a2 and 94b1dc6. Not re-closed as covered."
+    ],
+    "hardening": [],
+    "assignment_note": "out-of-scope"
+  },
+  {
+    "coverage_id": "src%2Fdispatch%2Fhost.rs%23worktree_root::src%2Fdispatch%2Fhost.rs%23path_within::src%2Fdispatch::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "src/dispatch/host.rs#worktree_root",
+      "boundary": "src/dispatch/host.rs#path_within",
+      "subsystem": "src/dispatch",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "New worktree root and checkout path",
+    "boundary": "Refuse a checkout directory inside the project",
+    "subsystem": "src/dispatch",
+    "attack_class": "Path traversal or a checkout outside the intended root",
+    "starting_paths": [
+      "src/dispatch/host.rs",
+      "src/dispatch/rex.rs",
+      "src/agents.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-worktree",
+    "reviewed_paths": [
+      "src/agents.rs",
+      "src/dispatch/host.rs",
+      "src/dispatch.rs",
+      "src/dispatch/rex.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-worktree",
+        "reviewed_paths": [
+          "src/agents.rs",
+          "src/dispatch/host.rs"
+        ],
+        "invariant": "A new checkout root is refused when <root>/<repo> is the project or lies inside it, after lexical .. folding and after canonicalizing the longest existing prefix.",
+        "method": "source",
+        "result": "DispatchSettings accepts only an absolute or ~ path. worktree_root then absolute()s it and compares both the lexical form and resolve_existing_prefix form of <root>/<repo> with both forms of the project. path_within is component starts_with, with a Windows case fold. Any pair that shows containment refuses. The tests in host.rs cover an in-project root, .., a symlink onto an existing project, a not-yet component that still lexically lands inside, the project parent, a sibling name prefix, and a state dir nested in the project. A symlink whose target already exists inside the project is therefore refused. The function returns the non-canonical absolute root.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-worktree",
+        "reviewed_paths": [
+          "src/dispatch.rs",
+          "src/dispatch/host.rs",
+          "src/dispatch/rex.rs"
+        ],
+        "invariant": "The created checkout path is <root>/<repo basename>/<sanitized branch> and the branch directory cannot escape that parent.",
+        "method": "source",
+        "result": "worktree_path uses Path::file_name and herdr_worktree_directory, which keeps only ASCII alphanumeric runs joined by '-'. SystemDispatchHost::create_worktree calls worktree_root before Rex git worktree add or Herdr --path. rex::create_worktree rejects an existing leaf via symlink_metadata, then create_dir_all on the parent and git worktree add of that path. A generated directory cannot contain a separator or '..'. create_dir_all follows a symlink already present at the configured root when that target is outside the project; the containment rule allows any outside directory, and the default root is <state>/worktrees under a directory fsperm requires to be a real 0700 directory.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "worktree_root returns the non-canonical absolute configured root. An existing symlink at that root whose target is already inside the project is refused; a symlink to some other existing directory is followed by create_dir_all and git worktree add. The default root stays under the private state directory.",
+      "Standalone cleanup and a Herdr cleanup whose workspace id is absent set target_matches without follows_path_rule. git worktree remove still receives only the recorded absolute path, and only when that path is not the project root, is listed for the project, and is clean. Rex applies the directory-name rule on every cleanup.",
+      "Cleanup, relaunch, gh pr view, gh pr merge, and git ls-remote reuse stored branch, base, base_ref, base_commit, and base_remote without a second check-ref-format. git fetch rejects a remote that starts with '-'; ls-remote does not. Values written by dispatch itself are a tsk/t<n> branch or a ref that already passed check-ref-format. A same-account edit of the record can place one leading-dash token in gh or ls-remote argv."
+    ],
+    "assignment_note": "h-worktree"
+  },
+  {
+    "coverage_id": "src%2Fdispatch%2Fpr.rs%23merge::src%2Fdispatch%2Fpr.rs%23merge_args::src%2Fdispatch%2Fpr.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/dispatch/pr.rs#merge",
+      "boundary": "src/dispatch/pr.rs#merge_args",
+      "subsystem": "src/dispatch/pr.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "gh pull request merge argv",
+    "boundary": "merge flags without admin or branch delete",
+    "subsystem": "src/dispatch/pr.rs",
+    "attack_class": "Merge bypass or gh argument injection",
+    "starting_paths": [
+      "src/dispatch/pr.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: src/dispatch/pr.rs only renames a test fixture field to host and session. merge argv was not edited. Not re-closed as covered."
+    ],
+    "hardening": [],
+    "assignment_note": "out-of-scope"
+  },
+  {
+    "coverage_id": "src%2Fdispatch%2Frex.rs%23open_tab::src%2Fdispatch%2Frex.rs%23close_task_workspace::src%2Fdispatch%2Frex.rs::ATTACK-CLASSES.md%23Access%20control",
+    "canonical_refs": {
+      "surface": "src/dispatch/rex.rs#open_tab",
+      "boundary": "src/dispatch/rex.rs#close_task_workspace",
+      "subsystem": "src/dispatch/rex.rs",
+      "attack_class": "ATTACK-CLASSES.md#Access control"
+    },
+    "surface": "Rex session, tab, and workspace close",
+    "boundary": "session id shape and close_task_workspace",
+    "subsystem": "src/dispatch/rex.rs",
+    "attack_class": "Closing or opening a session the dispatch did not own",
+    "starting_paths": [
+      "src/dispatch/rex.rs",
+      "src/dispatch/host.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-rex",
+    "reviewed_paths": [
+      "src/dispatch/rex.rs",
+      "src/dispatch/host.rs",
+      "src/dispatch.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-rex",
+        "reviewed_paths": [
+          "src/dispatch/rex.rs",
+          "src/dispatch/host.rs"
+        ],
+        "invariant": "A new Rex tab opens only in a session id of the form session: with no slash, taken from the recorded tab's session or from REX_SESSION.",
+        "method": "source",
+        "result": "open_tab (src/dispatch/rex.rs:329) rejects a session that does not start with session: or that contains /. tab_session (src/dispatch/rex.rs:362) reuses a recorded id only after workspace() (src/dispatch/rex.rs:396) accepts session:/window: with a single slash and window: prefix, and only while that session still lists windows; otherwise it uses REX_SESSION. open_agent_session (src/dispatch.rs:1447) passes that string back through open_tab, so the shape check runs on both sources. HostKind::from_env (src/dispatch/host.rs:60) treats a non-empty REX_SESSION as Rex only when HERDR_ENV is not 1. A forged session id is still the invoking OS user's Rex CLI, which that user can already call.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-rex",
+        "reviewed_paths": [
+          "src/dispatch/rex.rs",
+          "src/dispatch.rs"
+        ],
+        "invariant": "Cleanup closes the recorded tab, and kills a whole session only for a pre-tab record that still looks like that task's alone.",
+        "method": "source",
+        "result": "close_task_workspace (src/dispatch/rex.rs:1063) ignores rex-pending ids, parses the stored id with workspace(), and for a tab calls session.close_window with session_id and window_id as JSON (src/dispatch/rex.rs:1113). A bare session id goes to close_legacy_session (src/dispatch/rex.rs:1079), which kills only when there is one window, at least one t<number>- agent label, and no other agent label. kill_session (src/dispatch/rex.rs:1125) again requires a session: id with no slash, so a tab id cannot reach session kill. SystemDispatchHost::close_task_workspace (src/dispatch.rs:1861) delegates only when this process is Rex. The stored session is tsk's own dispatch record, not a task title or reply.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "close_legacy_session kills a one-window pre-tab session that has this task's agent label and no other t<n>- label, even when a non-agent block shares that window. Cleanup is the same OS user's action on a session the dispatch opened; the id parser still refuses any other session shape.",
+      "prompt reads the agent report and label, then pastes in a later rex process. An exit in that gap could land the owner's reply in an idle terminal. The agent already runs as that user, and the paste is still JSON rather than a shell line."
+    ],
+    "assignment_note": "h-rex"
+  },
+  {
+    "coverage_id": "src%2Fdispatch%2Frex.rs%23rex%20api%20call::src%2Fdispatch%2Frex.rs%23prompt::src%2Fdispatch%2Frex.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/dispatch/rex.rs#rex api call",
+      "boundary": "src/dispatch/rex.rs#prompt",
+      "subsystem": "src/dispatch/rex.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Rex API calls and reply paste",
+    "boundary": "JSON argv and the block paste sink",
+    "subsystem": "src/dispatch/rex.rs",
+    "attack_class": "Injection into a Rex command or a typed pane line",
+    "starting_paths": [
+      "src/dispatch/rex.rs",
+      "src/dispatch.rs",
+      "src/cli/reply.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules",
+      "AI-AND-LLM.md#Core discipline",
+      "AI-AND-LLM.md#Tool and action attack classes",
+      "AI-AND-LLM.md#Universal moves",
+      "AI-AND-LLM.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-rex",
+    "reviewed_paths": [
+      "src/dispatch/rex.rs",
+      "src/cli/reply.rs",
+      "src/dispatch.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-rex",
+        "reviewed_paths": [
+          "src/dispatch/rex.rs"
+        ],
+        "invariant": "Rex method names are fixed argv, and session ids, block ids, labels, cwd, command arrays, and pasted text are JSON values, not a shell line.",
+        "method": "source",
+        "result": "rex (src/dispatch/rex.rs:1137) is Command::new(program).args with no shell. window_request, replacement_request, label_block, close_window, and prompt build bodies with serde_json. The new-tab command is the JSON array [/bin/sh, launcher] with shell none (src/dispatch/rex.rs:136). prompt (src/dispatch/rex.rs:996) places reply text only in event.payload.text. type_line (src/dispatch/rex.rs:974) places the launch line only in a JSON data string and refuses to type unless the block is a bare shell. No task field is concatenated into a rex argument.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-rex",
+        "reviewed_paths": [
+          "src/cli/reply.rs",
+          "src/dispatch.rs"
+        ],
+        "invariant": "A reply is pasted only into the block still labelled as the dispatched agent, and only as that JSON paste.",
+        "method": "source",
+        "result": "run_send (src/cli/reply.rs:147) sends only when the author is the owner; an agent-authored reply is skipped. deliver_reply (src/dispatch.rs:3620) requires the live pane name to equal t<number>-<assignee> both in the earlier check and again from pane_agent immediately before prompt_named. prompt repeats that label equality on the same read as program_status and refuses a blocked or unreported agent. The text is delivery_text of the owner reply, then one JSON paste and a separate enter key. It is not interpolated into sh_launch_line or the launcher script.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "close_legacy_session kills a one-window pre-tab session that has this task's agent label and no other t<n>- label, even when a non-agent block shares that window. Cleanup is the same OS user's action on a session the dispatch opened; the id parser still refuses any other session shape.",
+      "prompt reads the agent report and label, then pastes in a later rex process. An exit in that gap could land the owner's reply in an idle terminal. The agent already runs as that user, and the paste is still JSON rather than a shell line."
+    ],
+    "assignment_note": "h-rex"
+  },
+  {
+    "coverage_id": "src%2Fdispatch.rs%23git%20worktree%20remove::src%2Fdispatch%2Fhost.rs%23follows_path_rule::src%2Fdispatch::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "src/dispatch.rs#git worktree remove",
+      "boundary": "src/dispatch/host.rs#follows_path_rule",
+      "subsystem": "src/dispatch",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "Cleanup removal of a recorded worktree",
+    "boundary": "follows_path_rule plus git registration",
+    "subsystem": "src/dispatch",
+    "attack_class": "Removal of a path that is not the recorded checkout",
+    "starting_paths": [
+      "src/dispatch.rs",
+      "src/dispatch/host.rs",
+      "src/dispatch/rex.rs",
+      "src/ui/board/cleanup_card.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Deletion, revocation, and lifecycle attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-worktree",
+    "reviewed_paths": [
+      "src/dispatch.rs",
+      "src/dispatch/host.rs",
+      "src/cli/clean.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-worktree",
+        "reviewed_paths": [
+          "src/dispatch.rs",
+          "src/dispatch/host.rs"
+        ],
+        "invariant": "git worktree remove runs only for the recorded absolute path after it is distinct from the project root, listed by git worktree list for that project, and clean.",
+        "method": "source",
+        "result": "system_inspect_cleanup canonicalizes the recorded path, rejects a non-absolute path and the project root via same_path, and requires the canonical path in git worktree list --porcelain. A missing directory converges without removal. Dirty status refuses before clean_planned_with_host. system_remove_git_worktree passes that same recorded path as one argv element after worktree remove, with no --force. Porcelain parsing only decides registration; it does not choose a different removal path. Windows removal renames the checkout aside only after those gates, and renames it back.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-worktree",
+        "reviewed_paths": [
+          "src/cli/clean.rs",
+          "src/dispatch.rs",
+          "src/dispatch/host.rs"
+        ],
+        "invariant": "follows_path_rule or a live Herdr checkout match must hold before a recorded worktree is removed.",
+        "method": "source",
+        "result": "Rex always sets the match bit from follows_path_rule on the canonical path: non-empty sanitized branch directory, that file name, and parent name equal to the project file name, under any root. Herdr sets the bit from the open workspace's checkout path, and sets it true when that workspace id is absent. Standalone, which cli/clean.rs reaches via HostKind::detect outside Herdr and Rex, returns (false, true), and owned_elsewhere is false outside a host, so cleanup continues. In every case the path passed to git worktree remove is the recorded worktree string, not a path taken from git or Herdr output. A record that already names some other registered clean worktree is the stored selection of that checkout. The Rex-only name rule is stricter defense in depth for a rewritten record; it does not by itself select a different directory than the record names.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "worktree_root returns the non-canonical absolute configured root. An existing symlink at that root whose target is already inside the project is refused; a symlink to some other existing directory is followed by create_dir_all and git worktree add. The default root stays under the private state directory.",
+      "Standalone cleanup and a Herdr cleanup whose workspace id is absent set target_matches without follows_path_rule. git worktree remove still receives only the recorded absolute path, and only when that path is not the project root, is listed for the project, and is clean. Rex applies the directory-name rule on every cleanup.",
+      "Cleanup, relaunch, gh pr view, gh pr merge, and git ls-remote reuse stored branch, base, base_ref, base_commit, and base_remote without a second check-ref-format. git fetch rejects a remote that starts with '-'; ls-remote does not. Values written by dispatch itself are a tsk/t<n> branch or a ref that already passed check-ref-format. A same-account edit of the record can place one leading-dash token in gh or ls-remote argv."
+    ],
+    "assignment_note": "h-worktree"
+  },
+  {
+    "coverage_id": "src%2Fdispatch.rs%23update-ref::src%2Fgit_base.rs%23check-ref-format::src%2Fdispatch::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/dispatch.rs#update-ref",
+      "boundary": "src/git_base.rs#check-ref-format",
+      "subsystem": "src/dispatch",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Stored branch and base passed to git",
+    "boundary": "check-ref-format on values that reach git argv",
+    "subsystem": "src/dispatch",
+    "attack_class": "Argument injection into git or gh from a stored record",
+    "starting_paths": [
+      "src/dispatch.rs",
+      "src/git_base.rs",
+      "src/dispatch/pr.rs",
+      "src/domain/task.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules",
+      "AI-AND-LLM.md#Core discipline",
+      "AI-AND-LLM.md#Tool and action attack classes",
+      "AI-AND-LLM.md#Universal moves",
+      "AI-AND-LLM.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-worktree",
+    "reviewed_paths": [
+      "src/dispatch.rs",
+      "src/git_base.rs",
+      "src/dispatch/pr.rs",
+      "src/dispatch/rex.rs",
+      "src/domain/task.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-worktree",
+        "reviewed_paths": [
+          "src/dispatch.rs",
+          "src/git_base.rs"
+        ],
+        "invariant": "A base or branch tsk accepts into a dispatch is checked before it is placed in git argv, and a generated branch cannot be a leading-dash option.",
+        "method": "source",
+        "result": "branch_ref rejects an empty base, a base starting with '-', HEAD, and a name ending in /HEAD, then runs git check-ref-format on refs/heads/<base> and refs/remotes/<base> and show-ref --verify. resolve stores that full ref. DispatchNames::branch is tsk/t<number> plus an alphanumeric slug and an optional numeric suffix. cut_title keeps only alphanumeric runs. Those strings reach git worktree add as the -b value or as a positional that does not start with '-'.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-worktree",
+        "reviewed_paths": [
+          "src/dispatch.rs",
+          "src/dispatch/pr.rs",
+          "src/dispatch/rex.rs",
+          "src/domain/task.rs"
+        ],
+        "invariant": "A stored branch, base_ref, base_commit, or base_remote reused at cleanup, relaunch, or gh must not gain an extra git or gh option beyond the single stored token.",
+        "method": "source",
+        "result": "Dispatch deserializes those fields as plain strings. Later git deletes and ancestry checks pass refs/heads/<branch> as one argument, so the branch text is not a separate option. delete_exact_tip's old value is rev-parse output of that ref; the PR deletion path uses it only when it equals gh headRefOid. update-ref is update-ref --no-deref -d <refs/heads/branch> <oid>. gh pr view and gh pr merge receive the raw stored branch as one argument, and merge_args hard-codes the method flag plus --match-head-commit. A same-account rewrite of tsk.json can put a leading-dash token in that slot, including a gh flag the merge path otherwise never adds. Writing that record is the same OS account that can invoke gh and git. Fetch rejects a remote that is empty, '.', or starts with '-'. system_remote_branch_exists passes base_remote to git ls-remote without that check. tsk's own dispatch writes a generated branch and a remote name taken from git, not a dash-leading token.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "worktree_root returns the non-canonical absolute configured root. An existing symlink at that root whose target is already inside the project is refused; a symlink to some other existing directory is followed by create_dir_all and git worktree add. The default root stays under the private state directory.",
+      "Standalone cleanup and a Herdr cleanup whose workspace id is absent set target_matches without follows_path_rule. git worktree remove still receives only the recorded absolute path, and only when that path is not the project root, is listed for the project, and is clean. Rex applies the directory-name rule on every cleanup.",
+      "Cleanup, relaunch, gh pr view, gh pr merge, and git ls-remote reuse stored branch, base, base_ref, base_commit, and base_remote without a second check-ref-format. git fetch rejects a remote that starts with '-'; ls-remote does not. Values written by dispatch itself are a tsk/t<n> branch or a ref that already passed check-ref-format. A same-account edit of the record can place one leading-dash token in gh or ls-remote argv."
+    ],
+    "assignment_note": "h-worktree"
+  },
+  {
+    "coverage_id": "src%2Ffsperm.rs%23ensure_private_dir::src%2Ffsperm.rs%23tighten_file::src%2Fstore.rs::DESKTOP-MOBILE-AND-LOCAL-IPC.md%23Local%20file%20ownership%20and%20TOCTOU",
+    "canonical_refs": {
+      "surface": "src/fsperm.rs#ensure_private_dir",
+      "boundary": "src/fsperm.rs#tighten_file",
+      "subsystem": "src/store.rs",
+      "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local file ownership and TOCTOU"
+    },
+    "surface": "State directory creation on Windows",
+    "boundary": "No DACL is set off Unix",
+    "subsystem": "src/store.rs",
+    "attack_class": "Windows state directory readable by another OS principal",
+    "starting_paths": [
+      "src/fsperm.rs",
+      "src/store.rs",
+      "site/public/install.ps1"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store. The question is the Windows DACL, not a tenant field."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "State files are not exposed through a webview."
+      }
+    ],
+    "prior_status": "prior_needs_validation",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "v-windows",
+    "reviewed_paths": [
+      "src/store.rs",
+      "src/fsperm.rs",
+      "src/dispatch.rs",
+      "src/agents.rs",
+      "site/src/content/docs/docs/storage.md",
+      "site/public/install.ps1"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "v-windows",
+        "reviewed_paths": [
+          "src/store.rs",
+          "src/fsperm.rs",
+          "src/dispatch.rs",
+          "src/agents.rs",
+          "site/src/content/docs/docs/storage.md",
+          "site/public/install.ps1"
+        ],
+        "invariant": "Windows state and launcher creates set no security descriptor; the inherited DACL is not visible from this Linux tree.",
+        "method": "source",
+        "result": "fsperm Unix modes stay cfg(unix). default_state_dir still uses LOCALAPPDATA\\tsk. write_launcher on non-Unix uses create_dir_all and std::fs::write. No icacls or Set-Acl in the repo. The carried fingerprint windows-state-dir-acl stays needs_validation.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "windows-state-dir-acl"
+    ],
+    "unresolved": [],
+    "hardening": [],
+    "assignment_note": "phase3-carried-needs-validation; hunters exclude fingerprint windows-state-dir-acl"
+  },
+  {
+    "coverage_id": "src%2Fscope.rs%23resolve_project_path::src%2Fscope.rs%23ProjectResolveError%3A%3AAmbiguous::src%2Fscope.rs::ATTACK-CLASSES.md%23Access%20control",
+    "canonical_refs": {
+      "surface": "src/scope.rs#resolve_project_path",
+      "boundary": "src/scope.rs#ProjectResolveError::Ambiguous",
+      "subsystem": "src/scope.rs",
+      "attack_class": "ATTACK-CLASSES.md#Access control"
+    },
+    "surface": "Project basename resolution",
+    "boundary": "Ambiguous basename refusal",
+    "subsystem": "src/scope.rs",
+    "attack_class": "A bare token selecting the wrong project repository",
+    "starting_paths": [
+      "src/scope.rs",
+      "src/cli/list.rs",
+      "src/cli/archive.rs",
+      "src/cli/clean.rs",
+      "src/cli/status.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "Project resolution does not cross a webview bridge."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-setup-scope",
+    "reviewed_paths": [
+      "src/scope.rs",
+      "src/cli/add.rs",
+      "src/capture.rs",
+      "src/context.rs",
+      "src/cli/list.rs",
+      "src/cli/archive.rs",
+      "src/domain/task.rs",
+      "src/cli/status.rs",
+      "src/cli/clean.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-setup-scope",
+        "reviewed_paths": [
+          "src/scope.rs",
+          "src/cli/add.rs",
+          "src/capture.rs",
+          "src/context.rs"
+        ],
+        "invariant": "A separator-free project token that matches two filesystem-distinct basenames is refused, and equivalent aliases collapse to one stored spelling.",
+        "method": "source",
+        "result": "resolve_project_path collects stored task paths, archived project keys, and the invocation default and this_repo. basename_matches keeps only the last component, folds ASCII case, and drops paths_equivalent duplicates before sorting. One match returns the stored spelling; zero is Unknown; two or more is Ambiguous. Relative tokens and missing directories are NoDirectory, so they are not treated as basenames. tsk add, plan import, and quick-add !p all call this function, so a refused token creates no task.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-setup-scope",
+        "reviewed_paths": [
+          "src/scope.rs",
+          "src/cli/list.rs",
+          "src/cli/archive.rs",
+          "src/domain/task.rs"
+        ],
+        "invariant": "list -p and project archive, which use the permissive resolver, still refuse two distinct absolute namesakes and do not write on that error.",
+        "method": "source",
+        "result": "resolve_permissive_project_path returns Ambiguous for two absolute paths that share a basename and are not the same directory. The exact stored-string short-circuit applies only when the token itself is a stored scope with no separator, which keeps a legacy bare scope addressable and does not choose between two absolute paths. Slash tokens stay literal rather than being reparsed as a second basename. list and archive turn Ambiguous into a refusal; archive returns changed false, so no project record is written. status and clean are not on this path.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-setup-scope",
+        "reviewed_paths": [
+          "src/cli/status.rs",
+          "src/cli/clean.rs"
+        ],
+        "invariant": "Task status and cleanup cannot select a repository from a bare project token.",
+        "method": "source",
+        "result": "Both commands take a TaskAddress and look up one task by number or id. Neither calls resolve_project_path or resolve_permissive_project_path, so a basename collision cannot redirect them.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Permissive resolution returns an exact stored bare scope such as atlas before basename ambiguity, which is the tested legacy-scope rule. The strict resolver still returns Ambiguous for that pair, and two absolute namesakes stay Ambiguous on the permissive path.",
+      "A separator-free token that matches no basename is kept literal. Directory identity can later equate it with another project only when that relative name in the process directory canonicalizes to the other project's directory. That does not bypass the two-basename refusal.",
+      "lua_string is the only interpolation into tsk.lua. Rex config check and reload still receive a pathname, so they are not directory-fd operations; the bytes renamed onto tsk.lua remain the escaped managed file."
+    ],
+    "assignment_note": "h-setup-scope"
+  },
+  {
+    "coverage_id": "src%2Fsetup%2Frex.rs%23lua_string::src%2Fsetup%2Fdir_unix.rs%23openat::src%2Fsetup%2Frex.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/setup/rex.rs#lua_string",
+      "boundary": "src/setup/dir_unix.rs#openat",
+      "subsystem": "src/setup/rex.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "tsk setup rex Lua and config writes",
+    "boundary": "lua_string and the managed tsk.lua rename",
+    "subsystem": "src/setup/rex.rs",
+    "attack_class": "Lua or path injection while writing Rex config",
+    "starting_paths": [
+      "src/setup/rex.rs",
+      "src/setup/rex.lua",
+      "src/setup/dir_unix.rs",
+      "src/setup/dir_windows.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+        "reason": "Setup does not restore a task document."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-setup-scope",
+    "reviewed_paths": [
+      "src/setup/rex.rs",
+      "src/setup/rex.lua",
+      "src/setup.rs",
+      "src/setup/dir_unix.rs",
+      "src/setup/dir_windows.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-setup-scope",
+        "reviewed_paths": [
+          "src/setup/rex.rs",
+          "src/setup/rex.lua",
+          "src/setup.rs"
+        ],
+        "invariant": "The binary path and key text written into tsk.lua cannot break out of a Lua short string.",
+        "method": "source",
+        "result": "lua_string quotes the value, escapes quotes and backslashes, and writes every byte below 0x20 and DEL as a three-digit decimal escape, so a following digit is not consumed by Lua's \\ddd rule. The installed binary path, unbind keys, and bind keys are all passed through it. parse_key rejects empty chords and any whitespace, control, quote, or backslash before a key is stored. rex.lua uses TSK_BIN only as an argv element. Rex config check runs on the staged file before rename, and a rejected merged config is written back from the previous bytes.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-setup-scope",
+        "reviewed_paths": [
+          "src/setup/dir_unix.rs",
+          "src/setup/dir_windows.rs",
+          "src/setup/rex.rs",
+          "src/setup.rs"
+        ],
+        "invariant": "The managed tsk.lua rename stays on one directory descriptor and cannot be steered through a symlink or a multi-component name.",
+        "method": "source",
+        "result": "Unix Dir::open and openat use O_NOFOLLOW, new files use O_EXCL|O_NOFOLLOW and must be regular files, and renameat/unlinkat take a single component from the directory fd. name() rejects '.', '..', extra components, and NUL. validate() compares the path inode with the opened directory before commit. resolve_config follows a user config symlink only to choose the real file, then opens that directory no-follow so the link is not replaced. On Windows, tsk setup rex returns before any write.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Permissive resolution returns an exact stored bare scope such as atlas before basename ambiguity, which is the tested legacy-scope rule. The strict resolver still returns Ambiguous for that pair, and two absolute namesakes stay Ambiguous on the permissive path.",
+      "A separator-free token that matches no basename is kept literal. Directory identity can later equate it with another project only when that relative name in the process directory canonicalizes to the other project's directory. That does not bypass the two-basename refusal.",
+      "lua_string is the only interpolation into tsk.lua. Rex config check and reload still receive a pathname, so they are not directory-fd operations; the bytes renamed onto tsk.lua remain the escaped managed file."
+    ],
+    "assignment_note": "h-setup-scope"
+  },
+  {
+    "coverage_id": "src%2Fstore.rs%23TaskStore::src%2Ffsperm.rs%23ensure_private_dir::src%2Ffsperm.rs::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "src/store.rs#TaskStore",
+      "boundary": "src/fsperm.rs#ensure_private_dir",
+      "subsystem": "src/fsperm.rs",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "Unix state file modes",
+    "boundary": "0700 directories and 0600 files",
+    "subsystem": "src/fsperm.rs",
+    "attack_class": "Another OS user reading the store on Unix",
+    "starting_paths": [
+      "src/fsperm.rs",
+      "src/store.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: security-relevant source for this surface was not edited between 8d714a2 and 94b1dc6. Not re-closed as covered."
+    ],
+    "hardening": [],
+    "assignment_note": "out-of-scope"
+  },
+  {
+    "coverage_id": "src%2Fstore.rs%23migrate_v15_to_v16::src%2Fdomain%2Ftask.rs%23AgentHost%3A%3Aof_legacy_id::src%2Fstore.rs::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/store.rs#migrate_v15_to_v16",
+      "boundary": "src/domain/task.rs#AgentHost::of_legacy_id",
+      "subsystem": "src/store.rs",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "Store v16 dispatch host migration",
+    "boundary": "AgentHost inferred from the session id prefix",
+    "subsystem": "src/store.rs",
+    "attack_class": "A migrated record aimed at the wrong host",
+    "starting_paths": [
+      "src/store.rs",
+      "src/domain/task.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Deep-link, callback, and navigation attack classes",
+        "reason": "Migration does not handle a deep link."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "h-setup-scope",
+    "reviewed_paths": [
+      "src/store.rs",
+      "src/domain/task.rs",
+      "src/domain/undo.rs",
+      "src/dispatch.rs",
+      "src/dispatch/rex.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "h-setup-scope",
+        "reviewed_paths": [
+          "src/store.rs",
+          "src/domain/task.rs",
+          "src/domain/undo.rs"
+        ],
+        "invariant": "A legacy dispatch is labeled Rex only when its session id uses the Rex prefixes this tree writes, and trash uses the same rule.",
+        "method": "source",
+        "result": "migrate_v15_to_v16 moves herdr_workspace_id to session only when session is absent, then of_legacy_id sets host: a session: or rex-pending: prefix becomes rex, and every other string, including empty, becomes herdr. An existing host value is not overwritten. DispatchWire applies the same function for trash lines, which skip the migration. Undo entries do not contain a dispatch record. A non-string session fails DomainState decode, and load does not save that document. A v16 file does not run the step again.",
+        "artifact": null
+      },
+      {
+        "agent_id": "h-setup-scope",
+        "reviewed_paths": [
+          "src/dispatch.rs",
+          "src/dispatch/rex.rs",
+          "src/domain/task.rs"
+        ],
+        "invariant": "Later host checks use the migrated host field, and a new launch does not reclassify a Herdr id by prefix.",
+        "method": "source",
+        "result": "owned_elsewhere compares record.host with the running host, and cleanup returns OtherHost before any worktree removal. New records store AgentHost from the host that created the worktree. Rex ids written here are session:\u2026, session:\u2026/window:\u2026, or rex-pending: plus a path; Herdr ids are copied from workspace_id, with the in-repo example w5. A legacy id outside the Rex prefixes therefore stays on the Herdr side of that check rather than being sent to Rex.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hardening": [
+      "Permissive resolution returns an exact stored bare scope such as atlas before basename ambiguity, which is the tested legacy-scope rule. The strict resolver still returns Ambiguous for that pair, and two absolute namesakes stay Ambiguous on the permissive path.",
+      "A separator-free token that matches no basename is kept literal. Directory identity can later equate it with another project only when that relative name in the process directory canonicalizes to the other project's directory. That does not bypass the two-basename refusal.",
+      "lua_string is the only interpolation into tsk.lua. Rex config check and reload still receive a pathname, so they are not directory-fd operations; the bytes renamed onto tsk.lua remain the escaped managed file."
+    ],
+    "assignment_note": "h-setup-scope"
+  },
+  {
+    "coverage_id": "src%2Fui%2Finput.rs%23word_chord::src%2Fapp.rs%23save%20recovery%20allowlist::src%2Fui::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/ui/input.rs#word_chord",
+      "boundary": "src/app.rs#save recovery allowlist",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "Board keyboard chords",
+    "boundary": "Ctrl mutating verbs and the save-recovery allowlist",
+    "subsystem": "src/ui",
+    "attack_class": "Editing chords changing status",
+    "starting_paths": [
+      "src/ui/input.rs",
+      "src/app.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Scoped delta: security-relevant source for this surface was not edited between 8d714a2 and 94b1dc6. Not re-closed as covered."
+    ],
+    "hardening": [],
+    "assignment_note": "out-of-scope"
+  }
+]
