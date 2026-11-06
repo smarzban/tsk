@@ -3923,3 +3923,60 @@ fn list_group_project_labels_colliding_basenames_by_their_shortest_unique_suffix
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[cfg(unix)]
+#[test]
+fn list_group_project_keeps_equivalent_spellings_in_one_labelled_group() {
+    let _env = env_lock();
+    let dir = temp_state_dir("equivalent-group");
+    let real = dir.join("real").join("wp-content");
+    let other = dir.join("other").join("wp-content");
+    std::fs::create_dir_all(&real).expect("create real project");
+    std::fs::create_dir_all(&other).expect("create other project");
+    let alias_parent = dir.join("alias");
+    std::fs::create_dir(&alias_parent).expect("create alias parent");
+    let alias = alias_parent.join("wp-content");
+    std::os::unix::fs::symlink(&real, &alias).expect("symlink alias");
+
+    let mut state = DomainState::new();
+    for (title, path) in [
+        ("real task", &real),
+        ("alias task", &alias),
+        ("other task", &other),
+    ] {
+        create_task(
+            &mut state,
+            title,
+            TaskScope::Project {
+                path: path.to_string_lossy().into_owned(),
+            },
+            HumanStatus::Open,
+        );
+    }
+    TaskStore::new(&dir).save(&state).expect("seed store");
+
+    let rows = json_rows(&list(&list_args(
+        &dir,
+        &["--all", "--group", "project", "--json"],
+    )));
+    let group_of = |title: &str| {
+        rows.iter()
+            .find(|row| row["title"] == title)
+            .map(|row| row["group"].as_str().expect("group").to_owned())
+            .expect("row")
+    };
+    assert_eq!(group_of("real task"), group_of("alias task"), "{rows:?}");
+    assert_ne!(group_of("real task"), group_of("other task"), "{rows:?}");
+    assert_eq!(group_of("other task"), "other/wp-content");
+
+    let human = list_at_width(&list_args(&dir, &["--all", "--group", "project"]), 400);
+    assert_eq!(human.code, 0, "{}", human.stderr);
+    let headings = human
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("  ") && !line.starts_with("    "))
+        .collect::<Vec<_>>();
+    assert_eq!(headings.len(), 2, "{}", human.stdout);
+
+    let _ = std::fs::remove_dir_all(dir);
+}

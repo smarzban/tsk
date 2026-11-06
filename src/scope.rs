@@ -518,6 +518,11 @@ pub(crate) fn resolve_permissive_project_path(
         return Ok(token.to_string());
     }
     let stored = stored_project_paths(domain);
+    // A legacy bare scope (`atlas`) is addressable only by its own spelling, so an exact
+    // stored match wins before a same-basename `/…/atlas` can make it ambiguous.
+    if stored.contains(token) {
+        return Ok(token.to_string());
+    }
     let mut candidates = stored.clone();
     if let Some(snapshot) = snapshot {
         // Outside Git, the invocation directory was not historically a basename alias.
@@ -699,6 +704,47 @@ mod portable_path_tests {
         assert_eq!(
             resolve_permissive_project_path(r"C:\work\tsk", &domain, None),
             Ok(r"C:\work\tsk".to_string())
+        );
+    }
+
+    fn domain_with_scopes(paths: &[&str]) -> DomainState {
+        let mut domain = DomainState::new();
+        for path in paths {
+            domain
+                .create(
+                    "fixture",
+                    None,
+                    TaskScope::Project {
+                        path: (*path).to_string(),
+                    },
+                    crate::domain::ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create project fixture");
+        }
+        domain
+    }
+
+    #[test]
+    fn permissive_resolution_keeps_a_legacy_bare_scope_addressable_beside_a_namesake() {
+        let domain = domain_with_scopes(&["atlas", "/projects/tsk-missing-namesake/atlas"]);
+        assert_eq!(
+            resolve_permissive_project_path("atlas", &domain, None),
+            Ok("atlas".to_string())
+        );
+    }
+
+    #[test]
+    fn permissive_resolution_refuses_a_basename_two_absolute_projects_share() {
+        let domain = domain_with_scopes(&[
+            "/projects/tsk-missing-b/atlas",
+            "/projects/tsk-missing-a/atlas",
+        ]);
+        let error = resolve_permissive_project_path("atlas", &domain, None)
+            .expect_err("two absolute namesakes are ambiguous");
+        assert_eq!(
+            error.message("atlas"),
+            "project atlas is ambiguous: /projects/tsk-missing-a/atlas, /projects/tsk-missing-b/atlas"
         );
     }
 
