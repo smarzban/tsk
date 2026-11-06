@@ -8020,7 +8020,7 @@ mod tests {
         // Another agent took the block over (its label changed): not in its pane.
         fs::write(
             root.join("blocks.json"),
-            r#"{"blocks":[{"block_id":"block:b","label":"t99-other"}]}"#,
+            r#"{"blocks":[{"block_id":"block:b","label":"t99-other","window_id":"window:w"}]}"#,
         )
         .expect("blocks");
         rex_reports(&root, &["idle"], "2.1.318", None);
@@ -8389,7 +8389,7 @@ mod tests {
             let process = if foreground.is_empty() {
                 serde_json::json!({"last_exit": {"code": 0}, "child": null, "foreground": null})
             } else {
-                serde_json::json!({"last_exit": null, "foreground": {"pid": 7, "name": foreground, "cwd": "/"}})
+                serde_json::json!({"last_exit": null, "foreground": {"pid": 7, "name": foreground, "argv0": foreground, "cwd": "/"}})
             };
             fs::write(
                 root.join(format!("process-{block}.json")),
@@ -8613,7 +8613,8 @@ mod tests {
         let process = if foreground.is_empty() {
             serde_json::json!({"last_exit": {"code": 0}, "child": null, "foreground": null})
         } else {
-            let program = serde_json::json!({"pid": 7, "name": foreground, "cwd": "/"});
+            let program =
+                serde_json::json!({"pid": 7, "name": foreground, "argv0": foreground, "cwd": "/"});
             serde_json::json!({"last_exit": null, "child": program, "foreground": program})
         };
         fs::write(
@@ -8761,6 +8762,117 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_rex_window_list_that_names_no_tab_is_never_a_gone_tab() {
+        let (path, profiles) = profiles();
+        let (mut state, id, mut host, root, _) = rex_dispatched("windows-unreadable", &profiles);
+        // The agent exited, so a readable answer would relaunch it.
+        rex_reports(&root, &[], "", None);
+        for answer in [
+            r#"{}"#,
+            r#"{"windows":{}}"#,
+            r#"{"windows":[{"label":"t1"}]}"#,
+        ] {
+            fs::write(root.join("windows.json"), answer).expect("windows");
+            let task = state.get(id).expect("task").clone();
+            let (route, check) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
+            assert_eq!(route, StartRoute::Plain, "{answer}");
+            assert!(
+                matches!(check, AgentCheck::Unreachable { .. }),
+                "{answer}: {check:?}"
+            );
+            fs::write(root.join("rex.log"), "").expect("log");
+            let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
+                .expect_err("refused");
+            assert!(error.to_string().contains("no readable windows"), "{error}");
+            let log = rex_log(&root);
+            assert!(
+                !log.contains("new_window") && !log.contains("new_split"),
+                "{answer}: {log}"
+            );
+            // Cleanup cannot tell whether the tab is open either.
+            assert!(rex::workspace_exists(&root.join("rex"), STUB_TAB).is_err());
+        }
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    /// A second assigned task in the project of `id`, numbered, ready to dispatch.
+    #[cfg(unix)]
+    fn another_rex_task(state: &mut DomainState, project: &Path) -> Uuid {
+        let id = state
+            .create_assigned(
+                "Second",
+                None,
+                TaskScope::Project {
+                    path: project.to_string_lossy().into_owned(),
+                },
+                ProvenanceOrigin::Manual,
+                None,
+                Some("implementer".into()),
+            )
+            .expect("task");
+        state.assign_numbers_for_persistence();
+        id
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_tab_rex_names_without_a_block_closes_and_records_nothing() {
+        let (path, profiles) = profiles();
+        let (mut state, _, mut host, root, project) = rex_dispatched("no-block", &profiles);
+        let id = another_rex_task(&mut state, &project);
+        fs::write(root.join("window-no-block"), "").expect("marker");
+        fs::write(root.join("rex.log"), "").expect("log");
+        let error = run_with_host_base(
+            &mut state,
+            id,
+            &profiles,
+            false,
+            HostKind::Rex,
+            Some("main"),
+            &mut host,
+        )
+        .expect_err("no agent block");
+        assert!(error.to_string().contains("returned no block"), "{error}");
+        let log = rex_log(&root);
+        assert!(log.contains(STUB_TAB_CLOSE), "the tab closes again: {log}");
+        assert!(!log.contains("session kill"), "{log}");
+        assert!(!log.contains("set_block_label"), "{log}");
+        assert_eq!(state.get(id).unwrap().dispatch, None, "nothing recorded");
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_tab_rex_does_not_name_is_never_invented_or_closed() {
+        let (path, profiles) = profiles();
+        let (mut state, _, mut host, root, project) = rex_dispatched("no-tab", &profiles);
+        let id = another_rex_task(&mut state, &project);
+        fs::write(root.join("window-unreadable"), "").expect("marker");
+        fs::write(root.join("rex.log"), "").expect("log");
+        let error = run_with_host_base(
+            &mut state,
+            id,
+            &profiles,
+            false,
+            HostKind::Rex,
+            Some("main"),
+            &mut host,
+        )
+        .expect_err("no readable tab");
+        assert!(error.to_string().contains("may have opened"), "{error}");
+        let log = rex_log(&root);
+        assert!(!log.contains("close_window"), "no tab id to close: {log}");
+        assert!(!log.contains("session kill"), "{log}");
+        assert!(!log.contains("set_block_label"), "{log}");
+        assert_eq!(state.get(id).unwrap().dispatch, None, "nothing recorded");
+        fs::remove_dir_all(root).expect("cleanup");
+        fs::remove_dir_all(path).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_rex_dispatch_from_before_tabs_keeps_its_whole_session() {
         let (path, profiles) = profiles();
         let (mut state, id, mut host, root, _) = rex_dispatched("legacy", &profiles);
@@ -8802,7 +8914,25 @@ mod tests {
         let (route, _) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
         assert_eq!(route, StartRoute::Plain);
 
-        // Cleanup closes the session it opened, as it did then.
+        // The session now also holds a newer dispatch's tab: which tab was this agent's cannot
+        // be told, so cleanup closes nothing and says so.
+        rex_layout(
+            &root,
+            &["window:a", "window:w2"],
+            &[
+                ("block:b", &agent, "window:a"),
+                ("block:n", "t77-implementer", "window:w2"),
+            ],
+        );
+        fs::write(root.join("rex.log"), "").expect("log");
+        let error = clean_with_host(&mut state, id, HostKind::Rex, &mut host).expect_err("refused");
+        assert!(error.to_string().contains("holds 2 tabs"), "{error}");
+        let log = rex_log(&root);
+        assert!(!log.contains("session kill"), "{log}");
+        assert!(!log.contains("close_window"), "{log}");
+
+        // Holding only its own tab, the session it opened closes, as it did then.
+        rex_layout(&root, &["window:a"], &[("block:b", &agent, "window:a")]);
         fs::write(root.join("rex.log"), "").expect("log");
         clean_with_host(&mut state, id, HostKind::Rex, &mut host).expect("clean");
         let log = rex_log(&root);
@@ -8903,7 +9033,7 @@ mod tests {
         // agent takes the block over before the send.
         fs::write(
             root.join("blocks.next"),
-            r#"{"blocks":[{"block_id":"block:b","label":"t99-other"}]}"#,
+            r#"{"blocks":[{"block_id":"block:b","label":"t99-other","window_id":"window:w"}]}"#,
         )
         .expect("next");
         fs::write(root.join("rex.log"), "").expect("log");

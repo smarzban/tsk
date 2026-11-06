@@ -407,22 +407,28 @@ pub fn workspace(id: &str) -> Result<Workspace<'_>, String> {
     }
 }
 
-/// The ids of `session`'s windows, `None` when the session is gone.
+/// The ids of `session`'s windows, `None` when the session is gone. An answer that does not
+/// list them is an error, never an empty list: a tab read as gone gets a second agent.
 fn session_windows(program: &Path, session: &str) -> Result<Option<Vec<String>>, String> {
     let output = rex(program, &["window", "ls", "-s", session, "--json"])?;
     if not_found(&output) {
         return Ok(None);
     }
-    Ok(Some(
-        rex_json(output)?
-            .get("windows")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|window| window.get("window_id").and_then(Value::as_str))
-            .map(str::to_string)
-            .collect(),
-    ))
+    let unreadable = || format!("rex window ls gave no readable windows for {session}");
+    rex_json(output)?
+        .get("windows")
+        .and_then(Value::as_array)
+        .ok_or_else(unreadable)?
+        .iter()
+        .map(|window| {
+            window
+                .get("window_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(unreadable)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 /// The blocks of the recorded workspace: the tab's own, or a legacy record's whole session.
@@ -799,7 +805,7 @@ fn pane_process(program: &Path, pane: &str) -> Result<Value, RootPaneError> {
 /// [`block_program`] for a block that is not labelled as the agent. A shell in the foreground
 /// counts as bare only when everything between the block and it is Rex's `login` wrapper or
 /// another shell, and the outermost shell is the login shell `login` started (`argv0` with a
-/// leading `-`, when Rex reports it). A shell an agent spawned has the agent among its
+/// leading `-`; a shell Rex reports no `argv0` for is not known to be bare). A shell an agent spawned has the agent among its
 /// ancestors, and the launcher's own shell, in the moment before it starts the agent, is not a
 /// login shell: both are named instead.
 pub fn leftover_program(process: &Value) -> BlockProgram {
@@ -846,8 +852,9 @@ pub fn leftover_program(process: &Value) -> BlockProgram {
         .chain(std::iter::once(foreground))
         .find(|entry| is_shell(&name(entry)))
         .unwrap_or(foreground);
+    // No `argv0` says nothing about how the shell started: it may be the launcher's.
     let argv0 = outer.get("argv0").and_then(Value::as_str);
-    if argv0.is_some_and(|argv0| !argv0.starts_with('-')) {
+    if !argv0.is_some_and(|argv0| argv0.starts_with('-')) {
         return BlockProgram::Busy {
             process: name(outer),
         };
@@ -994,8 +1001,8 @@ pub fn workspace_exists(program: &Path, workspace_id: &str) -> Result<bool, Stri
 }
 
 /// Close the recorded workspace: the agent's tab, never the session around it. Only a record
-/// from before tabs, whose whole session tsk opened, closes a session. One already gone is
-/// closed.
+/// from before tabs, whose whole session tsk opened, closes a session, and only while it holds
+/// no other tab. One already gone is closed.
 pub fn close_workspace(program: &Path, workspace_id: &str) -> Result<(), String> {
     if workspace_id.starts_with(PENDING_PREFIX) {
         return Ok(());
@@ -1003,8 +1010,25 @@ pub fn close_workspace(program: &Path, workspace_id: &str) -> Result<(), String>
     let at = workspace(workspace_id)?;
     match at.window {
         Some(window) => close_window(program, at.session, window),
-        None => kill_session(program, at.session),
+        None => close_legacy_session(program, at.session),
     }
+}
+
+/// Close the session a dispatch from before tabs opened, unless it now holds other tabs: newer
+/// dispatches or the user may have opened them there, and which tab held this agent cannot be
+/// told apart, so nothing closes and the user is asked to.
+fn close_legacy_session(program: &Path, session: &str) -> Result<(), String> {
+    let Some(windows) = session_windows(program, session)? else {
+        return Ok(());
+    };
+    if windows.len() > 1 {
+        return Err(format!(
+            "rex session {session} holds {} tabs, and only the agent's was this dispatch's; \
+             close that tab yourself",
+            windows.len()
+        ));
+    }
+    kill_session(program, session)
 }
 
 /// Close one tab of `session`. A tab or session already gone is closed.
@@ -1250,6 +1274,14 @@ mod tests {
             leftover_program(&json!({"child": claude, "foreground": spawned})),
             BlockProgram::Busy {
                 process: "claude".into()
+            }
+        );
+        // Rex reports no argv0: how the shell started is unknown, so it is not bare.
+        let unknown = json!({"pid": 12, "name": "zsh"});
+        assert_eq!(
+            leftover_program(&json!({"child": login, "ancestors": [login], "foreground": unknown})),
+            BlockProgram::Busy {
+                process: "zsh".into()
             }
         );
         // The launcher's login shell before it starts the agent: not a login-started shell.
