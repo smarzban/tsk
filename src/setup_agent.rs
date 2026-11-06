@@ -1334,7 +1334,7 @@ mod tests {
         assert!(COORDINATOR_MD.contains("\nname: tsk-coordinator\n"));
         assert_eq!(
             fnv1a(COORDINATOR_MD),
-            0x7a22_afdb_cda7_ac90,
+            0xac3b_5196_dd50_f2ad,
             "skills/tsk-coordinator/SKILL.md changed: refresh this hash pin, and bump both skills' `version:` only if this is the first skill edit since the last release"
         );
     }

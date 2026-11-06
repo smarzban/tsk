@@ -39,6 +39,10 @@ With tsk, run `tsk guide` first: the tsk skill owns every command. This skill ne
    - With tsk in Herdr or Rex: set the assignee and base, then start the task. Dispatch creates
      the worktree, the Herdr workspace or Rex tab, and the agent. No agent profile in
      `config.toml` yet: ask the user to add one, or start the builder yourself.
+   - In Rex, keep builders in your own session: dispatch from your own pane (the tab opens in
+     the session tsk runs in), or open the tab yourself without taking focus:
+     `rex window new -s "$REX_SESSION" t12-claude --focus=false -c <worktree> -- <agent> "<prompt>"`.
+     Never a new session.
    - In neither: create the worktree and start the agent yourself, e.g. one terminal tab per agent.
    - The prompt only points at the brief: "T12: read `tsk list T12 --json`."
    - After prompting, confirm the agent is working: read its pane or terminal. A dialog can
@@ -83,7 +87,9 @@ If the board lacks something that would help, tell the user.
 
 1. An independent reviewer reviews in its own fresh session, e.g. another agent with a review
    skill. Name the focus areas: security boundaries, public writes, deploy compatibility. Do not
-   review your own builder's work when a reviewer is set up.
+   review your own builder's work when a reviewer is set up. In Rex, start the reviewer as a pane
+   in the builder's tab, without taking focus:
+   `rex split -s "$REX_SESSION" -b <builder block> --focus=false -c <worktree> -- <reviewer>`.
 2. Triage each finding by likelihood × impact, with a one-line reason:
 
    | Keep | Drop |
