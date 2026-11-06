@@ -1579,3 +1579,87 @@ fn setup_json_lists_each_skill_per_agent() {
     );
     let _ = fs::remove_dir_all(root);
 }
+
+#[cfg(unix)]
+#[test]
+fn rex_check_reports_bound_only_when_init_lua_loads_the_managed_file() {
+    let _lock = env_lock();
+    let root = temp_dir("rex-check");
+    let config = root.join("rex/init.lua");
+    fs::create_dir_all(config.parent().unwrap()).expect("config dir");
+    let previous = std::env::var_os("REX_CONFIG");
+    std::env::set_var("REX_CONFIG", &config);
+    let check = || cli_non_tty(&["tsk", "setup", "rex", "--check"]);
+
+    let missing = check();
+    assert_eq!(
+        (missing.code, missing.stdout.trim()),
+        (0, "unbound"),
+        "{missing:?}"
+    );
+
+    fs::write(&config, "require(\"tsk\") -- tsk setup rex\n").expect("init");
+    let no_module = check();
+    assert_eq!(no_module.stdout.trim(), "unbound", "{no_module:?}");
+
+    fs::write(root.join("rex/tsk.lua"), "-- my own module\n").expect("unmanaged");
+    let unmanaged = check();
+    assert_eq!(unmanaged.stdout.trim(), "unbound", "{unmanaged:?}");
+
+    fs::write(
+        root.join("rex/tsk.lua"),
+        "-- Managed by tsk setup rex. Rerun `tsk setup rex` to update it.\n",
+    )
+    .expect("managed");
+    let bound = check();
+    assert_eq!((bound.code, bound.stdout.trim()), (0, "bound"), "{bound:?}");
+
+    fs::write(&config, "-- require(\"tsk\")\n").expect("commented");
+    let commented = check();
+    assert_eq!(commented.stdout.trim(), "unbound", "{commented:?}");
+
+    match previous {
+        Some(value) => std::env::set_var("REX_CONFIG", value),
+        None => std::env::remove_var("REX_CONFIG"),
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn rex_key_flags_only_pair_with_rex() {
+    use tsk_tui::setup_agent::{parse, Command};
+    let args = |tail: &[&str]| {
+        let mut all = vec!["tsk".to_string(), "setup".to_string()];
+        all.extend(tail.iter().map(|s| s.to_string()));
+        all
+    };
+    assert_eq!(
+        parse(&args(&[
+            "rex",
+            "--board-key",
+            "ctrl+b>t",
+            "--capture-key=none"
+        ]))
+        .unwrap(),
+        Command::Rex(tsk_tui::setup::rex::Options {
+            board_key: Some("ctrl+b>t".into()),
+            capture_key: Some("none".into()),
+        })
+    );
+    assert_eq!(
+        parse(&args(&["rex", "--check"])).unwrap(),
+        Command::RexCheck
+    );
+    for bad in [
+        &["herdr", "--board-key", "alt+t"][..],
+        &["--capture-key", "alt+a"],
+        &["rex", "herdr"],
+        &["rex", "--check", "--board-key", "alt+t"],
+        &["rex", "--board-key"],
+        &["rex", "--board-key", "alt+t", "--board-key", "alt+y"],
+        &["rex", "--json"],
+        &["rex", "claude"],
+    ] {
+        assert!(parse(&args(bad)).is_err(), "{bad:?}");
+    }
+}

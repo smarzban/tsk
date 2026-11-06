@@ -5,6 +5,7 @@ use crate::stub;
 use std::fs;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tsk_tui::dispatch::HostKind;
 
 use std::path::{Path, PathBuf};
 
@@ -77,14 +78,14 @@ impl DispatchHost for FakeHost {
         &mut self,
         _project: &Path,
         _dispatch: &tsk_tui::domain::Dispatch,
-        _in_herdr: bool,
+        _host_kind: HostKind,
     ) -> Result<CleanupInspection, String> {
         self.inspection
             .clone()
             .ok_or_else(|| "inspection missing".into())
     }
 
-    fn remove_herdr_worktree(&mut self, _workspace_id: &str) -> Result<(), String> {
+    fn remove_host_worktree(&mut self, _workspace_id: &str) -> Result<(), String> {
         self.removed += 1;
         Ok(())
     }
@@ -119,6 +120,24 @@ impl DispatchHost for FakeHost {
         _script: &str,
     ) -> Result<std::path::PathBuf, String> {
         self.launcher_path(workspace_id)
+    }
+}
+
+/// Run `tsk` as its own process outside any host: a test in a Herdr pane or a Rex terminal
+/// would otherwise talk to that host, and refuse another host's dispatch.
+fn run_outside_any_host<const N: usize>(args: [&str; N]) -> tsk_tui::cli::CliOutput {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tsk"))
+        .args(&args[1..])
+        .env_remove("HERDR_ENV")
+        .env_remove("REX_SESSION")
+        .env_remove("TSK_AGENT")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run tsk");
+    tsk_tui::cli::CliOutput {
+        stdout: String::from_utf8(output.stdout).expect("utf-8 stdout"),
+        stderr: String::from_utf8(output.stderr).expect("utf-8 stderr"),
+        code: u8::try_from(output.status.code().expect("exit code")).expect("u8 exit"),
     }
 }
 
@@ -171,7 +190,7 @@ fn successful_cli_dispatch_persists_record_and_started_together() {
         TaskAddress::Number(1),
         false,
         Some(dir.clone()),
-        true,
+        HostKind::Herdr,
         &mut FakeHost::default(),
     )
     .expect("dispatch");
@@ -180,7 +199,7 @@ fn successful_cli_dispatch_persists_record_and_started_together() {
     let task = saved.tasks().first().expect("task");
     assert_eq!(task.status, HumanStatus::Started);
     let record = task.dispatch.as_ref().expect("record");
-    assert_eq!(record.herdr_workspace_id, "workspace-1");
+    assert_eq!(record.session, "workspace-1");
     assert_eq!(record.base.as_deref(), Some("main"));
     assert_eq!(record.base_commit, None);
     assert_eq!(record.base_ref.as_deref(), Some("refs/heads/main"));
@@ -188,7 +207,7 @@ fn successful_cli_dispatch_persists_record_and_started_together() {
         TaskAddress::Number(1),
         true,
         Some(dir.clone()),
-        true,
+        HostKind::Herdr,
         &mut FakeHost::default(),
     )
     .unwrap();
@@ -250,7 +269,7 @@ fn a_restore_during_a_dispatch_refuses_its_save_and_keeps_the_restored_store() {
         TaskAddress::Number(2),
         false,
         Some(dir.clone()),
-        true,
+        HostKind::Herdr,
         &mut host,
     )
     .expect_err("the restore replaced the store dispatch loaded");
@@ -308,7 +327,7 @@ fn cli_dispatch_one_off_base_reaches_core_without_editing_task_base() {
         TaskAddress::Number(1),
         false,
         Some(dir.clone()),
-        true,
+        HostKind::Herdr,
         Some("release"),
         &mut FakeHost::default(),
     )
@@ -342,7 +361,7 @@ fn clean_cli_help_and_success_report_each_removed_resource() {
         "not-dispatched",
         "already-cleaned",
         "dirty-worktree",
-        "herdr-failed",
+        "host-failed",
         "store-error",
         "gh-unavailable",
         "no-pr",
@@ -385,7 +404,7 @@ fn clean_cli_help_and_success_report_each_removed_resource() {
         TaskAddress::Number(1),
         false,
         Some(dir.clone()),
-        true,
+        HostKind::Herdr,
         &mut launch,
     )
     .expect("dispatch");
@@ -405,8 +424,13 @@ fn clean_cli_help_and_success_report_each_removed_resource() {
         }),
         ..FakeHost::default()
     };
-    let result = clean::run_with_host(TaskAddress::Number(1), Some(dir.clone()), true, &mut host)
-        .expect("clean");
+    let result = clean::run_with_host(
+        TaskAddress::Number(1),
+        Some(dir.clone()),
+        HostKind::Herdr,
+        &mut host,
+    )
+    .expect("clean");
     assert_eq!(result.worktree, WorktreeCleanup::Removed);
     assert_eq!(host.removed, 1);
     assert!(
@@ -613,8 +637,13 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
         "{stdout}"
     );
     // The default base, and the next free branch name: origin already has the first one.
+    // The worktree goes under the state dir's `worktrees/<repo>`.
+    let default_worktree = dir.join("worktrees").join("app").join("tsk-t1-ship-it-2");
     assert!(
-        stdout.contains("tsk-t1-ship-it-2 on branch tsk/t1-ship-it-2, based on main.\n"),
+        stdout.contains(&format!(
+            "in worktree {} on branch tsk/t1-ship-it-2, based on main.\n",
+            default_worktree.display()
+        )),
         "{stdout}"
     );
     assert!(
@@ -692,6 +721,51 @@ fn show_prompt_prints_the_layered_launch_for_any_status_and_writes_nothing() {
     assert!(again
         .stderr
         .contains("--show-prompt and --again cannot be combined"));
+
+    // `[dispatch] worktrees` moves the root; one inside the project refuses as a config error.
+    let config = fs::read_to_string(dir.join("config.toml")).expect("config");
+    let preview = |worktrees: &Path| {
+        fs::write(
+            dir.join("config.toml"),
+            format!(
+                "[dispatch]\nworktrees = '{}'\n{config}",
+                worktrees.display()
+            ),
+        )
+        .expect("config");
+        run_with(
+            [
+                "tsk",
+                "dispatch",
+                "T1",
+                "--show-prompt",
+                "--state-dir",
+                dir.to_str().expect("utf-8 path"),
+            ],
+            Cursor::new(Vec::<u8>::new()),
+            true,
+        )
+    };
+    let elsewhere = repos.join("elsewhere");
+    let moved = preview(&elsewhere);
+    assert_eq!(moved.code, 0, "{}", moved.stderr);
+    assert!(
+        moved.stdout.contains(&format!(
+            "in worktree {} on branch",
+            elsewhere.join("app").join("tsk-t1-ship-it-2").display()
+        )),
+        "{}",
+        moved.stdout
+    );
+    assert!(!elsewhere.exists(), "a preview creates no folder");
+    let inside = preview(&clone.join("worktrees"));
+    assert_eq!(inside.code, 1, "{}", inside.stdout);
+    assert!(
+        inside.stderr.starts_with("tsk dispatch: agent-config:")
+            && inside.stderr.contains("puts worktrees inside the project"),
+        "{}",
+        inside.stderr
+    );
     fs::remove_dir_all(dir).expect("cleanup");
     fs::remove_dir_all(repos).expect("cleanup repos");
 }
@@ -927,8 +1001,13 @@ fn cleanup_restores_a_checkout_left_aside_and_still_refuses_its_uncommitted_work
     fs::rename(&repo.worktree, checked_aside(&repo.worktree)).unwrap();
     let (mut state, id) = repo.state("base", None);
 
-    let refused = tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut system_host())
-        .expect_err("dirty work is never cleaned");
+    let refused = tsk_tui::dispatch::clean_with_host(
+        &mut state,
+        id,
+        HostKind::Standalone,
+        &mut system_host(),
+    )
+    .expect_err("dirty work is never cleaned");
     assert_eq!(refused, tsk_tui::dispatch::CleanupError::DirtyWorktree);
     assert_eq!(
         fs::read_to_string(repo.worktree.join("work.txt")).unwrap(),
@@ -987,13 +1066,14 @@ fn an_unfinished_removal_reads_as_partly_removed_not_as_uncommitted_work() {
     // Without a started removal, a deleted tracked file is uncommitted work.
     fs::remove_file(repo.worktree.join("tracked.txt")).unwrap();
     assert_eq!(
-        tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host),
+        tsk_tui::dispatch::clean_with_host(&mut state, id, HostKind::Standalone, &mut host),
         Err(CleanupError::DirtyWorktree)
     );
 
     host.mark_removal("w1", true);
-    let refused = tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host)
-        .expect_err("partly removed");
+    let refused =
+        tsk_tui::dispatch::clean_with_host(&mut state, id, HostKind::Standalone, &mut host)
+            .expect_err("partly removed");
     assert_eq!(refused.code(), "partly-removed");
     assert!(
         refused.to_string().contains("restore . and clean again"),
@@ -1004,7 +1084,8 @@ fn an_unfinished_removal_reads_as_partly_removed_not_as_uncommitted_work() {
     // Restoring as told lets the next cleanup run normally and converge.
     repo.in_worktree(&["restore", "."]);
     let result =
-        tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host).expect("cleaned");
+        tsk_tui::dispatch::clean_with_host(&mut state, id, HostKind::Standalone, &mut host)
+            .expect("cleaned");
     assert_eq!(result.worktree, WorktreeCleanup::Removed);
     assert!(state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
     assert!(!removal_mark(&repo).exists());
@@ -1055,7 +1136,7 @@ fn a_marked_removal_never_reads_real_work_as_partly_removed() {
         change(&repo);
 
         assert_eq!(
-            tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host),
+            tsk_tui::dispatch::clean_with_host(&mut state, id, HostKind::Standalone, &mut host),
             Err(CleanupError::DirtyWorktree),
             "{label}"
         );
@@ -1087,7 +1168,7 @@ fn a_stale_removal_mark_never_vouches_for_a_later_deletion() {
 
     let mut host = SystemDispatchHost::in_state_dir(repo.root.join("state"));
     assert_eq!(
-        tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host),
+        tsk_tui::dispatch::clean_with_host(&mut state, id, HostKind::Standalone, &mut host),
         Err(CleanupError::DirtyWorktree)
     );
     assert!(!state.get(id).unwrap().dispatch.as_ref().unwrap().cleaned);
@@ -1131,15 +1212,17 @@ impl DispatchHost for AgentWritesOnClose {
         &mut self,
         project: &Path,
         dispatch: &tsk_tui::domain::Dispatch,
-        _: bool,
+        _: HostKind,
     ) -> Result<CleanupInspection, String> {
-        let inspection = self.inner.inspect_cleanup(project, dispatch, false)?;
+        let inspection = self
+            .inner
+            .inspect_cleanup(project, dispatch, HostKind::Standalone)?;
         Ok(CleanupInspection {
             workspace_exists: true,
             ..inspection
         })
     }
-    fn close_herdr_workspace(&mut self, _: &str) -> Result<(), String> {
+    fn close_workspace(&mut self, _: &str) -> Result<(), String> {
         fs::write(self.worktree.join("agent-notes.txt"), "written on exit").unwrap();
         Ok(())
     }
@@ -1189,7 +1272,7 @@ fn work_written_after_the_inspection_is_refused_as_uncommitted_and_kept() {
         worktree: repo.worktree.clone(),
     };
     assert_eq!(
-        tsk_tui::dispatch::clean_with_host(&mut state, id, true, &mut host),
+        tsk_tui::dispatch::clean_with_host(&mut state, id, HostKind::Herdr, &mut host),
         Err(tsk_tui::dispatch::CleanupError::DirtyWorktree)
     );
     assert_eq!(
@@ -1294,7 +1377,8 @@ impl CleanupRepo {
                     )),
                     base_commit: None,
                     base_remote: remote.map(str::to_string),
-                    herdr_workspace_id: "w1".into(),
+                    host: tsk_tui::domain::AgentHost::Herdr,
+                    session: "w1".into(),
                     at: std::time::SystemTime::now(),
                     cleaned: false,
                 },
@@ -1363,7 +1447,7 @@ impl CleanupRepo {
 
     fn clean(&self, base: &str, remote: Option<&str>) -> tsk_tui::dispatch::CleanupResult {
         let (mut state, id) = self.state(base, remote);
-        tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut system_host())
+        tsk_tui::dispatch::clean_with_host(&mut state, id, HostKind::Standalone, &mut system_host())
             .expect("clean worktree even when base vanished")
     }
 }
@@ -1470,19 +1554,15 @@ fn status_done_clean_keeps_the_branch_when_the_remote_is_unreachable() {
     let (state, _) = repo.state("origin/main", Some("origin"));
     let dir = repo.root.join("state");
     TaskStore::new(dir.clone()).save(&state).unwrap();
-    let output = run_with(
-        [
-            "tsk",
-            "status",
-            "T1",
-            "done",
-            "--clean",
-            "--state-dir",
-            dir.to_str().unwrap(),
-        ],
-        Cursor::new(Vec::<u8>::new()),
-        true,
-    );
+    let output = run_outside_any_host([
+        "tsk",
+        "status",
+        "T1",
+        "done",
+        "--clean",
+        "--state-dir",
+        dir.to_str().unwrap(),
+    ]);
     assert_eq!(output.code, 0, "{}", output.stderr);
     assert!(
         output
@@ -1540,19 +1620,15 @@ fn status_done_clean_still_refuses_a_dirty_worktree_after_done_persists() {
     let dir = repo.root.join("state");
     TaskStore::new(dir.clone()).save(&state).unwrap();
     fs::write(repo.worktree.join("wip.txt"), "unsaved").unwrap();
-    let output = run_with(
-        [
-            "tsk",
-            "status",
-            "T1",
-            "done",
-            "--clean",
-            "--state-dir",
-            dir.to_str().unwrap(),
-        ],
-        Cursor::new(Vec::<u8>::new()),
-        true,
-    );
+    let output = run_outside_any_host([
+        "tsk",
+        "status",
+        "T1",
+        "done",
+        "--clean",
+        "--state-dir",
+        dir.to_str().unwrap(),
+    ]);
     assert_eq!(output.code, 1);
     assert!(
         output.stderr.starts_with("tsk status: dirty-worktree:"),
@@ -1669,8 +1745,13 @@ fn cleanup_keeps_exact_local_namespace_after_adding_same_named_remote() {
                 "tsk/t1-clean:main"
             },
         ]);
-        let result =
-            tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut system_host()).unwrap();
+        let result = tsk_tui::dispatch::clean_with_host(
+            &mut state,
+            id,
+            HostKind::Standalone,
+            &mut system_host(),
+        )
+        .unwrap();
         assert_eq!(
             result.branch,
             if merged {
@@ -1722,9 +1803,9 @@ impl DispatchHost for AdvancingCleanupHost {
         &mut self,
         project: &Path,
         record: &tsk_tui::domain::Dispatch,
-        in_herdr: bool,
+        host_kind: HostKind,
     ) -> Result<CleanupInspection, String> {
-        system_host().inspect_cleanup(project, record, in_herdr)
+        system_host().inspect_cleanup(project, record, host_kind)
     }
     fn remove_git_worktree(&mut self, project: &Path, worktree: &Path) -> Result<(), String> {
         system_host().remove_git_worktree(project, worktree)?;
@@ -1770,9 +1851,13 @@ impl DispatchHost for AdvancingCleanupHost {
 fn cleanup_advanced_merged_branch_has_truthful_reason() {
     let repo = CleanupRepo::new();
     let (mut state, id) = repo.state("base", None);
-    let result =
-        tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut AdvancingCleanupHost)
-            .unwrap();
+    let result = tsk_tui::dispatch::clean_with_host(
+        &mut state,
+        id,
+        HostKind::Standalone,
+        &mut AdvancingCleanupHost,
+    )
+    .unwrap();
     assert_eq!(result.branch, tsk_tui::dispatch::BranchCleanup::Kept);
     assert_eq!(
         result.branch_reason,
@@ -1806,7 +1891,12 @@ fn cleanup_git_status_is_bounded_even_when_fsmonitor_stalls() {
     repo.git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
     let (mut state, id) = repo.state("base", None);
     let start = std::time::Instant::now();
-    let result = tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut system_host());
+    let result = tsk_tui::dispatch::clean_with_host(
+        &mut state,
+        id,
+        HostKind::Standalone,
+        &mut system_host(),
+    );
     let elapsed = start.elapsed();
     assert!(result.is_err(), "stalled Git must time out: {result:?}");
     assert!(result
@@ -1843,7 +1933,7 @@ fn cleanup_status_tolerates_a_slow_but_finishing_filesystem_watcher() {
     let (state, id) = repo.state("base", None);
     let record = state.get(id).unwrap().dispatch.as_ref().unwrap();
     let start = std::time::Instant::now();
-    let result = system_host().inspect_cleanup(&repo.project, record, false);
+    let result = system_host().inspect_cleanup(&repo.project, record, HostKind::Standalone);
     let elapsed = start.elapsed();
     assert!(
         result.is_ok(),
@@ -1992,7 +2082,7 @@ fn cleanup_inspection_tolerates_a_slow_but_finishing_ancestry_check() {
         .inspect_cleanup(
             &repo.project,
             state.get(id).unwrap().dispatch.as_ref().unwrap(),
-            false,
+            HostKind::Standalone,
         )
         .unwrap();
     assert!(result.branch_merged);
@@ -2014,8 +2104,13 @@ fn cleanup_tolerates_slow_worktree_listings_at_both_safety_checks() {
     let repo = CleanupRepo::new();
     let (mut state, id) = repo.state("base", None);
     let start = std::time::Instant::now();
-    let result =
-        tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut system_host()).unwrap();
+    let result = tsk_tui::dispatch::clean_with_host(
+        &mut state,
+        id,
+        HostKind::Standalone,
+        &mut system_host(),
+    )
+    .unwrap();
     assert_eq!(result.branch, tsk_tui::dispatch::BranchCleanup::Removed);
     assert!(!repo.worktree.exists());
     assert!(
@@ -2225,7 +2320,8 @@ fn stub_gh_with(
 fn clean_with_gh(repo: &CleanupRepo, gh: &Path) -> tsk_tui::dispatch::CleanupResult {
     let (mut state, id) = repo.state("base", None);
     let mut host = system_host().with_gh(gh);
-    tsk_tui::dispatch::clean_with_host(&mut state, id, false, &mut host).expect("cleaned")
+    tsk_tui::dispatch::clean_with_host(&mut state, id, HostKind::Standalone, &mut host)
+        .expect("cleaned")
 }
 
 #[cfg(unix)]
@@ -2305,7 +2401,7 @@ fn merge_runs_gh_pr_merge_with_the_configured_method_and_refuses_without_changin
     let refused = clean::merge_with_host(
         TaskAddress::Number(1),
         Some(state_dir.clone()),
-        false,
+        HostKind::Standalone,
         &mut system_host().with_gh(&gh),
     )
     .expect_err("gh refused the merge");
@@ -2337,7 +2433,7 @@ fn merge_runs_gh_pr_merge_with_the_configured_method_and_refuses_without_changin
     let merged = clean::merge_with_host(
         TaskAddress::Number(1),
         Some(state_dir.clone()),
-        false,
+        HostKind::Standalone,
         &mut system_host().with_gh(&gh),
     )
     .expect("merged");
@@ -2350,7 +2446,7 @@ fn merge_runs_gh_pr_merge_with_the_configured_method_and_refuses_without_changin
     let refused = clean::merge_with_host(
         TaskAddress::Number(1),
         Some(state_dir),
-        false,
+        HostKind::Standalone,
         &mut system_host().with_gh(&gh),
     )
     .expect_err("bad config");
@@ -2408,7 +2504,7 @@ fn clean_merge_json_merges_then_saves_done_then_cleans_and_reports_the_merge() {
         state_dir.clone(),
         "clean",
         true,
-        false,
+        HostKind::Standalone,
         &mut system_host().with_gh(&gh),
     );
     assert_eq!(output.code, 0, "{}", output.stderr);
@@ -2459,7 +2555,7 @@ fn status_done_merge_prints_the_merge_the_status_and_the_cleanup() {
         state_dir.clone(),
         "status",
         false,
-        false,
+        HostKind::Standalone,
         &mut system_host().with_gh(&gh),
     );
     assert_eq!(output.code, 0, "{}", output.stderr);
@@ -2486,7 +2582,7 @@ fn a_merge_whose_done_save_fails_exits_3_reports_the_merge_and_cleans_nothing() 
         state_dir.clone(),
         "clean",
         true,
-        false,
+        HostKind::Standalone,
         &mut system_host().with_gh(&gh),
     );
     use std::os::unix::fs::PermissionsExt;
@@ -2517,7 +2613,7 @@ fn a_merge_gh_only_queued_refuses_and_leaves_the_task() {
         state_dir.clone(),
         "status",
         false,
-        false,
+        HostKind::Standalone,
         &mut system_host().with_gh(&gh),
     );
     assert_eq!(output.code, 1);
@@ -2563,7 +2659,7 @@ fn a_merge_whose_cleanup_is_refused_still_reports_the_merge_and_the_done_in_json
         state_dir.clone(),
         "clean",
         true,
-        false,
+        HostKind::Standalone,
         &mut system_host().with_gh(&gh),
     );
     assert_eq!(output.code, 1, "{}", output.stderr);

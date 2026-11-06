@@ -321,32 +321,38 @@ fn possessive(names: &[String], one: &str, many: &str) -> String {
     }
 }
 
+/// What the card calls the place an agent ran, one and many: a Herdr workspace is an `agent
+/// pane`, a Rex tab an `agent tab`.
+type PaneNoun = (&'static str, &'static str);
+const HERDR_PANE: PaneNoun = ("agent pane", "agent panes");
+const REX_PANE: PaneNoun = ("agent tab", "agent tabs");
+
 /// `close T9's agent pane`: a gone worktree's workspace, still open.
-fn close_panes(names: &[String]) -> String {
-    format!("close {}", possessive(names, "agent pane", "agent panes"))
+fn close_panes(names: &[String], (one, many): PaneNoun) -> String {
+    format!("close {}", possessive(names, one, many))
 }
 
 /// `remove worktree, branch and agent pane`.
-fn remove_list(branch: bool, pane: bool) -> String {
+fn remove_list(branch: bool, pane: bool, (one, _): PaneNoun) -> String {
     let mut items = vec!["worktree".to_string()];
     if branch {
         items.push("branch".into());
     }
     if pane {
-        items.push("agent pane".into());
+        items.push(one.into());
     }
     format!("remove {}", and_list(&items))
 }
 
 /// `its worktree, branch and agent pane`, or `their worktrees and agent panes`.
-fn owned(one: bool, branch: bool, pane: bool) -> String {
+fn owned(one: bool, branch: bool, pane: bool, (single_pane, many_panes): PaneNoun) -> String {
     let noun = |single: &str, plural: &str| if one { single } else { plural }.to_string();
     let mut items = vec![noun("worktree", "worktrees")];
     if branch {
         items.push(noun("branch", "branches"));
     }
     if pane {
-        items.push(noun("agent pane", "agent panes"));
+        items.push(noun(single_pane, many_panes));
     }
     format!("{} {}", if one { "its" } else { "their" }, and_list(&items))
 }
@@ -376,6 +382,23 @@ struct Buckets {
 }
 
 impl CleanupPrompt {
+    /// What this card calls an agent's pane. A card holds records of the host it runs in
+    /// only, so the first record decides.
+    fn pane_noun(&self) -> PaneNoun {
+        let row_host = self
+            .rows
+            .iter()
+            .find_map(|row| row.inspected.as_ref().map(|record| record.host));
+        let missing_host = self
+            .bulk
+            .as_ref()
+            .and_then(|bulk| bulk.missing.first().map(|(_, _, record)| record.host));
+        match row_host.or(missing_host) {
+            Some(crate::domain::AgentHost::Rex) => REX_PANE,
+            _ => HERDR_PANE,
+        }
+    }
+
     /// The card's options, in key order `m` · `y` · `n`. None while a check or merge runs,
     /// once a run started, or after `m` went nothing on.
     pub fn options(&self) -> Vec<CleanupOption> {
@@ -398,6 +421,7 @@ impl CleanupPrompt {
     fn single_options(&self, row: &CleanupRow) -> Vec<CleanupOption> {
         let option = |choice, text: String, bold| CleanupOption { choice, text, bold };
         let pane = row.workspace_exists;
+        let noun = self.pane_noun();
         let keep = |prefix: &str| {
             option(
                 CleanupChoice::Keep,
@@ -415,7 +439,7 @@ impl CleanupPrompt {
                         "{} PR #{pr} to {} · mark done · {}",
                         merge_verb(self.method),
                         row.base_name(),
-                        remove_list(true, pane)
+                        remove_list(true, pane, noun)
                     ),
                     true,
                 ),
@@ -423,7 +447,7 @@ impl CleanupPrompt {
                     CleanupChoice::Clean,
                     format!(
                         "don't merge · mark done · {} · keep the branch and the PR open",
-                        remove_list(false, pane)
+                        remove_list(false, pane, noun)
                     ),
                     false,
                 ),
@@ -432,7 +456,7 @@ impl CleanupPrompt {
             RowVerdict::Merged { .. } => vec![
                 option(
                     CleanupChoice::Clean,
-                    format!("mark done · {}", remove_list(true, pane)),
+                    format!("mark done · {}", remove_list(true, pane, noun)),
                     true,
                 ),
                 keep(""),
@@ -442,7 +466,7 @@ impl CleanupPrompt {
                     CleanupChoice::Clean,
                     format!(
                         "mark done · {} · delete the branch if merged",
-                        remove_list(false, pane)
+                        remove_list(false, pane, noun)
                     ),
                     false,
                 ),
@@ -453,7 +477,7 @@ impl CleanupPrompt {
                     CleanupChoice::Clean,
                     format!(
                         "mark done · {} · keep the branch (not merged)",
-                        remove_list(false, pane)
+                        remove_list(false, pane, noun)
                     ),
                     false,
                 ),
@@ -462,7 +486,10 @@ impl CleanupPrompt {
             RowVerdict::MergedKept(_) | RowVerdict::Unconfirmed(_) => vec![
                 option(
                     CleanupChoice::Clean,
-                    format!("mark done · {} · keep the branch", remove_list(false, pane)),
+                    format!(
+                        "mark done · {} · keep the branch",
+                        remove_list(false, pane, noun)
+                    ),
                     false,
                 ),
                 keep(""),
@@ -518,6 +545,7 @@ impl CleanupPrompt {
 
     fn bulk_options(&self) -> Vec<CleanupOption> {
         let b = self.buckets();
+        let noun = self.pane_noun();
         if b.checking {
             return Vec::new();
         }
@@ -553,7 +581,7 @@ impl CleanupPrompt {
                 format!(
                     "{}, remove {}",
                     done_phrase(&done),
-                    owned(done.len() == 1, true, b.merged_pane)
+                    owned(done.len() == 1, true, b.merged_pane, noun)
                 ),
             ];
             if !b.other.is_empty() {
@@ -561,7 +589,7 @@ impl CleanupPrompt {
                 parts.push(format!(
                     "{}, remove {}, keep {} {}{}",
                     done_phrase(&b.other),
-                    owned(one, false, b.other_pane),
+                    owned(one, false, b.other_pane, noun),
                     if one { "its" } else { "their" },
                     if one { "branch" } else { "branches" },
                     if b.other_not_merged {
@@ -581,7 +609,7 @@ impl CleanupPrompt {
                 parts.push(done_phrase(&plain));
             }
             if !b.missing_panes.is_empty() {
-                parts.push(close_panes(&b.missing_panes));
+                parts.push(close_panes(&b.missing_panes, noun));
             }
             let unchanged = [b.dirty.clone(), b.refused.clone()].concat();
             if !unchanged.is_empty() {
@@ -603,10 +631,10 @@ impl CleanupPrompt {
             parts.push(done_phrase(&done));
             let one = tidy.len() == 1;
             let things = match (one, b.pane) {
-                (true, true) => "worktree and agent pane",
-                (true, false) => "worktree",
-                (false, true) => "worktrees and agent panes",
-                (false, false) => "worktrees",
+                (true, true) => format!("worktree and {}", noun.0),
+                (true, false) => "worktree".to_string(),
+                (false, true) => format!("worktrees and {}", noun.1),
+                (false, false) => "worktrees".to_string(),
             };
             parts.push(if tidy == done {
                 format!("remove {} {things}", if one { "its" } else { "their" })
@@ -636,7 +664,7 @@ impl CleanupPrompt {
                 parts.push(format!("keep {}", possessive(&kept, "branch", "branches")));
             }
             if !b.missing_panes.is_empty() {
-                parts.push(close_panes(&b.missing_panes));
+                parts.push(close_panes(&b.missing_panes, noun));
             }
             if !b.dirty.is_empty() {
                 parts.push(format!("{} unchanged", tasks(&b.dirty)));

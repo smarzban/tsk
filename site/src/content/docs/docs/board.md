@@ -17,7 +17,7 @@ Click, or use the keyboard. The footer lists the actions for the cursor or the m
 
 Inside a Git repository the board opens on that project. Outside Git it opens on the desk and puts the current directory in the project tab. The project tab remembers the selected project; with none selected, it opens the project picker.
 
-In Herdr, `prefix+t` opens or focuses the board in the current workspace ([Add to Herdr](/docs/install/#add-to-herdr)). All boards share the same tasks.
+In Herdr, `prefix+t` opens or focuses the board in the current workspace ([Add to Herdr](/docs/install/#add-to-herdr)). In Rex, `alt+t` opens it beside the focused pane or focuses it in the session ([Add to Rex](/docs/install/#add-to-rex)). All boards share the same tasks.
 
 ## Quit and go back
 
@@ -211,7 +211,7 @@ Two or more entries are numbered, one per line. Each reply goes out once: one al
 
 tsk sends only to the agent it dispatched, named like `t12-claude`. The status row says how it went, for example `started · reply sent to @claude`.
 
-When nothing was sent, the status row says why: the agent is waiting on a prompt, cannot be reached, or is not in its pane. Outside Herdr nothing is sent. Your reply stays on the task either way, and nothing relaunches or retries.
+When nothing was sent, the status row says why: the agent is waiting on a prompt, cannot be reached, or is not in its pane. Outside Herdr or Rex nothing is sent. In Rex, tsk sends only to an agent that reports its status and is not waiting on a prompt. Your reply stays on the task either way, and nothing relaunches or retries.
 
 ## After
 

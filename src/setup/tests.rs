@@ -788,10 +788,7 @@ fn follow_links_resolves_relative_targets_and_refuses_dangling_and_loops() {
         symlink("loopdir", temp.0.join("loopdir")).unwrap();
         symlink("loopdir/config.toml", temp.0.join("via-loop.toml")).unwrap();
         let error = follow_links(&temp.0.join("via-loop.toml"), Path::new("cfg")).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Herdr config symlink cfg loops; fix the link"
-        );
+        assert_eq!(error.to_string(), "config symlink cfg loops; fix the link");
         // A regular file along the target reads as a missing target.
         symlink("real/config.toml/x.toml", temp.0.join("via-file.toml")).unwrap();
         let error = follow_links(&temp.0.join("via-file.toml"), Path::new("cfg")).unwrap_err();

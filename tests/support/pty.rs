@@ -22,13 +22,14 @@ pub fn scratch_root(label: &str) -> PathBuf {
 }
 
 /// Clear the host context a child would otherwise inherit: the developer's own Herdr pane
-/// (`HERDR_ENV`, pane and workspace ids) and any `HERDR_PLUGIN_CONTEXT_JSON` a sibling test
+/// (`HERDR_ENV`, pane and workspace ids) or Rex terminal (`REX_SESSION`, `REX_BLOCK`) and any `HERDR_PLUGIN_CONTEXT_JSON` a sibling test
 /// set under its env lock while this one spawned. The context key is removed by name: a
 /// sibling may set it after the snapshot below. Callers pass what they need in `envs`.
 fn clear_host_env(command: &mut Command) {
     command.env_remove("HERDR_PLUGIN_CONTEXT_JSON");
     for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("HERDR_") {
+        let key_text = key.to_string_lossy();
+        if key_text.starts_with("HERDR_") || key_text.starts_with("REX_") {
             command.env_remove(key);
         }
     }

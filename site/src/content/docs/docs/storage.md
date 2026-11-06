@@ -3,7 +3,7 @@ title: Storage
 description: Where tsk keeps tasks and settings, config.toml, git backups and restore, deleted tasks, and the update check.
 ---
 
-Where tsk keeps your tasks and settings, how to configure it, and how to back it up. The board, the CLI, and the Herdr plugin share one store.
+Where tsk keeps your tasks and settings, how to configure it, and how to back it up. The board, the CLI, and the Herdr and Rex shortcuts share one store.
 
 ## Location
 
@@ -14,7 +14,7 @@ Where tsk keeps your tasks and settings, how to configure it, and how to back it
 
 - `TSK_STATE_DIR` moves it. `--state-dir <dir>` moves it for one data command.
 - With no home directory and no `TSK_STATE_DIR`, tsk refuses to run rather than pick a directory.
-- Inside Herdr, tsk uses the same directory, so the plugin and a bare terminal show the same board.
+- Inside Herdr or Rex, tsk uses the same directory, so their board and a bare terminal show the same tasks.
 - Keep it on a local disk. Network drives and synced folders such as Dropbox, iCloud Drive, or OneDrive are not supported; use a [git backup](#git-backups) instead.
 - It must be a real directory, not a symlink or a Windows junction.
 
@@ -36,10 +36,11 @@ Where tsk keeps your tasks and settings, how to configure it, and how to back it
 | `fetch-stamps.json` | When each repository's remote was last fetched. Dispatch, the base picker, and cleanup reuse a fetch from the last 60 seconds. Safe to delete |
 | `launchers/` | Dispatch launchers. Each one deletes itself once its agent starts |
 | `cleanups/` | Marks of worktree removals under way. After an interrupted removal, the next cleanup refuses and says how to finish by hand |
+| `worktrees/` | [Dispatch](/docs/dispatch/#names) worktrees, one folder per repository, unless [`[dispatch]`](#worktree-location) moves them. Never backed up |
 
 ## Configuration
 
-`config.toml` in the state directory holds agent profiles, project settings, the merge method, board defaults, and [backup targets](#settings).
+`config.toml` in the state directory holds agent profiles, project settings, the worktree location, the merge method, board defaults, and [backup targets](#settings).
 
 - The first full board open writes a starter file when none exists. It lists every setting of that version with its options and default, and holds commented examples that take effect only when you uncomment them.
 - Quick capture, the CLI, and setup never create the file. tsk never replaces an existing file, even an empty one.
@@ -134,6 +135,21 @@ How tsk launches the command:
   - Dispatch refuses a [state directory](#location) whose path contains `$`, `` ` ``, `\`, `"`, or `!`.
 - **Windows ([preview](/docs/dispatch/#windows-preview)):** the same command and `env` run through Windows PowerShell. Write paths as TOML literal strings so backslashes stay as typed: `command = ['C:\Users\you\.local\bin\claude.exe']`.
 
+### Worktree location
+
+The `[dispatch]` table sets where [dispatch](/docs/dispatch/#names) puts new worktrees:
+
+```toml
+[dispatch]
+worktrees = "~/code/worktrees"   # the default is worktrees in the state directory
+```
+
+- Each worktree goes under `<worktrees>/<repo>/`, such as `~/code/worktrees/app/tsk-t12-fix-login-timeout`.
+- The path must be absolute or start with `~`.
+- Worktrees must land outside the task's project, so the project folder and its parent folder are refused.
+- A task already dispatched keeps its worktree where it is. Cleanup removes it from there.
+- A relaunch after cleanup recreates the worktree under the current setting.
+
 ### Merge method
 
 `m` on the [cleanup card](/docs/dispatch/#merge-the-pull-request), and `--merge` on [`tsk status … done`](/docs/cli/#status) and [`tsk clean`](/docs/cli/#clean), merge the task's pull request with the GitHub CLI. The `[merge]` table picks how:
@@ -175,8 +191,9 @@ An unknown key or a bad value in one table never blocks the others. A file that 
 | Mistake | What happens |
 | --- | --- |
 | Unknown top-level key or table | Ignored, so a file written for a newer tsk still loads |
-| Unknown key inside `[agent.<name>]`, `[project."<path>"]`, `[merge]`, `[board]`, or `[[backup]]` | That table is an error |
+| Unknown key inside `[agent.<name>]`, `[project."<path>"]`, `[dispatch]`, `[merge]`, `[board]`, or `[[backup]]` | That table is an error |
 | Broken profile or `[project."<path>"]` | The board opens without profiles and shows the error on its status row. `tsk add` and `tsk edit` with an assignee exit 2 without saving |
+| Broken `[dispatch]`, or a `worktrees` folder that puts worktrees inside the project | Only dispatch and `--show-prompt` refuse, with `agent-config`. Cleanup still works |
 | Broken `[merge]` | Only merging refuses: the cleanup card says why, and the CLI refuses with `merge-config` |
 | Broken `[board]` | The board opens at the default layout and shows the error on its status row. A bad `me` leaves the layout alone and names you `you` |
 | Broken `[[backup]]` | No backup runs. Every full board open shows `backup off:` and the error on its status row. `tsk backup`, `tsk backup list`, and `tsk restore` exit 1 with the error |
@@ -304,7 +321,7 @@ tsk restore
 
 ## Store version
 
-This version writes store format 6. tsk 0.12 and older refuse a format 6 store, as older tsk refuses any newer store. tsk keeps a `tsk.json.v<N>` copy when it upgrades the file.
+This version writes store format 16. tsk 0.13 and older refuse a format 16 store, as older tsk refuses any newer store. tsk keeps a `tsk.json.v<N>` copy when it upgrades the file.
 
 To roll back: quit every board, then copy `tsk.json.v<N>` over `tsk.json`. Changes made since the upgrade are lost.
 

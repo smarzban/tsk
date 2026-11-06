@@ -1,9 +1,9 @@
 ---
 title: Capture
-description: Add a task from the board, a Herdr popup, or the terminal.
+description: Add a task from the board, a Herdr or Rex popup, or the terminal.
 ---
 
-Add a task without leaving your work: quick-add on the board, the Herdr popup, or `tsk capture`. New tasks land in the **inbox** with status `open`. Every key: [Quick-add keys](/docs/keys/#quick-add).
+Add a task without leaving your work: quick-add on the board, the Herdr or Rex popup, or `tsk capture`. New tasks land in the **inbox** with status `open`. Every key: [Quick-add keys](/docs/keys/#quick-add).
 
 ## Quick-add
 
@@ -29,7 +29,7 @@ Press `Tab` on the line to open the full draft in Notes. It holds the task page'
 | --- | --- |
 | Project board | That project |
 | Desk or Projects view | The board's launch repository inside Git; desk outside Git |
-| Herdr popup | The focused pane's repository inside Git; desk outside Git |
+| Herdr or Rex popup | The focused pane's repository inside Git; desk outside Git |
 
 Title tokens or the draft's Scope field change the destination. Archived projects cannot receive new tasks. Launching inside an archived project: [Done drawer and archive](/docs/board/#done-drawer-and-archive).
 
@@ -86,6 +86,12 @@ To open the popup from a script, invoke the plugin action for your platform:
 | --- | --- |
 | macOS, Linux | `herdr plugin action invoke quick-capture --plugin herdr-tsk` |
 | Windows | `herdr plugin action invoke quick-capture-windows --plugin herdr-tsk` |
+
+## Rex quick capture
+
+In Rex, press `alt+a` after [setup](/docs/install/#add-to-rex). A floating popup opens over the focused pane with the title focused. Its keys are the Herdr popup's.
+
+The title starts empty: Rex cannot pass along selected text. To open the popup from a script, run `rex do tsk_capture`.
 
 ## In the terminal
 

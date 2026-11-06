@@ -467,6 +467,46 @@ fn a_dispatched_agent_signs_its_block_and_reply_with_tsk_agent() {
 /// gets a plain start, and anyone else outside Herdr gets a plain start that says why nothing
 /// launched.
 #[test]
+fn dispatch_outside_any_host_refuses_with_no_host() {
+    let dir = temp_state_dir("dispatch-no-host");
+    std::fs::create_dir_all(&dir).expect("state dir");
+    std::fs::write(
+        dir.join("config.toml"),
+        "[agent.builder]\ncommand = [\"true\"]\n",
+    )
+    .expect("profiles");
+    let mut state = DomainState::new();
+    state
+        .create_assigned(
+            "assigned work",
+            None,
+            TaskScope::Global,
+            ProvenanceOrigin::Manual,
+            None,
+            Some("builder".into()),
+        )
+        .expect("seed task");
+    TaskStore::new(&dir).save(&state).expect("seed state");
+    let mut command = Command::new(binary());
+    command
+        .args(["dispatch", "T1"])
+        .args(["--state-dir", dir.to_str().expect("UTF-8 state dir")])
+        .env_remove("TSK_AGENT")
+        .env_remove("HERDR_ENV")
+        .env_remove("REX_SESSION")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = wait_with_output_before_deadline(command.spawn().expect("spawn"), "tsk");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "tsk dispatch: no-host: dispatch works inside Herdr or Rex\n"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn an_assigned_start_outside_herdr_starts_plainly_and_says_why() {
     let dir = temp_state_dir("assigned-start");
     std::fs::create_dir_all(&dir).expect("state dir");
@@ -494,6 +534,7 @@ fn an_assigned_start_outside_herdr_starts_plainly_and_says_why() {
             .args(["--state-dir", dir.to_str().expect("UTF-8 state dir")])
             .env_remove("TSK_AGENT")
             .env_remove("HERDR_ENV")
+            .env_remove("REX_SESSION")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -523,7 +564,10 @@ fn an_assigned_start_outside_herdr_starts_plainly_and_says_why() {
     assert_eq!(started.status.code(), Some(0), "{started:?}");
     let stdout = String::from_utf8_lossy(&started.stdout);
     assert!(stdout.starts_with("status T1 started"), "{stdout}");
-    assert!(stdout.contains("no launch: not in Herdr"), "{stdout}");
+    assert!(
+        stdout.contains("no launch: outside Herdr or Rex"),
+        "{stdout}"
+    );
     assert!(started.stderr.is_empty(), "{started:?}");
     assert_eq!(status(), tsk_tui::domain::HumanStatus::Started);
     let _ = std::fs::remove_dir_all(dir);
@@ -558,7 +602,8 @@ fn blocked_dispatched_task(dir: &std::path::Path) {
                 base_ref: None,
                 base_commit: None,
                 base_remote: None,
-                herdr_workspace_id: "w0".into(),
+                host: tsk_tui::domain::AgentHost::Herdr,
+                session: "w0".into(),
                 at: SystemTime::now(),
                 cleaned: false,
             },
@@ -580,6 +625,7 @@ fn reply_send(dir: &std::path::Path, text: &str, env: &[(&str, &str)], herdr: bo
         .arg(text)
         .env_remove("TSK_AGENT")
         .env_remove("HERDR_ENV")
+        .env_remove("REX_SESSION")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -607,7 +653,7 @@ fn reply_send_outside_herdr_stores_the_reply_and_says_not_sent() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines[0].starts_with("replied T1 as you"), "{stdout}");
-    assert_eq!(lines[1], "not sent: not in Herdr");
+    assert_eq!(lines[1], "not sent: outside Herdr or Rex");
     assert!(still_blocked(&dir));
     let state = TaskStore::new(&dir).load().expect("load");
     let block = state.tasks()[0].block.as_ref().expect("open block");

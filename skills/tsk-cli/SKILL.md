@@ -1,7 +1,7 @@
 ---
 name: tsk-cli
 description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|reply|edit|steps|archive|dispatch|clean|trash`, never the TUI.
-version: 1.6.0
+version: 1.7.0
 ---
 
 # tsk: the user's task board
@@ -46,8 +46,8 @@ installer, package manager, or source build unless they asked.
 
 `tsk reply T12 "…"` adds a reply to the open block or review round. It is not safe to repeat, and a
 task with nothing open refuses with `not-blocked`. When the user asks you to send their answer to the
-task's running agent, add `--send`: it sends only that reply and prints `sent to @<agent>` or
-`not sent: <reason>`.
+task's running agent, in Herdr or Rex, add `--send`: it sends only that reply and prints
+`sent to @<agent>` or `not sent: <reason>`.
 
 ## Rules
 
@@ -109,12 +109,17 @@ status they are already in the board's order; keep it.
 Only when the user asks.
 
 - **Dispatch:** `tsk dispatch T12`, or `tsk status T12 started` on an assigned task never
-  dispatched. It launches the assignee's agent in a new worktree and Herdr workspace and sets the
-  task `started`. Watch it with `herdr agent get t12-<assignee>`.
+  dispatched. It launches the assignee's agent in a new worktree, in a Herdr workspace or a Rex
+  tab named `t12-<assignee>` in your session, and sets the task `started`. Follow it with
+  `tsk list T12 --json`: the status, and `dispatch.host` (`herdr` or `rex`) with `dispatch.session`.
 - `already-dispatched`, or `agent-gone` from a start, means a launch exists. Relaunch with `--again`
   only when the user wants it.
+- `other-host` means the task was dispatched in the other host (Herdr or Rex): relaunch or clean it
+  up from there. `no-host` means `tsk dispatch` ran outside Herdr and Rex.
+- `host-failed` means a Herdr, Rex, git, or gh call failed. Report its message; do not retry
+  blindly.
 - A `no launch: <reason>` line after a start means the task started but nothing launched (outside
-  Herdr, or a desk task). Tell the user; do not retry.
+  Herdr or Rex, or a desk task). Tell the user; do not retry.
 - **Clean up** after review and merge: `tsk clean T12`, or `tsk status T12 done --clean` when the
   user also said the task is done. Never clean the worktree you run in. Uncommitted work refuses
   with `dirty-worktree`. A kept branch comes with its reason (`branch.reason` in `--json`); deleting
@@ -135,8 +140,9 @@ Only when the user asks.
 A refusal prints a stable code first: `tsk status: unknown-task: T12 is not on the board`. Branch on
 the code, never the message. `tsk help <command>` lists each command's codes. `project`, `trash`,
 `backup`, and `restore` refuse with a message only. After exit 3 from `dispatch`, or from a start that
-dispatched, a message saying `the agent may still run` means it may run without its record: check
-`herdr agent get t12-<assignee>` and read the task before retrying.
+dispatched, a message saying `the agent may still run` means it may run without its record: look for
+its workspace or tab (`herdr agent get t12-<assignee>` in Herdr, `rex window ls -A` in Rex) and
+read the task before retrying.
 
 ## Refine a task
 
