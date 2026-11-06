@@ -8171,7 +8171,9 @@ mod tests {
             .expect_err("refused");
         let said = error.to_string();
         assert!(
-            said.contains(&format!("t{number}-implementer still runs in rex session")),
+            said.contains(&format!(
+                "t{number}-implementer still runs in rex tab {STUB_TAB}"
+            )),
             "{said}"
         );
         assert!(!said.contains("login"), "{said}");
@@ -8399,7 +8401,18 @@ mod tests {
         // The agent's block was closed; the user's split holds a shell in their home, another
         // an exited program. Nothing could be the agent: it is gone.
         blocks(&[("block:x", "zsh"), ("block:y", "")]);
-        runs("block:x", "-zsh");
+        // A bare shell as Rex reports it: its `login` wrapper is the block's own program.
+        fs::write(
+            root.join("process-block:x.json"),
+            serde_json::json!({
+                "last_exit": null,
+                "child": {"pid": 3, "name": "login"},
+                "ancestors": [{"pid": 3, "name": "login"}],
+                "foreground": {"pid": 6, "name": "zsh", "argv0": "-zsh", "cwd": "/Users/u"},
+            })
+            .to_string(),
+        )
+        .expect("process");
         runs("block:y", "");
         let task = state.get(id).expect("task").clone();
         let (route, _) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
@@ -8492,18 +8505,35 @@ mod tests {
         // A renamed block whose shell sits over another program (an agent that spawned a
         // shell, or the launcher's login shell): the block's own program may be the agent, so
         // the start is plain and a relaunch refuses naming it.
-        for program in ["claude", "login"] {
-            blocks(&[("block:x", "zsh"), ("block:z", "renamed")]);
-            fs::write(
-                root.join("process-block:z.json"),
+        let login = serde_json::json!({"pid": 3, "name": "login"});
+        let claude = serde_json::json!({"pid": 4, "name": "claude"});
+        for (process, program) in [
+            // An agent that spawned a shell, under Rex's login wrapper.
+            (
                 serde_json::json!({
-                    "last_exit": null,
-                    "child": {"pid": 5, "name": program},
-                    "foreground": {"pid": 6, "name": "zsh", "cwd": "/"},
-                })
-                .to_string(),
-            )
-            .expect("process");
+                    "child": login, "ancestors": [login, claude],
+                    "foreground": {"pid": 6, "name": "zsh", "argv0": "zsh", "cwd": "/"},
+                }),
+                "claude",
+            ),
+            // The same, as a Rex that names only the block's own program reports it.
+            (
+                serde_json::json!({
+                    "child": claude, "foreground": {"pid": 6, "name": "zsh", "cwd": "/"},
+                }),
+                "claude",
+            ),
+            // The launcher's login shell, the moment before it starts the agent.
+            (
+                serde_json::json!({
+                    "child": login, "ancestors": [login],
+                    "foreground": {"pid": 6, "name": "zsh", "argv0": "/bin/zsh", "cwd": "/"},
+                }),
+                "zsh",
+            ),
+        ] {
+            blocks(&[("block:x", "zsh"), ("block:z", "renamed")]);
+            fs::write(root.join("process-block:z.json"), process.to_string()).expect("process");
             let task = state.get(id).expect("task").clone();
             let (route, check) = start_route_checked(&task, "you", HostKind::Rex, &mut host);
             assert_eq!(route, StartRoute::Plain, "{program}");

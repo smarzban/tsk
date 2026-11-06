@@ -797,32 +797,62 @@ fn pane_process(program: &Path, pane: &str) -> Result<Value, RootPaneError> {
 }
 
 /// [`block_program`] for a block that is not labelled as the agent. A shell in the foreground
-/// counts as bare only when it is the block's own program too: a shell an agent spawned, or the
-/// launcher's login shell right after a launch, has the agent (or Rex's `login`) as the block's
-/// program, which is named instead.
+/// counts as bare only when everything between the block and it is Rex's `login` wrapper or
+/// another shell, and the outermost shell is the login shell `login` started (`argv0` with a
+/// leading `-`, when Rex reports it). A shell an agent spawned has the agent among its
+/// ancestors, and the launcher's own shell, in the moment before it starts the agent, is not a
+/// login shell: both are named instead.
 pub fn leftover_program(process: &Value) -> BlockProgram {
     let program = block_program(process);
+    let Some(foreground) = process.get("foreground").filter(|value| !value.is_null()) else {
+        return program;
+    };
     if !matches!(program, BlockProgram::Shell { .. }) {
         return program;
     }
-    let pid = |key: &str| {
-        process
-            .pointer(&format!("/{key}/pid"))
-            .and_then(Value::as_i64)
-    };
-    let Some(child) = process.get("child").filter(|child| !child.is_null()) else {
-        return program;
-    };
-    if pid("child") == pid("foreground") {
-        return program;
-    }
-    BlockProgram::Busy {
-        process: child
+    let name = |entry: &Value| {
+        entry
             .get("name")
             .and_then(Value::as_str)
-            .unwrap_or("an unnamed program")
-            .to_string(),
+            .unwrap_or_default()
+            .to_string()
+    };
+    let pid = |entry: &Value| entry.get("pid").and_then(Value::as_i64);
+    // Outermost first: Rex lists the foreground's ancestors inside the block, else its child.
+    let mut chain: Vec<&Value> = process
+        .get("ancestors")
+        .and_then(Value::as_array)
+        .map(|ancestors| ancestors.iter().collect())
+        .unwrap_or_default();
+    if chain.is_empty() {
+        if let Some(child) = process
+            .get("child")
+            .filter(|child| !child.is_null() && pid(child) != pid(foreground))
+        {
+            chain.push(child);
+        }
     }
+    if let Some(other) = chain
+        .iter()
+        .find(|entry| name(entry) != "login" && !is_shell(&name(entry)))
+    {
+        return BlockProgram::Busy {
+            process: name(other),
+        };
+    }
+    let outer = chain
+        .iter()
+        .copied()
+        .chain(std::iter::once(foreground))
+        .find(|entry| is_shell(&name(entry)))
+        .unwrap_or(foreground);
+    let argv0 = outer.get("argv0").and_then(Value::as_str);
+    if argv0.is_some_and(|argv0| !argv0.starts_with('-')) {
+        return BlockProgram::Busy {
+            process: name(outer),
+        };
+    }
+    program
 }
 
 /// Where a relaunch runs the agent in the recorded tab (or legacy session) `workspace_id`: its
@@ -851,7 +881,6 @@ pub fn reusable_pane(
             }
         };
     };
-    let session = workspace(workspace_id)?.session;
     match pane_program(program, &pane)? {
         BlockProgram::Shell { cwd } => {
             let here = cwd.as_deref().is_some_and(|cwd| {
@@ -863,17 +892,20 @@ pub fn reusable_pane(
                 Ok(Reuse::Type(pane))
             } else {
                 Err(RootPaneError::Failed(format!(
-                    "the shell in rex session {session} is not in the worktree {}; close the \
-                     session to relaunch",
-                    worktree.display()
+                    "the shell in rex {} {workspace_id} is not in the worktree {}; close the \
+                     {} to relaunch",
+                    noun(workspace_id),
+                    worktree.display(),
+                    noun(workspace_id)
                 )))
             }
         }
         BlockProgram::Exited => Ok(Reuse::Replace(pane)),
         // The foreground process is Rex's `login` wrapper while the agent runs: name the agent.
         BlockProgram::Busy { .. } => Err(RootPaneError::Failed(format!(
-            "{} still runs in rex session {session}",
-            agent.unwrap_or("the agent")
+            "{} still runs in rex {} {workspace_id}",
+            agent.unwrap_or("the agent"),
+            noun(workspace_id)
         ))),
     }
 }
@@ -1179,28 +1211,57 @@ mod tests {
 
     #[test]
     fn a_shell_over_another_program_is_not_a_bare_shell() {
-        let shell = json!({"pid": 9, "name": "-zsh", "cwd": "/w"});
-        // A bare shell: the block's own program is that shell.
+        let login = json!({"pid": 3, "name": "login"});
+        let bare = json!({"pid": 9, "name": "zsh", "argv0": "-zsh", "cwd": "/w"});
+        // A bare shell as Rex reports it: `login` started a login shell.
         assert!(matches!(
-            leftover_program(&json!({"child": shell, "foreground": shell})),
+            leftover_program(&json!({"child": login, "ancestors": [login], "foreground": bare})),
+            BlockProgram::Shell { .. }
+        ));
+        // The block's own program is that shell, or Rex says nothing more.
+        assert!(matches!(
+            leftover_program(&json!({"child": bare, "foreground": bare})),
             BlockProgram::Shell { .. }
         ));
         assert!(matches!(
-            leftover_program(&json!({"child": null, "foreground": shell})),
+            leftover_program(&json!({"child": null, "foreground": bare})),
             BlockProgram::Shell { .. }
         ));
-        // An agent (or Rex's login wrapper) that spawned a shell: the block runs the agent.
-        for program in ["claude", "login"] {
-            assert_eq!(
-                leftover_program(&json!({
-                    "child": {"pid": 4, "name": program},
-                    "foreground": shell,
-                })),
-                BlockProgram::Busy {
-                    process: program.into()
-                }
-            );
-        }
+        // A user's nested shell is still bare.
+        let nested = json!({"pid": 10, "name": "bash", "argv0": "bash"});
+        assert!(matches!(
+            leftover_program(&json!({
+                "child": login, "ancestors": [login, bare], "foreground": nested,
+            })),
+            BlockProgram::Shell { .. }
+        ));
+        // A shell an agent spawned: the agent is named.
+        let claude = json!({"pid": 4, "name": "claude"});
+        let spawned = json!({"pid": 11, "name": "zsh", "argv0": "zsh"});
+        assert_eq!(
+            leftover_program(&json!({
+                "child": login, "ancestors": [login, claude], "foreground": spawned,
+            })),
+            BlockProgram::Busy {
+                process: "claude".into()
+            }
+        );
+        assert_eq!(
+            leftover_program(&json!({"child": claude, "foreground": spawned})),
+            BlockProgram::Busy {
+                process: "claude".into()
+            }
+        );
+        // The launcher's login shell before it starts the agent: not a login-started shell.
+        let launcher = json!({"pid": 12, "name": "zsh", "argv0": "/bin/zsh"});
+        assert_eq!(
+            leftover_program(
+                &json!({"child": login, "ancestors": [login], "foreground": launcher})
+            ),
+            BlockProgram::Busy {
+                process: "zsh".into()
+            }
+        );
     }
 
     #[test]
