@@ -24,7 +24,7 @@ use std::process::{Command, Output};
 
 use serde_json::{json, Value};
 
-use super::{CreatedWorktree, PaneAgent, PromptError, RootPaneError};
+use super::{CreatedWorktree, PaneAgent, PromptError, Reuse, RootPaneError};
 
 /// Rex's exit status for a target that does not exist (`session target … not found`).
 const REX_NOT_FOUND: i32 = 3;
@@ -306,6 +306,22 @@ pub fn agent_block(
     session: &str,
     agent: Option<&str>,
 ) -> Result<String, RootPaneError> {
+    find_agent_block(program, session, agent)?.ok_or_else(|| no_agent_block(session, agent))
+}
+
+fn no_agent_block(session: &str, agent: Option<&str>) -> RootPaneError {
+    let whose = agent.map_or_else(|| "an agent".to_string(), |agent| format!("{agent}'s"));
+    RootPaneError::Failed(format!(
+        "rex session {session} has no block labelled as {whose}; it may have been renamed"
+    ))
+}
+
+/// [`agent_block`], with `None` for an open session that has no such block.
+fn find_agent_block(
+    program: &Path,
+    session: &str,
+    agent: Option<&str>,
+) -> Result<Option<String>, RootPaneError> {
     if session.starts_with(PENDING_PREFIX) {
         return Err(RootPaneError::WorkspaceGone(format!(
             "rex session for {session} never opened"
@@ -339,12 +355,7 @@ pub fn agent_block(
         }
         None => labelled(&is_agent_label),
     };
-    found.ok_or_else(|| {
-        let whose = agent.map_or_else(|| "an agent".to_string(), |agent| format!("{agent}'s"));
-        RootPaneError::Failed(format!(
-            "rex session {session} has no block labelled as {whose}; it may have been renamed"
-        ))
-    })
+    Ok(found)
 }
 
 /// `t<digits>-<profile>`: the label [`super::agent_name`] gives.
@@ -528,16 +539,6 @@ pub fn pane_program(program: &Path, pane: &str) -> Result<BlockProgram, RootPane
     Ok(block_program(&rex_json(process)?))
 }
 
-/// Where a relaunch runs the agent in an open session.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Reuse {
-    /// Type the launch line into this pane: it holds a bare shell in the worktree.
-    Type(String),
-    /// The agent in this pane exited and nothing runs there: open a new agent block beside it
-    /// in the same session, then close this one ([`replace_block`]).
-    Replace(String),
-}
-
 /// Where a relaunch runs the agent in `session`: its agent block when it holds a bare shell in
 /// `worktree` (the agent is gone, as after a Rex server restart), or a new block beside it when
 /// its program exited. The session and the user's other blocks stay either way. Anything still
@@ -548,11 +549,11 @@ pub fn reusable_pane(
     agent: Option<&str>,
     worktree: &Path,
 ) -> Result<Reuse, RootPaneError> {
-    let pane = agent_block(program, session, agent).map_err(|error| match error {
-        RootPaneError::Failed(reason) => {
-            RootPaneError::Failed(format!("{reason}; close the session to relaunch"))
-        }
-        gone => gone,
+    let pane = find_agent_block(program, session, agent)?.ok_or_else(|| {
+        RootPaneError::Failed(format!(
+            "{}; close the session to relaunch",
+            no_agent_block(session, agent)
+        ))
     })?;
     match pane_program(program, &pane)? {
         BlockProgram::Shell { cwd } => {

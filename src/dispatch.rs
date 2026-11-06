@@ -561,6 +561,16 @@ impl From<&str> for RootPaneError {
     }
 }
 
+/// Where a relaunch runs the agent in an open session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reuse {
+    /// Type the launch line into this pane: it holds a bare shell in the worktree.
+    Type(String),
+    /// The agent in this pane exited and nothing runs there: open a new agent block beside it
+    /// in the same session, then close this one ([`DispatchHost::replace_agent_pane`]).
+    Replace(String),
+}
+
 /// What Herdr reports in a pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaneAgent {
@@ -766,8 +776,8 @@ pub trait DispatchHost {
         workspace_id: &str,
         _agent: &str,
         _worktree: &Path,
-    ) -> Result<rex::Reuse, RootPaneError> {
-        self.root_pane(workspace_id).map(rex::Reuse::Type)
+    ) -> Result<Reuse, RootPaneError> {
+        self.root_pane(workspace_id).map(Reuse::Type)
     }
     /// Open a new pane running `command` in `worktree`, labelled `label`, in the session of the
     /// exited agent's `pane_id`, then close that pane: `(new pane id, why the old pane stayed
@@ -1616,11 +1626,11 @@ impl DispatchHost for SystemDispatchHost {
         workspace_id: &str,
         agent: &str,
         worktree: &Path,
-    ) -> Result<rex::Reuse, RootPaneError> {
+    ) -> Result<Reuse, RootPaneError> {
         if self.rex() {
             return rex::reusable_pane(&self.rex, workspace_id, Some(agent), worktree);
         }
-        self.root_pane(workspace_id).map(rex::Reuse::Type)
+        self.root_pane(workspace_id).map(Reuse::Type)
     }
 
     fn replace_agent_pane(
@@ -4227,8 +4237,8 @@ pub fn launch_with_host(
             Err(RootPaneError::Failed(reason)) => return Err(DispatchError::Host(reason)),
         } {
             let pane = match reuse {
-                rex::Reuse::Type(pane) => pane,
-                rex::Reuse::Replace(pane) => {
+                Reuse::Type(pane) => pane,
+                Reuse::Replace(pane) => {
                     pane_use = PaneUse::Replace;
                     pane
                 }
@@ -8183,9 +8193,16 @@ mod tests {
             let error = run_with_host(&mut state, id, &profiles, true, HostKind::Rex, &mut host)
                 .expect_err("no second agent session");
             assert!(error.to_string().contains("no block labelled"), "{error}");
+            assert!(
+                error
+                    .to_string()
+                    .ends_with("; close the session to relaunch"),
+                "{error}"
+            );
             let log = rex_log(&root);
             assert!(!log.contains("session.create"), "{case:?}: {log}");
             assert!(!log.contains("session kill"), "{case:?}: {log}");
+            assert!(!log.contains("new_split"), "{case:?}: {log}");
         }
 
         // Beside another task's block, this task's own is found.
