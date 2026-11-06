@@ -5,8 +5,8 @@
 //! matches on the kind, so a host adds an arm here instead of a flag through every caller.
 //!
 //! Rex dispatches without a host worktree feature: tsk runs `git worktree add` itself and opens
-//! one Rex session per task whose only block runs the launcher as its command. Cleanup closes
-//! that session and removes the worktree with git, only when `git worktree list` registers it
+//! one Rex tab per task, in the session tsk runs in, whose only block runs the launcher as its
+//! command. Cleanup closes that tab (never the session) and removes the worktree with git, only when `git worktree list` registers it
 //! at the recorded path and the path follows tsk's own rule for the task's branch.
 
 use std::path::{Path, PathBuf};
@@ -27,7 +27,8 @@ use super::{
 pub enum HostKind {
     /// Inside Herdr (`HERDR_ENV=1`): dispatch can open workspaces and launch agents.
     Herdr,
-    /// Inside a Rex terminal (`REX_SESSION` set, outside Herdr): dispatch opens a Rex session.
+    /// Inside a Rex terminal (`REX_SESSION` set, outside Herdr): dispatch opens a tab in that
+    /// Rex session.
     Rex,
     /// No host: dispatch refuses, a start is a plain status change, cleanup leaves
     /// workspaces alone.
@@ -42,6 +43,14 @@ impl HostKind {
             std::env::var("HERDR_ENV").ok().as_deref(),
             std::env::var("REX_SESSION").ok().as_deref(),
         )
+    }
+
+    /// The Rex session this process runs in (`REX_SESSION`), where a Rex dispatch opens its
+    /// tab. `None` when unset or blank.
+    pub fn rex_session() -> Option<String> {
+        std::env::var("REX_SESSION")
+            .ok()
+            .filter(|session| !session.trim().is_empty())
     }
 
     /// The host named by `HERDR_ENV` and `REX_SESSION`. Rex sets `REX_SESSION` in every
@@ -78,13 +87,13 @@ impl HostKind {
     /// Cleanup refuses a record another host owns before asking, so each arm sees only its own
     /// host's records.
     ///
-    /// Rex sessions never change checkout, so the recorded session is open while Rex lists it.
+    /// Rex tabs never change checkout, so the recorded tab is open while Rex lists it.
     /// A Rex that cannot answer leaves it open, for the close to fail and say why. `rex` is the
     /// Rex CLI to ask.
     pub(super) fn workspace_open_on(self, rex: &Path, workspace_id: &str, worktree: &Path) -> bool {
         match self {
             Self::Herdr => herdr_workspace_open_on(workspace_id, worktree),
-            Self::Rex => super::rex::session_exists(rex, workspace_id).unwrap_or(true),
+            Self::Rex => super::rex::workspace_exists(rex, workspace_id).unwrap_or(true),
             Self::Standalone => false,
         }
     }
@@ -92,7 +101,7 @@ impl HostKind {
     /// Whether a workspace `workspace_id` is open on one of `project`'s worktrees, and if so
     /// whether that checkout is `worktree`: `(exists, matches)`. No host: `(false, true)`.
     ///
-    /// Rex knows no worktrees: the session is looked up by its recorded id, and `worktree`
+    /// Rex knows no worktrees: the tab is looked up by its recorded id, and `worktree`
     /// (already registered with git at the recorded path) must sit where tsk puts a checkout of
     /// `branch`, `<root>/<repo>/<directory>`, whether or not the session is still open.
     pub(super) fn worktree_workspace(
@@ -105,7 +114,7 @@ impl HostKind {
         match self {
             Self::Herdr => herdr_worktree_workspace(project, workspace_id, worktree),
             Self::Rex => Ok((
-                super::rex::session_exists(rex, workspace_id)?,
+                super::rex::workspace_exists(rex, workspace_id)?,
                 follows_path_rule(project, branch, worktree),
             )),
             Self::Standalone => Ok((false, true)),
@@ -116,7 +125,7 @@ impl HostKind {
     pub(super) fn rename_agent(self, naming: &AgentNaming, left: Duration) -> Rename {
         match self {
             Self::Herdr => herdr_rename_agent(naming, left),
-            // The Rex block is labelled when the session is created; nothing to wait for.
+            // The Rex block is labelled when the tab opens; nothing to wait for.
             Self::Rex => Rename::Final(Ok(())),
             Self::Standalone => Rename::Final(Err("no host to name the agent in".into())),
         }

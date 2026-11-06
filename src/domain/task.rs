@@ -64,7 +64,7 @@ pub struct Notice {
 pub enum AgentHost {
     /// A Herdr workspace.
     Herdr,
-    /// A Rex session.
+    /// A Rex tab (or, for a dispatch from before tabs, a whole Rex session).
     Rex,
 }
 
@@ -81,16 +81,20 @@ impl AgentHost {
     }
 
     /// What users call the place an agent of this host runs: a Herdr `workspace` or a Rex
-    /// `session`.
+    /// `tab`.
     pub fn noun(self) -> &'static str {
         match self {
             Self::Herdr => "workspace",
-            Self::Rex => "session",
+            Self::Rex => "tab",
         }
     }
 
-    /// [`Self::noun`] for a recorded workspace or session id.
+    /// [`Self::noun`] for a recorded workspace or tab id. A bare Rex session id is a dispatch
+    /// from before tabs, which had a session of its own.
     pub fn noun_of(id: &str) -> &'static str {
+        if id.starts_with("session:") && !id.contains('/') {
+            return "session";
+        }
         Self::of_legacy_id(id).noun()
     }
 

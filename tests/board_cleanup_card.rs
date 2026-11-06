@@ -617,17 +617,17 @@ fn in_rex(mut row: CleanupRow) -> CleanupRow {
 }
 
 #[test]
-fn a_rex_dispatch_card_names_the_agent_session() {
+fn a_rex_dispatch_card_names_the_agent_tab() {
     assert_says(
         &single(in_rex(open_pr(7, 193))),
         &[
-            "▸ m squash-merge PR #193 to main · mark done · remove worktree, branch and agent session",
-            "y don't merge · mark done · remove worktree and agent session · keep the branch and the PR open",
+            "▸ m squash-merge PR #193 to main · mark done · remove worktree, branch and agent tab",
+            "y don't merge · mark done · remove worktree and agent tab · keep the branch and the PR open",
         ],
     );
     assert_says(
         &bulk(vec![in_rex(merged(8, 190)), in_rex(row(9))], &[]),
-        &["▸ y mark all 2 done · remove their worktrees and agent sessions · delete T8's branch · keep T9's branch"],
+        &["▸ y mark all 2 done · remove their worktrees and agent tabs · delete T8's branch · keep T9's branch"],
     );
     let said = body(&single(in_rex(merged(7, 194))), 110, 40);
     assert!(!said.contains("agent pane"), "{said}");

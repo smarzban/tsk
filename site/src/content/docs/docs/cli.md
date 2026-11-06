@@ -213,7 +213,7 @@ A task waits while any `after` entry has `done: false`.
 | --- | --- |
 | `notes` | Notes, or `null` |
 | `steps` | Each step's `id`, `done`, `short_id` (for [`tsk steps`](#steps)), and `text` |
-| `dispatch` | Present once dispatched: `argv`, `worktree`, `branch`, `base`, `base_ref`, `base_commit`, `base_remote`, `host` (`herdr` or `rex`), `session` (the Herdr workspace or Rex session), `at`, and `cleaned: true` once cleaned. A Herdr dispatch also carries `herdr_workspace_id` |
+| `dispatch` | Present once dispatched: `argv`, `worktree`, `branch`, `base`, `base_ref`, `base_commit`, `base_remote`, `host` (`herdr` or `rex`), `session` (the Herdr workspace, or the Rex tab as `<session>/<window>`), `at`, and `cleaned: true` once cleaned. A Herdr dispatch also carries `herdr_workspace_id` |
 | `past_blocks`, `past_reviews` | Closed blocks and rounds, oldest first. Each adds `closed_at` and `closed_by` |
 | `activity` | Every event on the task, newest first, below |
 
@@ -465,7 +465,7 @@ tsk reply T12 "Use postgres" --send
 
 ## dispatch
 
-Launches an assigned task's agent in its own Git worktree and a Herdr workspace or Rex session, then sets the task `started`. [Dispatch](/docs/dispatch/#dispatch) explains names, prompts, and what the agent gets.
+Launches an assigned task's agent in its own Git worktree and a Herdr workspace or Rex tab, then sets the task `started`. [Dispatch](/docs/dispatch/#dispatch) explains names, prompts, and what the agent gets.
 
 ```text
 tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]
@@ -484,7 +484,7 @@ tsk dispatch <task> --show-prompt [--base <branch>] [--state-dir <dir>]
 - A task dispatched in the other host (Herdr or Rex) refuses `--again` with `other-host` until its dispatch is cleaned. Relaunch it from that host.
 - Output is `dispatched T12 to @claude in <worktree>`.
 - A refusal changes nothing. A launch that fails removes what it created ([Dispatch](/docs/dispatch/#dispatch)).
-- Exit 3 after a launch means its record was not saved. tsk then takes the launch back, and the message says `launch undone` or names what stayed. When it says `the agent may still run`, look for the agent in Herdr (`herdr agent get t12-claude`) or the Rex session `t12-claude`, and read the task before retrying. The same holds for a `tsk status T12 started` that dispatched.
+- Exit 3 after a launch means its record was not saved. tsk then takes the launch back, and the message says `launch undone` or names what stayed. When it says `the agent may still run`, look for the agent in Herdr (`herdr agent get t12-claude`) or the Rex tab `t12-claude`, and read the task before retrying. The same holds for a `tsk status T12 started` that dispatched.
 - On Windows dispatch is a preview ([Windows](/docs/dispatch/#windows-preview)).
 
 **Refusals:** codes and exits in the [exit contract](#exit-contract).
@@ -514,7 +514,7 @@ You were dispatched to T12 (Fix the parser) in worktree …
 
 ## clean
 
-Removes a dispatched task's worktree, and inside Herdr or Rex its workspace or session, without changing its status. To finish and clean in one step, use `tsk status T12 done --clean`.
+Removes a dispatched task's worktree, and inside Herdr or Rex its workspace or tab, without changing its status. To finish and clean in one step, use `tsk status T12 done --clean`.
 
 ```text
 tsk clean <task> [--merge] [--json] [--state-dir <dir>]
@@ -539,7 +539,7 @@ Output is one line: `cleaned T12: worktree <path> (removed), branch <name> (kept
 | `number`, `title` | The task |
 | `worktree` | `path`, and `outcome`: `removed` or `missing` |
 | `branch` | `name`, `outcome` (`removed` or `kept`), and `reason` for a kept branch |
-| `workspace` | The dispatch's Herdr workspace or Rex session: `id`, and `outcome`: `removed`, `kept`, or `missing` |
+| `workspace` | The dispatch's Herdr workspace or Rex tab: `id`, and `outcome`: `removed`, `kept`, or `missing` |
 | `warning` | A failed fetch, or a workspace the host would not close; `null` otherwise |
 | `merge` | With `--merge`: `pr`, `url`, `method`, and `remote_branch` (`kept`, `deleted`, or `null`) |
 | `status` | With `--merge`: `done` |

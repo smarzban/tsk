@@ -57,7 +57,7 @@ pub fn show_prompt(
 /// The board store the command works on, and a real host whose launchers live beside it.
 pub(crate) fn system_host(state_dir: Option<PathBuf>) -> (PathBuf, SystemDispatchHost) {
     let state_dir = state_dir.unwrap_or_else(default_state_dir);
-    let host = SystemDispatchHost::in_state_dir(&state_dir).on(HostKind::detect());
+    let host = SystemDispatchHost::detected(&state_dir);
     (state_dir, host)
 }
 

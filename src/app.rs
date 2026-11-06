@@ -2325,7 +2325,7 @@ fn close_converged_workspace(
     host: &mut impl DispatchHost,
 ) -> String {
     let (workspace, warning) = if close_workspace {
-        dispatch::close_orphaned_workspace(host, &result.workspace_id)
+        dispatch::close_orphaned_workspace(host, &result.workspace_id, result.number)
     } else {
         (result.workspace, None)
     };
@@ -2347,13 +2347,13 @@ fn close_converged_workspace(
 /// Close each workspace a marked set's gone worktrees left open, once its completion is
 /// saved: how many closed, and why each other one stayed open.
 fn close_converged_workspaces(
-    workspaces: &[String],
+    workspaces: &[(String, u64)],
     host: &mut impl DispatchHost,
 ) -> (usize, Vec<String>) {
     let mut closed = 0;
     let mut warnings = Vec::new();
-    for workspace_id in workspaces {
-        match dispatch::close_orphaned_workspace(host, workspace_id) {
+    for (workspace_id, number) in workspaces {
+        match dispatch::close_orphaned_workspace(host, workspace_id, *number) {
             (dispatch::WorkspaceCleanup::Removed, _) => closed += 1,
             (_, warning) => warnings.extend(warning),
         }
@@ -2479,7 +2479,7 @@ pub enum BulkCleanupOffer {
     MissingConverged {
         done: usize,
         missing: usize,
-        workspaces: Vec<String>,
+        workspaces: Vec<(String, u64)>,
     },
 }
 
@@ -2539,7 +2539,7 @@ pub fn offer_bulk_cleanup_prompt_with_host(
         match dispatch::inspect_cleanup_cached_with_host(domain, id, host_kind, host) {
             Ok(preview) if !preview.inspection.worktree_exists => {
                 if host_kind.is_hosted() && preview.inspection.workspace_exists {
-                    workspaces.push(preview.record.session.clone());
+                    workspaces.push((preview.record.session.clone(), preview.number));
                     bulk.missing_panes.push(identifier.clone());
                 }
                 bulk.missing.push((id, identifier, preview.record));
@@ -2578,8 +2578,9 @@ pub struct CleanupConfirmed {
     /// `n`: the status-row outcome.
     pub message: Option<String>,
     /// `y`: a marked set's tasks whose worktree was already gone and whose workspace is still
-    /// open, identifier and workspace id. They close once the completion is saved.
-    pub workspaces: Vec<(String, String)>,
+    /// open, identifier, workspace id, and task number. They close once the completion is
+    /// saved.
+    pub workspaces: Vec<(String, String, u64)>,
 }
 
 /// Apply a cleanup card's choice to the domain: complete the card's task, or the whole marked
@@ -2694,7 +2695,7 @@ pub fn confirm_cleanup_with_host(
                 missing += 1;
                 // `n` keeps what the dispatch left, its workspace included.
                 if clean && host_kind.is_hosted() && preview.inspection.workspace_exists {
-                    workspaces.push((identifier.clone(), preview.record.session));
+                    workspaces.push((identifier.clone(), preview.record.session, preview.number));
                 }
             }
         }
@@ -2825,8 +2826,8 @@ fn confirm_cleanup_and_save(
             workspaces,
             ..
         }) => {
-            for (identifier, workspace_id) in workspaces {
-                let closed = match dispatch::close_orphaned_workspace(host, &workspace_id) {
+            for (identifier, workspace_id, number) in workspaces {
+                let closed = match dispatch::close_orphaned_workspace(host, &workspace_id, number) {
                     (_, Some(warning)) => Err(warning),
                     _ => Ok(()),
                 };
@@ -4506,7 +4507,7 @@ fn board_background_step(
 
 /// The real dispatch host for a board: launchers live beside the board's own store.
 fn board_dispatch_host(store: &TaskStore) -> SystemDispatchHost {
-    SystemDispatchHost::in_state_dir(store.path()).on(dispatch::HostKind::detect())
+    SystemDispatchHost::detected(store.path())
 }
 
 /// Apply a board intent. Returns `true` when the board loop should quit.
@@ -4719,7 +4720,7 @@ fn handle_board_intent_with_host(
                 if closed > 0 {
                     let noun = workspaces
                         .first()
-                        .map_or("workspace", |id| crate::domain::AgentHost::noun_of(id));
+                        .map_or("workspace", |(id, _)| crate::domain::AgentHost::noun_of(id));
                     parts.push(format!("{} closed", plural(closed, noun)));
                 }
                 parts.extend(warnings);

@@ -20,7 +20,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 ### Added
 
 - Rex support: `tsk setup rex` binds the board to `alt+t` and quick capture to `alt+a`. The installer and `tsk update` offer or refresh it ([Add to Rex](https://gettsk.sh/docs/install/#add-to-rex)).
-- Dispatch in Rex: each task gets its own Rex session; relaunch, reply delivery, cleanup, and `--merge` work as in Herdr ([dispatch](https://gettsk.sh/docs/dispatch/)).
+- Dispatch in Rex: each task gets its own tab in the Rex session you dispatch from; relaunch, reply delivery, cleanup, and `--merge` work as in Herdr ([dispatch](https://gettsk.sh/docs/dispatch/)).
 - A task dispatched in Herdr or Rex starts plainly in the other; relaunch, reply delivery, and cleanup there refuse with `other-host`.
 - `[dispatch] worktrees` in `config.toml` sets where dispatch puts new worktrees ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
 
