@@ -57,6 +57,8 @@ Start an assigned task to dispatch it: `ctrl+s`, palette **set status: started**
 
 If the launch fails, the task stays unstarted with no dispatch, and the status row says why. tsk removes the worktree, workspace, and new branch that launch created. A worktree with changes stays, but its workspace or tab still closes. The message names anything left. A started task with a live dispatch shows `◉` instead of `●`.
 
+If Rex answers without naming the tab it opened, the worktree and branch stay, since the agent may run there. Check the session before you dispatch again.
+
 The agent's instructions come from the profile's prompt. Without one, a default prompt asks it to open a pull request into the base and set the task to review. A profile's `prompt_append` adds your own lines to the default, and a project's settings can add more and name who gets the review. See [prompt and placeholders](/docs/storage/#prompt-and-placeholders) and [project settings](/docs/storage/#project-settings). `tsk dispatch T12 --show-prompt` prints what an agent would get.
 
 `ctrl+u` right after a dispatch undoes the start only. The agent keeps running in its worktree, and the status row says so:
@@ -201,8 +203,8 @@ On the card, **agent pane** means the dispatch's Herdr workspace. For a Rex disp
 | Where the branch stands | Options |
 | --- | --- |
 | Open pull request | `m` merges it ([below](#merge-the-pull-request)); `y` keeps the branch and pull request; `n` keeps everything |
-| Merged, such as `Merged into main ✓` | `y` removes the worktree, branch, and workspace or session; `n` keeps everything |
-| Not merged, or the merge cannot be confirmed | `y` removes the worktree and workspace or session, and keeps the branch; `n` keeps everything |
+| Merged, such as `Merged into main ✓` | `y` removes the worktree, branch, and workspace or tab; `n` keeps everything |
+| Not merged, or the merge cannot be confirmed | `y` removes the worktree and workspace or tab, and keeps the branch; `n` keeps everything |
 | Uncommitted files in the worktree | Only `n`: commit or discard them first to tidy up |
 
 Every option marks the task done, and options that do not apply are left out. Without the GitHub CLI (`gh`) logged in, the card never mentions a pull request.
@@ -220,7 +222,7 @@ Completion is one save and one undo step, saved before any worktree is touched. 
 
 ### What cleanup removes
 
-Cleanup closes the dispatch's Herdr workspace or Rex tab and removes its worktree. It never closes your Rex session or your other tabs. In Rex, it removes only a worktree Git lists at the recorded path, in the folder dispatch names for the branch. It deletes the branch only when the branch is merged into the recorded base:
+Cleanup closes the dispatch's Herdr workspace or Rex tab and removes its worktree. It never closes your other tabs, or your Rex session unless it is a [dispatch made before tabs](#names) holding only that task's agent. In Rex, it removes only a worktree Git lists at the recorded path, in the folder dispatch names for the branch. It deletes the branch only when the branch is merged into the recorded base:
 
 - It fetches the base first, so a merge on GitHub counts without a local pull.
 - A squash or rebase merge leaves no Git ancestry, so with `gh` logged in, cleanup asks GitHub. It deletes the branch only when the pull request merged into the recorded base and its head is exactly the local branch tip.
@@ -246,7 +248,7 @@ Each option line names the tasks it touches. What each key does to each task:
 | `y` | Done, tidy | Done, full tidy | Done, tidy | Unchanged |
 | `n` | Done | Done | Done | Done |
 
-A full tidy removes the worktree, branch, and workspace or session; a tidy keeps the branch. Tasks without a dispatch are marked done under every key. One failure never stops the others, and the status row ends with a count that names the tasks that kept something. `Esc` keeps the marks.
+A full tidy removes the worktree, branch, and workspace or tab; a tidy keeps the branch. Tasks without a dispatch are marked done under every key. One failure never stops the others, and the status row ends with a count that names the tasks that kept something. `Esc` keeps the marks.
 
 ## Merge the pull request
 
