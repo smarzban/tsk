@@ -979,17 +979,28 @@ impl DomainState {
     /// The stored path of a project other than `except` whose title matches `title`,
     /// ignoring case.
     pub fn project_with_title(&self, title: &str, except: Option<&str>) -> Option<&str> {
-        let wanted = normalize_project_title(title)?.to_lowercase();
+        self.projects_with_title(title)
+            .into_iter()
+            .find(|stored| except.is_none_or(|except| !paths_equivalent(stored, except)))
+    }
+
+    /// The stored paths of every project whose title matches `title`, ignoring case, in path
+    /// order. Titles are unique, but two writers saving at once can both land one; a caller
+    /// resolving a name refuses rather than pick one.
+    pub fn projects_with_title(&self, title: &str) -> Vec<&str> {
+        let Some(wanted) = normalize_project_title(title).map(|title| title.to_lowercase()) else {
+            return Vec::new();
+        };
         self.projects
             .iter()
-            .filter(|(stored, _)| except.is_none_or(|except| !paths_equivalent(stored, except)))
-            .find(|(_, record)| {
+            .filter(|(_, record)| {
                 record
                     .title
                     .as_deref()
                     .is_some_and(|title| title.to_lowercase() == wanted)
             })
             .map(|(stored, _)| stored.as_str())
+            .collect()
     }
 
     /// Set or clear a project's title, undoably. `title` is normalised first; empty clears.

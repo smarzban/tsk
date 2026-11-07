@@ -541,3 +541,55 @@ fn project_title_usage_errors_exit_2_and_an_unknown_project_refuses() {
         "tsk project: unknown-project: no project named atlas has tasks\n"
     );
 }
+
+/// A titled project names itself in `tsk add --json` (both outcomes), in the `--all` scope
+/// headings, and in `--sort project` order, which sorts by the shown name.
+#[test]
+fn project_title_reaches_add_json_scope_headings_and_project_sort() {
+    let dir = temp_state_dir("project-title-add");
+    let _guard = TempDirGuard(dir.clone());
+    let state_dir = dir.to_string_lossy().into_owned();
+    let zeta = dir.join("zeta");
+    let beta = dir.join("beta");
+    for project in [&zeta, &beta] {
+        fs::create_dir_all(project).expect("create project directory");
+    }
+    let (zeta, beta) = (
+        zeta.to_string_lossy().into_owned(),
+        beta.to_string_lossy().into_owned(),
+    );
+    let run = |args: &[&str]| {
+        let mut argv: Vec<String> = vec!["tsk".into()];
+        argv.extend(args.iter().map(|arg| arg.to_string()));
+        argv.extend(["--state-dir".to_string(), state_dir.clone()]);
+        cli(argv)
+    };
+    assert_eq!(run(&["add", "-t", "in beta", "-p", &beta]).code, 0);
+    assert_eq!(run(&["add", "-t", "seed zeta", "-p", &zeta]).code, 0);
+    assert_eq!(run(&["project", "title", &zeta, "Alpha"]).code, 0);
+
+    for outcome in ["created", "existing"] {
+        let added = run(&["add", "-t", "in alpha", "-p", "alpha", "--json"]);
+        assert_eq!(added.code, 0, "{added:?}");
+        let value: serde_json::Value = serde_json::from_str(&added.stdout).expect("json");
+        assert_eq!(value["outcome"], outcome);
+        assert_eq!(value["project"], zeta.as_str());
+        assert_eq!(value["project_title"], "Alpha", "{outcome}");
+    }
+    let untitled = run(&["add", "-t", "in beta", "-p", &beta, "--json"]);
+    let value: serde_json::Value = serde_json::from_str(&untitled.stdout).expect("json");
+    assert!(value.get("project_title").is_none(), "{value}");
+
+    let all = run(&["list", "--all"]);
+    assert_eq!(all.code, 0, "{all:?}");
+    assert!(all.stdout.contains("  Alpha\n"), "{}", all.stdout);
+    assert!(all.stdout.contains("  beta\n"), "{}", all.stdout);
+    assert!(!all.stdout.contains("  zeta\n"), "{}", all.stdout);
+
+    // By folder, beta sorts before zeta; by shown name, Alpha comes first.
+    let sorted = run(&["list", "--all", "--sort", "project"]);
+    assert_eq!(sorted.code, 0, "{sorted:?}");
+    let alpha_at = sorted.stdout.find("in alpha").expect("alpha row");
+    let beta_at = sorted.stdout.find("in beta").expect("beta row");
+    assert!(alpha_at < beta_at, "{}", sorted.stdout);
+}

@@ -614,7 +614,7 @@ tsk project archive atlas
 | --- | --- |
 | `unknown-project` | No project of that name has tasks, or the name is ambiguous |
 | `title-taken` | Another project has that title, ignoring case: `title Site A is used by <path>` |
-| `invalid-title` | The title contains `/` or a control character, is `desk`, or is longer than 80 characters |
+| `invalid-title` | The title contains `/` (or `\` on Windows) or a control character, is `desk` or `global`, or is longer than 80 characters |
 
 ```sh
 tsk project title ~/sites/a/wp-content "Site A"

@@ -518,8 +518,8 @@ pub fn resolve_project_path(
     domain: &DomainState,
     snapshot: Option<&InvocationSnapshot>,
 ) -> Result<String, ProjectResolveError> {
-    if let Some(path) = domain.project_with_title(token, None) {
-        return Ok(path.to_string());
+    if let Some(resolved) = resolve_title(token, domain) {
+        return resolved;
     }
     let candidates = project_candidates(domain, snapshot);
     if has_path_separator(token) || token == "~" {
@@ -541,6 +541,19 @@ pub fn resolve_project_path(
         _ => Err(ProjectResolveError::Ambiguous(ambiguous_labels(
             domain, matches,
         ))),
+    }
+}
+
+/// A title match decides the token: one project resolves, two or more (a title two writers
+/// saved at once) refuse as ambiguous. `None` when no project carries the title.
+fn resolve_title(token: &str, domain: &DomainState) -> Option<Result<String, ProjectResolveError>> {
+    match domain.projects_with_title(token).as_slice() {
+        [] => None,
+        [path] => Some(Ok((*path).to_string())),
+        paths => Some(Err(ProjectResolveError::Ambiguous(ambiguous_labels(
+            domain,
+            paths.iter().map(|path| path.to_string()).collect(),
+        )))),
     }
 }
 
@@ -591,8 +604,8 @@ pub(crate) fn resolve_permissive_project_path(
     domain: &DomainState,
     snapshot: Option<&InvocationSnapshot>,
 ) -> Result<String, ProjectResolveError> {
-    if let Some(path) = domain.project_with_title(token, None) {
-        return Ok(path.to_string());
+    if let Some(resolved) = resolve_title(token, domain) {
+        return resolved;
     }
     if has_path_separator(token) {
         return Ok(token.to_string());
@@ -779,10 +792,23 @@ mod project_title_tests {
             ]))
         );
         assert_eq!(ProjectNames::untitled().name("/w/atlas/"), "atlas");
+
         let titles = domain.project_titles();
         let names = ProjectNames::new(&titles);
         assert_eq!(names.name("/w/site-b/wp-content"), "Atlas");
         assert_eq!(names.name("/w/site-a/wp-content"), "wp-content");
+        // Two writers saving at once can both land one title: a name that matches both
+        // refuses in either resolver instead of picking one.
+        domain.restore_project_title("/w/site-a/wp-content", Some("atlas".into()));
+        let both = Err(ProjectResolveError::Ambiguous(vec![
+            "atlas (/w/site-a/wp-content)".to_string(),
+            "Atlas (/w/site-b/wp-content)".to_string(),
+        ]));
+        assert_eq!(
+            resolve_permissive_project_path("ATLAS", &domain, None),
+            both
+        );
+        assert_eq!(resolve_project_path("atlas", &domain, None), both);
     }
 }
 

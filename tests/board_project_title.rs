@@ -10,7 +10,8 @@ use tsk_tui::app::{apply_board_intent_with_save_recovery, BoardSaveContext};
 use tsk_tui::domain::{DomainState, ProvenanceOrigin, TaskScope};
 use tsk_tui::save_recovery::SaveRecovery;
 use tsk_tui::ui::board::{
-    apply_intent, draw_board, BoardInputMode, BoardModel, IntentOutcome, ProjectScopeOption,
+    apply_intent, draw_board, resolve_board_command, BoardInputMode, BoardModel, IntentOutcome,
+    ProjectScopeOption,
 };
 use tsk_tui::ui::input::{map_key, BoardIntent};
 use tsk_tui::ui::queue::NavTab;
@@ -252,12 +253,17 @@ fn the_palette_on_a_project_tab_edits_its_title_in_the_picker_and_closes_it() {
         apply(&mut domain, &mut model, BoardIntent::ProjectPickerNext);
     }
     apply(&mut domain, &mut model, BoardIntent::ConfirmProjectChoice);
-    assert!(model
-        .available_commands()
-        .iter()
-        .any(|command| command.label == "set project title…"));
 
-    apply(&mut domain, &mut model, BoardIntent::BeginEditProjectTitle);
+    // Drive the real palette: `:`, type the command's name, Enter.
+    apply(&mut domain, &mut model, BoardIntent::OpenCommandPalette);
+    apply(
+        &mut domain,
+        &mut model,
+        BoardIntent::CommandQueryInsertText("set project title".into()),
+    );
+    let enter = map_key(model.input_mode(), press(KeyCode::Enter)).expect("enter maps");
+    let resolved = resolve_board_command(&mut model, enter).expect("the palette runs a command");
+    apply(&mut domain, &mut model, resolved);
     assert_eq!(model.input_mode(), BoardInputMode::EditProjectTitle);
     clear_draft(&mut domain, &mut model);
     type_text(&mut domain, &mut model, "Alpha");
@@ -274,6 +280,36 @@ fn the_palette_on_a_project_tab_edits_its_title_in_the_picker_and_closes_it() {
         frame.contains("Alpha"),
         "the project tab shows the title:\n{frame}"
     );
+}
+
+#[test]
+fn the_picker_and_the_projects_view_sort_by_the_title() {
+    let (mut domain, mut model) = board();
+    // By folder path, site-a sorts first; titles reverse that under name A-Z.
+    domain.set_project_title(SITE_A, "Zulu").expect("title A");
+    domain.set_project_title(SITE_B, "Alpha").expect("title B");
+    model.sync_from_domain(&domain);
+    assert_eq!(
+        model.project_options(),
+        vec![
+            ProjectScopeOption::Home,
+            ProjectScopeOption::Project(PathBuf::from(SITE_B)),
+            ProjectScopeOption::Project(PathBuf::from(SITE_A)),
+        ],
+        "the picker sorts by the shown name"
+    );
+    apply(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectNavTab(NavTab::Projects),
+    );
+    let rows: Vec<String> = model
+        .queue_view()
+        .projects
+        .into_iter()
+        .map(|row| row.path)
+        .collect();
+    assert_eq!(rows, vec![SITE_B.to_string(), SITE_A.to_string()]);
 }
 
 #[test]
