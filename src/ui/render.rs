@@ -3046,6 +3046,12 @@ fn project_picker_footer(archived_tab: bool, sort: &str) -> Vec<VerbEntry<'_>> {
         label: "close",
         shed: 0,
     };
+    // `ctrl+e` edits the highlighted project's title in place, on either tab.
+    let title = VerbEntry {
+        key: "ctrl+e",
+        label: "title",
+        shed: 2,
+    };
     if archived_tab {
         return vec![
             VerbEntry {
@@ -3059,6 +3065,7 @@ fn project_picker_footer(archived_tab: bool, sort: &str) -> Vec<VerbEntry<'_>> {
                 shed: 1,
             },
             sort,
+            title,
             esc,
         ];
     }
@@ -3079,6 +3086,7 @@ fn project_picker_footer(archived_tab: bool, sort: &str) -> Vec<VerbEntry<'_>> {
             label: "archive",
             shed: 0,
         },
+        title,
         esc,
     ]
 }

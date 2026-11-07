@@ -3431,6 +3431,19 @@ fn golden_scenes() -> Vec<GoldenScene> {
     .expect("enter projects rail for golden");
     let projects_rail_rows = board_rows(&projects_model, 110, 30);
     let (titled_index_rows, title_edit_rows, picker_title_edit_rows) = project_title_scenes(&tasks);
+    // The project picker's own footer, wide and narrow, so its `ctrl+e title` hint and the
+    // way the hints shed are pinned.
+    let mut picker_domain = DomainState::new();
+    let mut picker_model = BoardModel::from_tasks(tasks.clone(), Some(PathBuf::from("/repos/tsk")));
+    apply_intent(
+        &mut picker_domain,
+        &mut picker_model,
+        BoardIntent::OpenProjectSelector,
+        None,
+    )
+    .expect("open the project picker for goldens");
+    let picker_wide_rows = board_rows(&picker_model, 110, 30);
+    let picker_narrow_rows = board_rows(&picker_model, 40, 24);
 
     let mut search_domain = DomainState::new();
     let mut search_model = BoardModel::from_tasks(tasks.clone(), Some(PathBuf::from("/repos/tsk")));
@@ -3732,6 +3745,16 @@ fn golden_scenes() -> Vec<GoldenScene> {
             name: "project_picker_title_edit_78x24",
             rows: picker_title_edit_rows,
             width: 78,
+        },
+        GoldenScene {
+            name: "project_picker_110x30",
+            rows: picker_wide_rows,
+            width: 110,
+        },
+        GoldenScene {
+            name: "project_picker_40x24",
+            rows: picker_narrow_rows,
+            width: 40,
         },
     ]
     .into_iter()
@@ -5910,7 +5933,7 @@ fn archived_tab_verb_bar_advertises_ctrl_u_enter_esc() {
         .join("\n");
     assert!(
         frame.contains(
-            "ctrl+u unarchive \u{b7} enter open \u{b7} s sort: name A–Z \u{b7} esc close"
+            "ctrl+u unarchive \u{b7} enter open \u{b7} s sort: name A–Z \u{b7} ctrl+e title \u{b7} esc close"
         ),
         "the archived tab's footer reads its own verbs:\n{frame}"
     );
@@ -5939,9 +5962,9 @@ fn project_picker_main_tab_advertises_archive_without_leaking_to_thread_picker()
     let main = board_rows(&model, 80, 24).join("\n");
     assert!(
         main.contains(
-            "↑↓ move \u{b7} enter choose \u{b7} s sort: name A–Z \u{b7} ctrl+f archive \u{b7} esc close"
+            "enter choose \u{b7} s sort: name A–Z \u{b7} ctrl+f archive \u{b7} ctrl+e title \u{b7} esc close"
         ),
-        "main project picker must advertise archive:\n{main}"
+        "main project picker must advertise archive and title (↑↓ move sheds first at 80):\n{main}"
     );
 
     // The compact card caps near 34 content columns: the legend keeps only the seat that

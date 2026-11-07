@@ -695,7 +695,7 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
     if model.nav_tab() == crate::ui::queue::NavTab::Projects
         && matches!(model.projects_view(), ProjectsView::Overview)
     {
-        let mut items = Vec::with_capacity(5);
+        let mut items = Vec::with_capacity(6);
         if undo_seat {
             items.push(UNDO);
         }
@@ -705,6 +705,12 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
                 key: "/",
                 label: "search",
                 shed: 1,
+            },
+            // Painted `ctrl+e title`; a click runs it like the key (the row's title editor).
+            VerbEntry {
+                key: "e",
+                label: "title",
+                shed: 2,
             },
             COMMANDS,
             HELP,

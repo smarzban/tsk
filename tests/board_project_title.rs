@@ -283,6 +283,33 @@ fn the_palette_on_a_project_tab_edits_its_title_in_the_picker_and_closes_it() {
 }
 
 #[test]
+fn the_projects_view_footer_offers_ctrl_e_title_and_a_click_opens_the_editor() {
+    let (mut domain, mut model) = board();
+    projects_view_on(&mut domain, &mut model, SITE_A);
+    let frame = rendered(&model, 100, 24);
+    assert!(frame.contains("ctrl+e title"), "{frame}");
+    let hits = tsk_tui::ui::board::board_hit_map(ratatui::layout::Rect::new(0, 0, 100, 24), &model);
+    let index = tsk_tui::ui::board::board_verb_items(&model)
+        .iter()
+        .position(|entry| entry.label == "title")
+        .expect("title verb");
+    let area = hits
+        .regions
+        .iter()
+        .find(|hit| hit.target == tsk_tui::ui::render::QueueHitTarget::Verb(index))
+        .expect("title verb hit")
+        .area;
+    let intent = tsk_tui::ui::mouse::map_board_mouse(
+        &model,
+        &hits,
+        tsk_tui::ui::mouse::left_click(area.x, area.y),
+    )
+    .expect("the click maps");
+    apply(&mut domain, &mut model, intent);
+    assert_eq!(model.input_mode(), BoardInputMode::EditProjectTitle);
+}
+
+#[test]
 fn the_picker_and_the_projects_view_sort_by_the_title() {
     let (mut domain, mut model) = board();
     // By folder path, site-a sorts first; titles reverse that under name A-Z.
