@@ -9,6 +9,7 @@ mod dispatch_card;
 mod draw;
 mod launch_card;
 mod model;
+mod project_title;
 mod selector;
 
 pub use apply::{

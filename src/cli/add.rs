@@ -115,6 +115,7 @@ pub enum FlagAddResult {
         number: u64,
         title: String,
         project: Option<String>,
+        project_title: Option<String>,
         assignee: Option<Assignee>,
     },
     Existing {
@@ -122,6 +123,7 @@ pub enum FlagAddResult {
         number: u64,
         title: String,
         project: Option<String>,
+        project_title: Option<String>,
         assignee: Option<Assignee>,
     },
 }
@@ -177,8 +179,8 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
             };
             if let TaskScope::Project { path } = &scope {
                 if domain.is_project_archived(path) {
-                    let short = crate::ui::render::short_project(path).to_string();
-                    return Ok((Err(AddError::ProjectArchived(short)), false));
+                    let name = domain.project_name(path);
+                    return Ok((Err(AddError::ProjectArchived(name)), false));
                 }
             }
             if let Some(base) = base.as_deref() {
@@ -201,10 +203,12 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                         .expect("loaded tasks receive a number before CLI presentation"),
                     title: task.title.clone(),
                     project: scope_project(&task.scope),
+                    project_title: scope_title(domain, &task.scope),
                     assignee: task.assigned(),
                 })
             } else {
                 let project = scope_project(&scope);
+                let project_title = scope_title(domain, &scope);
                 let id = match domain.create_configured(
                     &title,
                     notes,
@@ -229,6 +233,7 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                     number,
                     title,
                     project,
+                    project_title,
                     assignee: domain.get(id).and_then(crate::domain::Task::assigned),
                 })
             };
@@ -424,6 +429,13 @@ fn scope_project(scope: &TaskScope) -> Option<String> {
     match scope {
         TaskScope::Global => None,
         TaskScope::Project { path } => Some(path.clone()),
+    }
+}
+
+fn scope_title(domain: &DomainState, scope: &TaskScope) -> Option<String> {
+    match scope {
+        TaskScope::Global => None,
+        TaskScope::Project { path } => domain.project_title(path).map(str::to_string),
     }
 }
 

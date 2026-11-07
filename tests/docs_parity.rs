@@ -61,7 +61,11 @@ fn promised_labels(cell: &str) -> Vec<String> {
         let part = part.trim().to_lowercase();
         if matches!(
             part.as_str(),
-            "set assignee" | "set waiting on…" | "set base" | "set after (wait for)…"
+            "set assignee"
+                | "set waiting on…"
+                | "set base"
+                | "set after (wait for)…"
+                | "set project title…"
         ) {
             labels.push(part);
         } else if let Some(rest) = part.strip_prefix("set ") {
@@ -220,6 +224,24 @@ fn board_md_palette_table_matches_the_palette_catalog() {
     .expect("projects view");
     let on_projects = labels(&projects);
 
+    // A project tab: the board opened inside a project.
+    let mut project_domain = DomainState::new();
+    project_domain
+        .create(
+            "project witness",
+            None,
+            TaskScope::Project {
+                path: "/w/p".into(),
+            },
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("seed project task");
+    let on_project_tab = labels(&BoardModel::from_domain(
+        &project_domain,
+        Some(PathBuf::from("/w/p")),
+    ));
+
     let mut documented: Vec<(String, &str)> = Vec::new();
     for row in &rows {
         let (actions, when) = (&row[0], &row[1]);
@@ -235,6 +257,7 @@ fn board_md_palette_table_matches_the_palette_catalog() {
             "A save has failed" => &recovery,
             "A task-page step is selected" => &with_step,
             "The Projects view has focus" => &on_projects,
+            "A project tab or a Projects view row has focus" => &on_project_tab,
             other => panic!("unknown palette condition {other:?} in board.md"),
         };
         for label in promised_labels(actions) {
@@ -284,6 +307,10 @@ fn board_md_palette_table_matches_the_palette_catalog() {
             "A task-page step is selected" => assert!(
                 !with_selection.contains(label),
                 "{label:?} is documented as step-only but the board selection offers it"
+            ),
+            "A project tab or a Projects view row has focus" => assert!(
+                !always.contains(label),
+                "{label:?} is documented for a project but the empty desk offers it"
             ),
             _ => {}
         }

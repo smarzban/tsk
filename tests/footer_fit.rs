@@ -12,6 +12,7 @@ use tsk_tui::domain::{
 use tsk_tui::ui::board::{apply_intent, board_verb_items, draw_board, BoardInputMode, BoardModel};
 use tsk_tui::ui::capture::CaptureField;
 use tsk_tui::ui::input::BoardIntent;
+use tsk_tui::ui::queue::NavTab;
 use tsk_tui::ui::tier;
 
 const REPO: &str = "/repos/app";
@@ -143,6 +144,7 @@ fn card_legends() -> Vec<(&'static str, Vec<Entry>)> {
                 entry("enter", "choose", false),
                 entry("s", "sort: name A–Z", false),
                 entry("ctrl+f", "archive", true),
+                entry("ctrl+e", "title", false),
                 entry("esc", "close", true),
             ],
         ),
@@ -152,6 +154,7 @@ fn card_legends() -> Vec<(&'static str, Vec<Entry>)> {
                 entry("ctrl+u", "unarchive", true),
                 entry("enter", "open", false),
                 entry("s", "sort: name A–Z", false),
+                entry("ctrl+e", "title", false),
                 entry("esc", "close", true),
             ],
         ),
@@ -410,6 +413,13 @@ fn every_verb_bar_paints_whole_entries_and_keeps_its_essentials_at_every_width()
             |model| board_entries(model, true),
         ),
         (
+            "Projects view",
+            board,
+            vec![BoardIntent::SelectNavTab(NavTab::Projects)],
+            Some(BoardInputMode::Normal),
+            |model| board_entries(model, true),
+        ),
+        (
             "search",
             board,
             vec![BoardIntent::FocusSearch],
@@ -595,4 +605,44 @@ fn every_card_legend_paints_whole_entries_and_keeps_its_essentials_at_every_widt
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The Projects view's verb bar sheds `ctrl+e title` before `/ search`, and both before the
+/// essentials: whole at 60 columns, title gone at 58, search gone too at 40.
+#[test]
+fn the_projects_view_bar_sheds_title_before_search_at_narrow_widths() {
+    let (mut domain, mut model) = board();
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::SelectNavTab(NavTab::Projects),
+        None,
+    )
+    .expect("open the Projects view");
+    // Ties shed the later entry first, so pin the declared order too: a title tied with
+    // search would paint the same today and flip the moment the two are reordered.
+    let verbs = board_verb_items(&model);
+    let shed = |label: &str| {
+        verbs
+            .iter()
+            .find(|verb| verb.label == label)
+            .unwrap_or_else(|| panic!("{label} verb"))
+            .shed
+    };
+    assert!(
+        shed("title") > shed("search") && shed("search") > 0,
+        "title sheds before search, search before the essentials"
+    );
+    let full = "enter open · / search · ctrl+e title · : commands · ? help";
+    for (width, want) in [
+        (110, full),
+        (78, full),
+        (60, full),
+        (58, "enter open · / search · : commands · ? help"),
+        (40, "enter open · : commands · ? help"),
+    ] {
+        let painted = rows(&model, width, height(width));
+        let bar = painted.last().expect("verb row");
+        assert_eq!(bar.trim(), want, "Projects view bar at {width}");
+    }
 }

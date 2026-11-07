@@ -132,3 +132,39 @@ fn shared_resolver_and_board_quick_add_agree_on_fixtures() {
         "board apply must delegate to the shared resolver instead of retaining a private matcher"
     );
 }
+
+/// A title resolves first, ignoring case, as the board and add resolve it. It wins
+/// over another project's folder name, and an ambiguous name lists a titled candidate as
+/// `Title (path)`.
+#[test]
+fn project_titles_resolve_first_and_label_ambiguity() {
+    let mut domain = DomainState::new();
+    create_project(&mut domain, "/w/site-a/wp-content");
+    create_project(&mut domain, "/w/site-b/wp-content");
+    create_project(&mut domain, "/w/atlas");
+    domain
+        .set_project_title("/w/site-a/wp-content", "Site A")
+        .expect("title A");
+    // A title equal to another project's folder name is allowed; the title wins.
+    domain
+        .set_project_title("/w/site-b/wp-content", "atlas")
+        .expect("title B");
+    let snapshot = snapshot();
+
+    assert_eq!(
+        resolve_project_path("site a", &domain, Some(&snapshot)),
+        Ok("/w/site-a/wp-content".to_string())
+    );
+    assert_eq!(
+        resolve_project_path("ATLAS", &domain, Some(&snapshot)),
+        Ok("/w/site-b/wp-content".to_string()),
+        "a title beats a folder name"
+    );
+    assert_eq!(
+        resolve_project_path("wp-content", &domain, Some(&snapshot)),
+        Err(ProjectResolveError::Ambiguous(vec![
+            "Site A (/w/site-a/wp-content)".to_string(),
+            "atlas (/w/site-b/wp-content)".to_string(),
+        ]))
+    );
+}

@@ -455,7 +455,13 @@ fn the_desk_filter_has_an_assignees_tab_and_its_tabs_wrap_both_ways() {
         .position(|label| label == "@claude")
         .expect("@claude");
     board.apply(BoardIntent::SelectListOption(claude));
-    assert_eq!(board.model.desk_filter().label(), "@claude");
+    assert_eq!(
+        board
+            .model
+            .desk_filter()
+            .label(&tsk_tui::scope::ProjectNames::untitled()),
+        "@claude"
+    );
     assert_eq!(board.visible_tasks(), [board.desk, board.alpha_one]);
 
     // It combines with the project choice, and reopens on the active choice.
@@ -467,7 +473,13 @@ fn the_desk_filter_has_an_assignees_tab_and_its_tabs_wrap_both_ways() {
         .position(|label| label == "alpha")
         .expect("alpha");
     board.apply(BoardIntent::SelectListOption(alpha));
-    assert_eq!(board.model.desk_filter().label(), "alpha @claude");
+    assert_eq!(
+        board
+            .model
+            .desk_filter()
+            .label(&tsk_tui::scope::ProjectNames::untitled()),
+        "alpha @claude"
+    );
     assert_eq!(board.visible_tasks(), [board.alpha_one]);
     board.apply(BoardIntent::OpenThreadFilterPicker);
     board.apply(BoardIntent::SelectListPickerTab(FilterTab::Assignees));
@@ -479,7 +491,13 @@ fn the_desk_filter_has_an_assignees_tab_and_its_tabs_wrap_both_ways() {
         .position(|label| label == "unassigned")
         .expect("unassigned");
     board.apply(BoardIntent::SelectListOption(unassigned));
-    assert_eq!(board.model.desk_filter().label(), "alpha unassigned");
+    assert_eq!(
+        board
+            .model
+            .desk_filter()
+            .label(&tsk_tui::scope::ProjectNames::untitled()),
+        "alpha unassigned"
+    );
     assert_eq!(board.visible_tasks(), [board.alpha_two]);
 }
 
@@ -772,12 +790,24 @@ fn t_on_the_desk_opens_a_tabbed_filter_whose_choices_combine() {
         .position(|label| label == "alpha")
         .expect("alpha");
     board.apply(BoardIntent::SelectListOption(alpha));
-    assert_eq!(board.model.desk_filter().label(), "alpha");
+    assert_eq!(
+        board
+            .model
+            .desk_filter()
+            .label(&tsk_tui::scope::ProjectNames::untitled()),
+        "alpha"
+    );
     let listed: Vec<Uuid> = board.model.visible_ids();
     assert_eq!(listed, [board.alpha_two, board.alpha_one]);
 
     board.pick(BoardIntent::OpenThreadFilterPicker, "#ship");
-    assert_eq!(board.model.desk_filter().label(), "alpha #ship");
+    assert_eq!(
+        board
+            .model
+            .desk_filter()
+            .label(&tsk_tui::scope::ProjectNames::untitled()),
+        "alpha #ship"
+    );
     assert_eq!(board.model.visible_ids(), [board.alpha_one]);
     assert_eq!(
         board.model.row_label_dimensions(),
@@ -1082,12 +1112,24 @@ fn clicking_the_layout_control_and_the_desk_filter_tabs() {
         .position(|label| label == "beta")
         .expect("beta");
     board.click(QueueHitTarget::ListPickerOption(beta));
-    assert_eq!(board.model.desk_filter().label(), "beta");
+    assert_eq!(
+        board
+            .model
+            .desk_filter()
+            .label(&tsk_tui::scope::ProjectNames::untitled()),
+        "beta"
+    );
     board.click(QueueHitTarget::NavChip);
     board.click(QueueHitTarget::ListPickerTab(FilterTab::Threads));
     assert_eq!(board.model.list_picker_tab(), Some(FilterTab::Threads));
     board.click(QueueHitTarget::ListPickerOption(1));
-    assert_eq!(board.model.desk_filter().label(), "beta #ship");
+    assert_eq!(
+        board
+            .model
+            .desk_filter()
+            .label(&tsk_tui::scope::ProjectNames::untitled()),
+        "beta #ship"
+    );
     assert_eq!(board.visible_tasks(), [board.beta]);
     // The third tab's painted cell clicks through too.
     board.click(QueueHitTarget::NavChip);
@@ -1236,7 +1278,13 @@ fn defaults_drop_before_a_chosen_group_when_a_long_filter_crowds_the_header() {
         .position(|label| label.starts_with("#release-candidate-x"))
         .expect("the thread is offered");
     board.apply(BoardIntent::SelectListOption(index));
-    assert_eq!(board.model.desk_filter().label(), "#release-candidate-x");
+    assert_eq!(
+        board
+            .model
+            .desk_filter()
+            .label(&tsk_tui::scope::ProjectNames::untitled()),
+        "#release-candidate-x"
+    );
 
     // 45 columns: the controls take their own row; the default sort drops and the
     // chosen group keeps its full words beside the filter.

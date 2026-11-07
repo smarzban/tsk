@@ -13,7 +13,7 @@ The human works the board in a TUI; agents read and write the same tasks with th
 ## Concepts
 
 - Status: `open` (inbox), `ready` (picked), `started`, `blocked`, `review`, `done`. The human owns status; checking every step never completes a task.
-- Desk and project: a project is a Git repository root, named by its folder. The desk holds tasks with no project.
+- Desk and project: a project is a Git repository root, named by its folder or by a title (`tsk project title`). `-p` takes the title or the folder name. The desk holds tasks with no project.
 - Thread: a label that groups related work, within a project or across several.
 - Task number: `T12`, `12`, and the task's UUID address the same task.
 - Notice: `N` rows on the desk (starter tasks, What's new) are for the human only. `tsk list` never shows them.

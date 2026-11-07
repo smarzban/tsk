@@ -207,6 +207,7 @@ In the Herdr or Rex popup, `shift+Enter` saves and closes it. `Esc` or `ctrl+c` 
 | --- | --- |
 | Project picker (`p`) | `↑` / `↓` or `j` / `k` select · `Tab` or `←` / `→` switch tabs · `s` [changes the order](/docs/board/#sort-the-projects) · `Enter` opens · `Esc` or `q` closes |
 | Project picker, archive | `ctrl+f` archives the selected project · on the archived tab, `ctrl+f` or `ctrl+u` restores |
+| Project picker or Projects view, title | `ctrl+e` edits the selected project's [title](/docs/board/#project-titles) · `Enter` saves · `Esc` cancels · `ctrl+u` in the picker undoes a title change |
 | Archived project's board | `ctrl+u` restores · `Esc`, `p`, or `1`–`3` leaves |
 | Filter and view pickers (`t`, `v`) | type to filter · `↑` / `↓` select · `Tab` or `←` / `→` switch tabs, `shift+Tab` back · `Enter` chooses · `Esc` closes |
 | Group, sort, assignee, and base pickers | type to filter · `↑` / `↓` or `Tab` / `shift+Tab` select · `Enter` applies · `Esc` closes with no change |

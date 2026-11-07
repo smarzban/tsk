@@ -3209,6 +3209,7 @@ fn palette_lists_exactly_m1_commands_for_selection_filters_by_subsequence_and_di
         "set assignee",
         "set base",
         "set after (wait for)…",
+        "set project title…",
         "add task",
         "delete task",
         "undo",

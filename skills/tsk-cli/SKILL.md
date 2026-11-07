@@ -8,7 +8,7 @@ version: 1.7.0
 
 tsk is the user's task board. Tasks have a human status (`open` · `ready` · `started` · `blocked` ·
 `review` · `done`) and live on the **desk** (no project) or in a **project** (a Git repo root, named
-by its basename). A task may carry a **thread** label, an **assignee** (an agent profile from
+by its basename or a title). A task may carry a **thread** label, an **assignee** (an agent profile from
 `config.toml`, the user, or a person), and a dispatch **base** branch. The user sees the board in a TUI; you never open it.
 Every read and write goes through the CLI, and the board updates live.
 
@@ -58,9 +58,9 @@ task's running agent, in Herdr or Rex, add `--send`: it sends only that reply an
 3. **Never blind-retry.** `add`, `status`, `edit`, and `archive` are safe to repeat. `reply`,
    `dispatch`, `edit --append-notes`, `steps add`, `steps toggle`, and `steps remove` are not:
    read the task first.
-4. **Use a known project name or a full path.** For `tsk add -p <project>`,
-   unknown or ambiguous names refuse; `tsk list -p` lists nothing for an unknown name and
-   refuses an ambiguous one. Only an
+4. **Use a known project name or a full path.** A name is a project's title or folder name.
+   For `tsk add -p <project>`, unknown or ambiguous names refuse; `tsk list -p` lists
+   nothing for an unknown name and refuses an ambiguous one. Only an
    existing absolute directory creates a project ([scope](https://gettsk.sh/docs/cli.md#scope)).
 5. **Never pass `--state-dir`** unless the user asked. It points at a different board.
 6. **Ignore notice rows.** Rows the board paints as `N1`… are for the user; no command reaches them.
@@ -139,8 +139,8 @@ Only when the user asks.
 | 3 | store error, the write is indeterminate | `tsk list --all --json` (also `--done`, `--archived`); redo only what is missing |
 
 A refusal prints a stable code first: `tsk status: unknown-task: T12 is not on the board`. Branch on
-the code, never the message. `tsk help <command>` lists each command's codes. `project`, `trash`,
-`backup`, and `restore` refuse with a message only. After exit 3 from `dispatch`, or from a start that
+the code, never the message. `tsk help <command>` lists each command's codes. `project archive`,
+`project unarchive`, `trash`, `backup`, and `restore` refuse with a message only. After exit 3 from `dispatch`, or from a start that
 dispatched, a message saying `the agent may still run` means it may run without its record: look for
 its workspace or tab (`herdr agent get t12-<assignee>` in Herdr, `rex window ls -A` in Rex) and
 read the task before retrying.

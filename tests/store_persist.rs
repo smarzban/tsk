@@ -44,14 +44,14 @@ fn platform_nanos(nanos: u32) -> u32 {
 
 fn platform_current_fixture() -> Vec<u8> {
     #[cfg(not(windows))]
-    return include_bytes!("fixtures/current_store_v16.json").to_vec();
+    return include_bytes!("fixtures/current_store_v17.json").to_vec();
     #[cfg(windows)]
     {
         // Round-trip through the persisted type, not Value's sorted map. SystemTime applies
         // Windows' 100 ns precision while DomainState preserves the canonical field order.
         let state: DomainState =
-            serde_json::from_str(include_str!("fixtures/current_store_v16.json"))
-                .expect("v16 fixture");
+            serde_json::from_str(include_str!("fixtures/current_store_v17.json"))
+                .expect("v17 fixture");
         serde_json::to_vec_pretty(&state).expect("encode platform fixture")
     }
 }
@@ -346,34 +346,109 @@ fn literal_v5_fixture_migrates_to_canonical_current() {
     );
 }
 
-/// v16 is the current format: it opens with no migration, writes no version copy, and saves
+/// v17 is the current format: it opens with no migration, writes no version copy, and saves
 /// byte for byte.
 #[test]
-fn literal_v16_fixture_is_current_and_round_trips() {
+fn literal_v17_fixture_is_current_and_round_trips() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let current = platform_current_fixture();
-    fs::write(dir.join("tsk.json"), &current).expect("install current v16 fixture");
+    fs::write(dir.join("tsk.json"), &current).expect("install current v17 fixture");
     let store = TaskStore::new(&dir);
 
-    let loaded = store.load().expect("load current v16 fixture");
+    let loaded = store.load().expect("load current v17 fixture");
     assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
     store.save(&loaded).expect("save current state");
     assert!(
-        !dir.join("tsk.json.v16").exists(),
+        !dir.join("tsk.json.v17").exists(),
         "a current document needs no version copy"
     );
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read live document"),
         current,
-        "a v16 state must serialize as canonical platform v16"
+        "a v17 state must serialize as canonical platform v17"
     );
+}
+
+/// A v16 store (an archived project record, no titles) migrates by its version alone: its
+/// first save writes v17 and keeps the original as `tsk.json.v16`, and the archived project
+/// stays archived and untitled.
+#[test]
+fn literal_v16_fixture_migrates_to_v17_and_keeps_its_archived_project() {
+    let dir = temp_state_dir();
+    let _guard = TempDirGuard(dir.clone());
+    let mut document: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/current_store_v16.json")).expect("v16");
+    document["projects"] = serde_json::json!({ "/tmp/example-project": { "archived": true } });
+    let v16 = serde_json::to_vec_pretty(&document).expect("encode v16");
+    fs::write(dir.join("tsk.json"), &v16).expect("install v16 fixture");
+    let store = TaskStore::new(&dir);
+
+    let loaded = store.load().expect("load v16 fixture");
+    assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
+    assert!(loaded.is_project_archived("/tmp/example-project"));
+    assert_eq!(loaded.project_title("/tmp/example-project"), None);
+    store.save(&loaded).expect("save migrated state");
+    assert_eq!(fs::read(dir.join("tsk.json.v16")).expect("v16 copy"), v16);
+    let live: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.join("tsk.json")).expect("live")).expect("json");
+    assert_eq!(live["format_version"], 17);
+    assert_eq!(
+        live["projects"],
+        serde_json::json!({ "/tmp/example-project": { "archived": true } }),
+        "an untitled record writes no title key"
+    );
+}
+
+/// A titled project, archived or not, round-trips through the v17 document, and the title
+/// is the only new key a record carries.
+#[test]
+fn project_titles_round_trip_through_the_store() {
+    let dir = temp_state_dir();
+    let _guard = TempDirGuard(dir.clone());
+    let store = TaskStore::new(&dir);
+    let mut state = DomainState::new();
+    for path in ["/w/site-a/wp-content", "/w/site-b/wp-content"] {
+        state
+            .create(
+                "seed",
+                None,
+                TaskScope::Project { path: path.into() },
+                ProvenanceOrigin::Manual,
+                None,
+            )
+            .expect("create");
+    }
+    state
+        .set_project_title("/w/site-a/wp-content", "Site A")
+        .expect("title A");
+    state
+        .set_project_title("/w/site-b/wp-content", "Site B")
+        .expect("title B");
+    state
+        .archive_project("/w/site-b/wp-content")
+        .expect("archive B");
+    store.save(&state).expect("save");
+
+    let live: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.join("tsk.json")).expect("live")).expect("json");
+    assert_eq!(
+        live["projects"],
+        serde_json::json!({
+            "/w/site-a/wp-content": { "archived": false, "title": "Site A" },
+            "/w/site-b/wp-content": { "archived": true, "title": "Site B" },
+        })
+    );
+    let loaded = store.load().expect("reload");
+    assert_eq!(loaded.project_title("/w/site-a/wp-content"), Some("Site A"));
+    assert_eq!(loaded.project_title("/w/site-b/wp-content"), Some("Site B"));
+    assert!(loaded.is_project_archived("/w/site-b/wp-content"));
 }
 
 /// A v6 store with no dispatch migrates by its version alone and keeps its original as
 /// `tsk.json.v6`.
 #[test]
-fn literal_v6_fixture_migrates_to_canonical_v16() {
+fn literal_v6_fixture_migrates_to_canonical_v17() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let v6 = include_bytes!("fixtures/current_store_v6.json").to_vec();
@@ -390,7 +465,7 @@ fn literal_v6_fixture_migrates_to_canonical_v16() {
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read live document"),
         platform_current_fixture(),
-        "a v6 state must serialize as canonical platform v16"
+        "a v6 state must serialize as canonical platform v17"
     );
     let reloaded = store.load().expect("reload");
     assert_eq!(
@@ -1297,13 +1372,13 @@ fn reload_merge_save_keeps_a_sibling_writers_project_record_and_applies_the_loca
 fn noncurrent_store_is_refused_without_rewriting_the_file() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
-    let document = serde_json::json!({ "format_version": 17, "next_task_number": 2, "tasks": [], "undo_stack": [] });
+    let document = serde_json::json!({ "format_version": 18, "next_task_number": 2, "tasks": [], "undo_stack": [] });
     let bytes = serde_json::to_vec_pretty(&document).expect("json");
     fs::write(dir.join("tsk.json"), &bytes).expect("write noncurrent store");
     let error = TaskStore::new(&dir)
         .save(&DomainState::new())
         .expect_err("current writer refuses noncurrent store");
-    assert!(error.to_string().contains("expected 16"));
+    assert!(error.to_string().contains("expected 17"));
     assert_eq!(fs::read(dir.join("tsk.json")).expect("read"), bytes);
 }
 
@@ -1993,7 +2068,7 @@ fn a_concurrent_removal_keeps_the_other_writers_assignment_undo() {
 
 /// A store a dispatch dev build wrote at v15 (an agent and a person assignee, a hidden name,
 /// an `after` link, a review round with a sent reply, a batch done on the undo stack) has the
-/// v6 layout and migrates like v6. Its first save writes v16, keeps the original as
+/// v6 layout and migrates like v6. Its first save writes v17, keeps the original as
 /// `tsk.json.v15`, and the batch still undoes as one.
 #[test]
 fn a_populated_dev_v15_store_migrates_and_keeps_tsk_json_v15() {
@@ -2091,7 +2166,7 @@ fn a_populated_dev_v15_store_migrates_and_keeps_tsk_json_v15() {
 /// Every dev version migrates like v6 and keeps its own copy; the first version past the
 /// current one is refused without a write.
 #[test]
-fn dev_v7_and_v11_migrate_like_v6_and_v17_is_refused() {
+fn dev_v7_and_v11_migrate_like_v6_and_v18_is_refused() {
     for version in [7, 11] {
         let dir = temp_state_dir();
         let _guard = TempDirGuard(dir.clone());
@@ -2115,6 +2190,52 @@ fn dev_v7_and_v11_migrate_like_v6_and_v17_is_refused() {
     }
     let mut document: serde_json::Value =
         serde_json::from_slice(&platform_current_fixture()).expect("json");
-    document["format_version"] = 17.into();
+    document["format_version"] = 18.into();
     assert_store_document_refused_without_rewrite(document);
+}
+
+/// A title and an archive saved by two writers on one project both land: the merge takes
+/// each writer's own field and never drops the other's, and an unarchive keeps the title.
+#[test]
+fn project_title_and_archive_from_two_writers_merge_field_by_field() {
+    let dir = temp_state_dir();
+    let _guard = TempDirGuard(dir.clone());
+    let store = TaskStore::new(&dir);
+    let mut seed = DomainState::new();
+    seed.create(
+        "seed",
+        None,
+        TaskScope::Project {
+            path: "/repos/p".to_string(),
+        },
+        ProvenanceOrigin::Manual,
+        None,
+    )
+    .expect("create seed task");
+    store.save(&seed).expect("seed one project");
+
+    let mut a = store.load().expect("writer A");
+    let mut b = store.load().expect("writer B");
+    b.archive_project("/repos/p").expect("B archives P");
+    store.save(&b).expect("B persists the archive");
+
+    // A titles P against its stale copy, which has no record: B's archive must survive.
+    assert_eq!(a.set_project_title("/repos/p", "Platform"), Ok(true));
+    store.reload_merge_save(&mut a).expect("A merge-save");
+    let disk = store.load().expect("reload");
+    assert!(disk.is_project_archived("/repos/p"), "B's archive survives");
+    assert_eq!(disk.project_title("/repos/p"), Some("Platform"));
+
+    // B, still holding its own stale copy, unarchives: A's title survives that too.
+    b.unarchive_project("/repos/p").expect("B unarchives P");
+    store.reload_merge_save(&mut b).expect("B merge-save");
+    let disk = store.load().expect("reload");
+    assert!(!disk.is_project_archived("/repos/p"));
+    assert_eq!(disk.project_title("/repos/p"), Some("Platform"));
+
+    // Clearing the title of an unarchived project drops its record.
+    let mut c = store.load().expect("writer C");
+    assert_eq!(c.set_project_title("/repos/p", "  "), Ok(true));
+    store.reload_merge_save(&mut c).expect("C merge-save");
+    assert!(store.load().expect("reload").projects().is_empty());
 }
