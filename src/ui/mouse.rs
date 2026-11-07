@@ -785,6 +785,9 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::ModalClose) => Some(BoardIntent::CloseCommandSurface),
             _ => Some(BoardIntent::CloseCommandSurface),
         },
+        // The title editor owns the keyboard: Enter saves, Esc cancels, clicks stay inert so
+        // a stray click never drops a draft.
+        BoardInputMode::EditProjectTitle => None,
         BoardInputMode::ProjectPicker => match hit_at(hits, pos) {
             Some(QueueHitTarget::ProjectOption(index)) => {
                 Some(BoardIntent::SelectProjectOption(index))

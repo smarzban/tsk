@@ -551,6 +551,12 @@ fn run_project(args: Vec<String>) -> CliOutput {
     let (verb, name, archive) = match action {
         parser::ProjectAction::Archive { name } => ("archive", name, true),
         parser::ProjectAction::Unarchive { name } => ("unarchive", name, false),
+        parser::ProjectAction::Title { name, title } => {
+            return match archive::run_project_title(name, title, input.state_dir) {
+                Ok(result) => presenter::project_titled(result),
+                Err(error) => presenter::project_title_rejected(error),
+            };
+        }
     };
     match archive::run_project(name, archive, input.state_dir) {
         Ok(result) => presenter::project_archived(result, verb),

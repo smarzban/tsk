@@ -188,6 +188,8 @@ pub enum BoardInputMode {
     BlockCard,
     /// The task page's reply box under the last reply owns input.
     EditReply,
+    /// The inline project title editor on a Projects view or project picker row owns input.
+    EditProjectTitle,
 }
 
 /// Result of applying a [`BoardIntent`].
@@ -1128,6 +1130,9 @@ pub struct BoardModel {
     /// Scope paths of archived projects, carried from domain state so the lens
     /// query can filter hidden tasks without re-deriving from records.
     pub(super) archived_projects: BTreeSet<String>,
+    /// Titled projects (stored path to title), from the store: a titled project shows its
+    /// title wherever the board names it.
+    pub(super) project_titles: BTreeMap<String, String>,
     /// Person names removed from the assignee picker, from the store.
     pub(super) hidden_assignees: BTreeSet<String>,
     /// Defined profile names loaded once for this session.
@@ -1328,6 +1333,9 @@ pub struct BoardModel {
     pub(super) popup: BoardPopup,
     /// Open session project selector; never persisted.
     pub(super) project_picker: Option<ProjectPickerState>,
+    /// The inline project title editor, while open. It owns input over the picker and the
+    /// Projects view, and outlives its save until the confirmed sync closes it.
+    pub(super) project_title_edit: Option<super::project_title::ProjectTitleEdit>,
     /// Open palette (presentation only).
     pub(super) surface: CommandSurface,
     /// The last left-button press cell, held until release so a drag can grow a text
@@ -2329,6 +2337,7 @@ impl BoardModel {
             clock: None,
             tasks,
             archived_projects: BTreeSet::new(),
+            project_titles: BTreeMap::new(),
             hidden_assignees: BTreeSet::new(),
             agent_names: Vec::new(),
             this_repo: this_repo.clone(),
@@ -2415,6 +2424,7 @@ impl BoardModel {
             pending_delete_bulk: false,
             popup: BoardPopup::None,
             project_picker: None,
+            project_title_edit: None,
             surface: CommandSurface::None,
             command_query: String::new(),
             command_selected: 0,
@@ -3264,6 +3274,7 @@ impl BoardModel {
     ) -> Self {
         let mut model = Self::from_tasks(state.tasks().to_vec(), this_repo);
         model.archived_projects = state.archived_projects();
+        model.project_titles = state.project_titles();
         model.hidden_assignees = state.hidden_assignees().clone();
         if let Some(repo) = model.this_repo.clone() {
             if model.is_archived_project_path(&repo) {
@@ -3295,7 +3306,13 @@ impl BoardModel {
             return false;
         }
         self.launch_card_shown = true;
-        self.launch_card = Some(super::launch_card::LaunchPrompt::new(path.to_path_buf()));
+        let title = state
+            .project_title(&path.to_string_lossy())
+            .map(str::to_string);
+        self.launch_card = Some(super::launch_card::LaunchPrompt::new(
+            path.to_path_buf(),
+            title,
+        ));
         self.popup = BoardPopup::LaunchCard;
         true
     }
@@ -3349,6 +3366,7 @@ impl BoardModel {
         }
         self.tasks = state.tasks().to_vec();
         self.archived_projects = state.archived_projects();
+        self.project_titles = state.project_titles();
         self.hidden_assignees = state.hidden_assignees().clone();
         if self
             .undo_hint
@@ -3400,9 +3418,7 @@ impl BoardModel {
         };
         if focus_archived {
             let name = match &self.board_location {
-                BoardLocation::Project(path) => {
-                    crate::ui::render::short_project(&path.to_string_lossy()).to_string()
-                }
+                BoardLocation::Project(path) => self.project_name(path),
                 _ => String::new(),
             };
             self.board_location = BoardLocation::Desk;
@@ -3414,6 +3430,7 @@ impl BoardModel {
         self.finish_quick_add_save();
         self.finish_task_edit_save();
         self.finish_step_editor_save();
+        self.finish_project_title_save();
         super::block::finish_reply_save(self);
         super::block::flag_stale_row_reply(self);
         super::block::finish_block_card_save(self);
@@ -3647,6 +3664,7 @@ impl BoardModel {
         // should keep the existing seat instead of paying that cost or dropping its session.
         let mut right = BoardModel::from_tasks(self.tasks.clone(), self.this_repo.clone());
         right.archived_projects = self.archived_projects.clone();
+        right.project_titles = self.project_titles.clone();
         right.hidden_assignees = self.hidden_assignees.clone();
         right.agent_names = self.agent_names.clone();
         right.set_layout_defaults(self.layout_defaults);
@@ -3768,6 +3786,17 @@ impl BoardModel {
         archived_path_contains(&self.archived_projects, &path)
     }
 
+    /// The names projects show under on this board: title, else folder name.
+    pub fn project_names(&self) -> crate::scope::ProjectNames<'_> {
+        crate::scope::ProjectNames::new(&self.project_titles)
+    }
+
+    /// The name the project at `path` shows under: its title, else its folder name.
+    pub fn project_name(&self, path: &Path) -> String {
+        let path = path.to_string_lossy();
+        self.project_names().name(&path).to_string()
+    }
+
     /// Whether a layered Escape has reached the visible main board root.
     ///
     /// A task form parked behind `FullBoard` does not stop this from being a root Escape: the
@@ -3844,9 +3873,7 @@ impl BoardModel {
 
     /// The refusal every mutating verb paints in read-only focus (AC-42).
     pub(super) fn archived_focus_refusal(&self) -> Option<String> {
-        let path = self.archived_focus()?;
-        let path = path.to_string_lossy().into_owned();
-        let name = crate::ui::render::short_project(&path);
+        let name = self.project_name(self.archived_focus()?);
         Some(format!(
             "project {name} is archived \u{b7} ctrl+u unarchive"
         ))
@@ -4201,6 +4228,7 @@ impl BoardModel {
             |path| path.to_string_lossy().into_owned(),
             &self.tasks,
             self.project_sort,
+            &self.project_names(),
         );
         for path in from_tasks {
             push(path, &mut paths);
@@ -4234,6 +4262,7 @@ impl BoardModel {
             |path| path.to_string_lossy().into_owned(),
             &self.tasks,
             self.project_sort,
+            &self.project_names(),
         );
         paths
     }
@@ -4315,12 +4344,14 @@ impl BoardModel {
             )
         };
         let layout = self.layout();
+        let names = self.project_names();
         queue::arrange_view(
             &mut view,
             &self.tasks,
             self.effective_lens(),
             layout.group,
             layout.sort,
+            &names,
         );
         if self.projects_overview() {
             // The current repository's row stays first ("here"); the rest take the sort.
@@ -4329,15 +4360,17 @@ impl BoardModel {
                 |row| row.path.clone(),
                 &self.tasks,
                 self.project_sort,
+                &names,
             );
             view.projects.sort_by_key(|row| !row.current);
-            // Overview rows retain their existing name-or-path substring search.
+            // Overview rows search their painted name, folder name, and path.
             let query = self.search_query.trim().to_lowercase();
             if !query.is_empty() {
                 view.projects.retain(|row| {
-                    queue::short_project_name(&row.path)
-                        .to_lowercase()
-                        .contains(&query)
+                    names.name(&row.path).to_lowercase().contains(&query)
+                        || queue::short_project_name(&row.path)
+                            .to_lowercase()
+                            .contains(&query)
                         || row.path.to_lowercase().contains(&query)
                 });
             }
@@ -5008,14 +5041,16 @@ impl BoardModel {
                         value: ListPickerValue::DeskProjectDesk,
                     },
                 ];
+                let names = self.project_names();
                 let mut named: Vec<(String, usize)> = projects.into_iter().collect();
                 named.sort_by(|a, b| {
-                    queue::short_project_name(&a.0)
-                        .cmp(queue::short_project_name(&b.0))
+                    names
+                        .name(&a.0)
+                        .cmp(names.name(&b.0))
                         .then_with(|| a.0.cmp(&b.0))
                 });
                 options.extend(named.into_iter().map(|(path, count)| ListPickerOption {
-                    label: project_option_label(Path::new(&path)),
+                    label: project_option_label(Path::new(&path), &names),
                     count: Some(count),
                     value: ListPickerValue::DeskProject(path),
                 }));
@@ -5590,7 +5625,7 @@ impl BoardModel {
             } else {
                 match &task.scope {
                     TaskScope::Project { path } => {
-                        format!(" · {}", crate::ui::render::short_project(path))
+                        format!(" · {}", self.project_name(Path::new(path)))
                     }
                     TaskScope::Global => " · desk".to_string(),
                 }
@@ -6755,6 +6790,7 @@ impl BoardModel {
             BoardPopup::CleanupConfirm => BoardInputMode::CleanupConfirm,
             BoardPopup::DispatchConfirm => BoardInputMode::DispatchConfirm,
             BoardPopup::BlockCard => BoardInputMode::BlockCard,
+            _ if self.project_title_edit.is_some() => BoardInputMode::EditProjectTitle,
             _ if self.project_picker.is_some() => BoardInputMode::ProjectPicker,
             _ if self.focused_surface() == FocusedSurface::Board
                 && self.input_mode == BoardInputMode::TaskPage =>
@@ -7922,18 +7958,25 @@ impl BoardModel {
 /// Compact label for one project path.
 ///
 /// Prefers the last path segment so the Projects header stays readable on narrow panes.
-pub fn project_option_label(path: &Path) -> String {
+pub fn project_option_label(path: &Path, names: &crate::scope::ProjectNames<'_>) -> String {
+    let lossy = path.to_string_lossy();
+    if let Some(title) = names.title(&lossy) {
+        return terminal_text(title);
+    }
     terminal_text(
         path.file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or(&path.to_string_lossy()),
+            .unwrap_or(&lossy),
     )
 }
 
-pub(super) fn project_scope_option_label(option: &ProjectScopeOption) -> String {
+pub(super) fn project_scope_option_label(
+    option: &ProjectScopeOption,
+    names: &crate::scope::ProjectNames<'_>,
+) -> String {
     match option {
         ProjectScopeOption::Home => "desk".to_string(),
-        ProjectScopeOption::Project(path) => project_option_label(path.as_path()),
+        ProjectScopeOption::Project(path) => project_option_label(path.as_path(), names),
     }
 }
 

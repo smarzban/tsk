@@ -25,7 +25,7 @@ tsk list
 | [`tsk dispatch`](#dispatch) | Launch a task's assigned agent in its own worktree |
 | [`tsk clean`](#clean) | Remove a dispatched task's worktree and merged branch |
 | [`tsk archive`](#archive) / [`unarchive`](#unarchive) | Hide a task, or put it back |
-| [`tsk project`](#project) | Archive or unarchive a project |
+| [`tsk project`](#project) | Archive, unarchive, or title a project |
 | [`tsk trash`](#trash) | Restore a deleted task |
 | [`tsk backup`](#backup) | Back the store up to git repositories |
 | [`tsk restore`](#restore) | Put a backed-up version of the store back |
@@ -65,13 +65,14 @@ Rows the board paints as `N1`, `N2`… are notices: starter tasks and release no
 | Flag | Scope |
 | --- | --- |
 | `--desk` | The desk |
-| `-p <name>`, `--project <name>` | The one project on the board with that basename, ignoring case |
+| `-p <name>`, `--project <name>` | The project with that [title](/docs/board/#project-titles), else the one project on the board with that basename, ignoring case |
 | `-p <path>` | An existing absolute directory (`/…`, `~/…`, `C:\…`, `~\…`) |
 | `--all` (`list` only) | Every project and the desk |
 
 - A bare name for `add` must match exactly one project the board knows: one with tasks, an archived one, or the repository you are in. Otherwise it refuses with `unknown-project`.
 - Only an absolute path to an existing directory creates a new project. Relative and missing paths refuse.
-- `tsk list -p <name>` lists nothing for an unknown name. A name that two or more projects share refuses with `unknown-project` and lists their paths: pass one of them instead.
+- `tsk list -p <name>` lists nothing for an unknown name. A name that two or more projects share refuses with `unknown-project` and lists their paths, a titled one as `Title (path)`: pass one of them instead.
+- A title matches before a basename, so `-p atlas` names the project titled `atlas` even when another project's folder is `atlas`.
 
 ## add
 
@@ -104,6 +105,7 @@ Output is `added <title>`, or `task already exists`. An assignee that is not a p
 | `outcome` | `created` or `existing` |
 | `id`, `number`, `title` | The task |
 | `project` | Project path, or `null` on the desk |
+| `project_title` | The project's title. Absent when it has none |
 | `assignee`, `assignee_kind` | As in [list](#json-fields) |
 
 **Refusals:** codes and exits in the [exit contract](#exit-contract).
@@ -182,7 +184,7 @@ tsk list --all --thread release --json
 - Tasks group by status in the order `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW`, and keep the board's order inside each status.
 - A row reads `- 12 Fix login timeout @claude ⎇ main #auth`. A blocked row adds `blocked: <why>` beneath.
 - With `--all`, each status groups its rows by project and desk. A sort other than `recent` lists the rows flat instead, each ending with its scope.
-- With `--group`, sub-headings name each group as the board paints it. Projects that share a name read as their shortest distinct path, such as `site-a/wordpress/wp-content`.
+- With `--group`, sub-headings name each group as the board paints it. A titled project reads as its title. Projects that share a name read as their shortest distinct path, such as `site-a/wordpress/wp-content`.
 - One task in full adds its notes, steps, `@assignee`, `⎇ base`, `after` and `before` tasks, `#thread`, and its latest five [paper trail](/docs/task-page/#paper-trail) entries.
 - Text wraps to the terminal width. Redirected output keeps each line whole.
 
@@ -196,6 +198,7 @@ tsk list --all --thread release --json
 | `number` | Task number: `12` for T12 |
 | `title`, `status` | Title and status |
 | `project` | Project path, or `null` on the desk |
+| `project_title` | The project's [title](/docs/board/#project-titles). Absent when it has none |
 | `thread`, `assignee`, `base` | Thread, assignee name, and explicit base branch, each `null` when unset. An assignee of `you` is you |
 | `assignee_kind` | `agent` for an agent profile, `person` for you or a named person, `null` when unassigned |
 | `after` | Tasks this one runs after, in order, each `{"task": 202, "done": false}`. A task gone from the board reads as done |
@@ -586,11 +589,13 @@ tsk unarchive T12
 
 ## project
 
-Archives or unarchives a whole project, by basename or path. Its tasks keep their statuses, and tasks archived on their own stay archived.
+Archives, unarchives, or titles a whole project, by title, basename, or path. Its tasks keep their statuses, and tasks archived on their own stay archived.
 
 ```text
 tsk project archive <name> [--state-dir <dir>]
 tsk project unarchive <name> [--state-dir <dir>]
+tsk project title <name> <title> [--state-dir <dir>]
+tsk project title <name> --clear [--state-dir <dir>]
 ```
 
 Output is `archived project <name>` or `unarchived project <name>`. Repeating it is safe. A name with no tasks refuses: `no project named <name> has tasks`. A name that two or more projects share refuses with `project <name> is ambiguous: <paths>`: pass one of the paths.
@@ -599,6 +604,20 @@ Output is `archived project <name>` or `unarchived project <name>`. Repeating it
 
 ```sh
 tsk project archive atlas
+```
+
+### Title
+
+`title` gives a project the name it shows under ([project titles](/docs/board/#project-titles)). `--clear` gives it back its folder name. Output is `titled project <title> (<path>)` or `cleared title of project <folder> (<path>)`. Repeating it is safe.
+
+| Code | Cause |
+| --- | --- |
+| `unknown-project` | No project of that name has tasks, or the name is ambiguous |
+| `title-taken` | Another project has that title, ignoring case: `title Site A is used by <path>` |
+| `invalid-title` | The title contains `/` or a control character, is `desk`, or is longer than 80 characters |
+
+```sh
+tsk project title ~/sites/a/wp-content "Site A"
 ```
 
 ## trash
@@ -788,7 +807,8 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 | `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `other-host`, `no-host`, `needs-git-project`, `unknown-base`, `no-default-base`, `host-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
 | `clean` | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `other-host`, `host-failed`; on Windows `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |
 | `archive`, `unarchive` | `unknown-task`, `soft-deleted-task` |
+| `project title` | `unknown-project`, `title-taken`, `invalid-title` |
 
-`project`, `trash`, `backup`, and `restore` refuse with a message only: `tsk <command>: <message>`, exit 1. A store that cannot be read or written exits 3 from `project`, `trash`, and `restore`. `dispatch` and `clean` print `store-error` as the code of an exit 3.
+`project archive`, `project unarchive`, `trash`, `backup`, and `restore` refuse with a message only: `tsk <command>: <message>`, exit 1. A store that cannot be read or written exits 3 from `project`, `trash`, and `restore`. `dispatch` and `clean` print `store-error` as the code of an exit 3.
 
 After an uncertain `add`, check `tsk list --all --json`, and `--done` or `--archived` when a match could be there. With a task number, read the task directly.

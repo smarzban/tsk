@@ -141,6 +141,7 @@ fn undo_action_word(domain: &DomainState, leaf: &UndoEntry) -> &'static str {
         UndoEntry::Steps { .. } => "steps",
         UndoEntry::HideAssignee { .. } => "remove",
         UndoEntry::ShowAssignee { .. } => "assignee",
+        UndoEntry::ProjectTitle { .. } => "project title",
         UndoEntry::Batch { .. } => "undo",
     }
 }
@@ -207,6 +208,12 @@ impl UndoNote {
                 UndoEntry::ShowAssignee { name } => Some(format!(
                     "{} removed from the list",
                     crate::domain::display_name(name)
+                )),
+                UndoEntry::ProjectTitle { path, previous, .. } => Some(format!(
+                    "project title undone \u{b7} {}",
+                    previous
+                        .as_deref()
+                        .unwrap_or_else(|| crate::ui::render::short_project(path))
                 )),
                 _ => None,
             },
@@ -337,6 +344,7 @@ fn stale_undo_message(domain: &DomainState, id: Uuid) -> String {
         Some(
             UndoEntry::HideAssignee { .. }
             | UndoEntry::ShowAssignee { .. }
+            | UndoEntry::ProjectTitle { .. }
             | UndoEntry::Batch { .. },
         )
         | None => "since the undoable action",
@@ -447,7 +455,37 @@ pub fn board_intent_may_persist(model: &BoardModel, intent: &BoardIntent) -> boo
                 | BoardIntent::ChainAfter
                 | BoardIntent::RemoveAssigneeName
                 | BoardIntent::ListPickerUndo
+                | BoardIntent::ConfirmProjectTitle
         )
+}
+
+/// `ctrl+u` on the picker's main tab: undo the top entry when it is a title change, else
+/// nothing (the main tab's `ctrl+u` stays inert for every other undo).
+fn undo_project_title_in_picker(
+    domain: &mut DomainState,
+    model: &mut BoardModel,
+) -> Result<IntentOutcome, DomainError> {
+    let Some(entry @ UndoEntry::ProjectTitle { .. }) = domain.last_undo().cloned() else {
+        return Ok(IntentOutcome::None);
+    };
+    let note = UndoNote::read(domain, &entry);
+    match domain.undo() {
+        Ok(()) => {}
+        Err(DomainError::StaleProjectUndo(path)) => {
+            model.set_message(format!(
+                "{} changed since its title change; nothing undone",
+                domain.project_name(&path)
+            ));
+            return Ok(IntentOutcome::None);
+        }
+        Err(error) => return Err(error),
+    }
+    model.sync_from_domain(domain);
+    model.refresh_project_picker();
+    if let Some(note) = note {
+        model.set_message(note.message(domain));
+    }
+    Ok(IntentOutcome::Persist)
 }
 
 /// The chrome row's lifetime rule, in one place.
@@ -754,6 +792,17 @@ fn apply_board_intent(
     }
 
     match intent {
+        BoardIntent::BeginEditProjectTitle => {
+            model.begin_project_title_edit();
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ConfirmProjectTitle => {
+            return super::project_title::confirm_project_title(domain, model);
+        }
+        BoardIntent::CancelProjectTitle => {
+            model.cancel_project_title_edit();
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::OpenCommandPalette => {
             if model.project_picker.is_some() {
                 return Ok(IntentOutcome::None);
@@ -1551,6 +1600,13 @@ fn apply_board_intent(
             }
             return Ok(IntentOutcome::None);
         }
+        // ctrl+e on a Projects view row edits that project's title.
+        BoardIntent::BeginEditTitle
+            if model.projects_overview() && model.input_mode == BoardInputMode::Normal =>
+        {
+            model.begin_project_title_edit();
+            return Ok(IntentOutcome::None);
+        }
         BoardIntent::BeginEditTitle | BoardIntent::BeginEditNotes | BoardIntent::BeginEditScope => {
             model.close_popup();
             model.clear_marks();
@@ -1640,7 +1696,8 @@ fn apply_board_intent(
         BoardIntent::EditInsertText(text) => {
             // Title and Thread stay one line in either form; Notes preserves pasted line
             // breaks. The step editor is one line by construction, so it flattens like Title.
-            let single_line = model.input_mode == BoardInputMode::EditStep
+            let single_line = model.project_title_edit.is_some()
+                || model.input_mode == BoardInputMode::EditStep
                 || model.input_mode() == BoardInputMode::BlockCard
                 || (model.input_mode != BoardInputMode::EditReply
                     && model.form.as_ref().is_some_and(|form| {
@@ -3875,8 +3932,7 @@ fn apply_board_intent(
             };
             model.popup = BoardPopup::None;
             model.session_default_scope = Some(TaskScope::Global);
-            let lossy = path.to_string_lossy().into_owned();
-            let name = crate::ui::render::short_project(&lossy);
+            let name = model.project_name(&path);
             model.set_message(format!(
                 "project {name} is archived · quick-add goes to your desk this session"
             ));
@@ -3913,8 +3969,8 @@ fn apply_board_intent(
                     // Unknown project and friends leave the picker untouched and paint
                     // the refusal on the status slot, per the status-slot rule.
                     if error == DomainError::UnknownProject(scope_path.clone()) {
-                        let short = crate::ui::render::short_project(&scope_path);
-                        model.set_message(format!("nothing to archive in {short}"));
+                        let name = domain.project_name(&scope_path);
+                        model.set_message(format!("nothing to archive in {name}"));
                     } else {
                         model.set_message(error.to_string());
                     }
@@ -3943,7 +3999,9 @@ fn apply_board_intent(
             // tab stays inert (undo exactly as before the feature).
             if let Some(picker) = model.project_picker.as_ref() {
                 if picker.tab == PickerTab::Main {
-                    return Ok(IntentOutcome::None);
+                    // A title change made in the picker undoes in the picker; every other
+                    // undo waits for the board.
+                    return undo_project_title_in_picker(domain, model);
                 }
                 let Some(path) = picker.archived.get(picker.archived_selected).cloned() else {
                     return Ok(IntentOutcome::None);
@@ -4001,6 +4059,14 @@ fn apply_board_intent(
                     model.set_message(stale_undo_message(domain, id));
                     return Ok(IntentOutcome::None);
                 }
+                if let DomainError::StaleProjectUndo(path) = error {
+                    model.sync_from_domain(domain);
+                    model.set_message(format!(
+                        "{} changed since its title change; nothing undone",
+                        domain.project_name(&path)
+                    ));
+                    return Ok(IntentOutcome::None);
+                }
                 return Err(error);
             }
             model.sync_from_domain(domain);
@@ -4020,6 +4086,14 @@ fn apply_board_intent(
 /// Every editing intent is inert in every other mode, exactly as the insert and backspace
 /// intents already were before the cursor arrived.
 fn edit_draft(model: &mut BoardModel, operation: impl FnOnce(&mut EditBuffer)) {
+    // The project title editor owns input over the picker and the Projects view. Any edit
+    // takes a refusal it painted down, and drops a save still waiting on a cancelled retry.
+    if let Some(edit) = model.project_title_edit.as_mut() {
+        operation(&mut edit.buffer);
+        edit.pending = None;
+        model.clear_message();
+        return;
+    }
     if model.input_mode == BoardInputMode::FormDropdown {
         return;
     }

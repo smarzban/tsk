@@ -102,6 +102,13 @@ pub enum UndoEntry {
     ShowAssignee {
         name: String,
     },
+    /// A project's title set, changed, or cleared; reversing puts `previous` back. It targets
+    /// no task: it is live while the project still carries `title`.
+    ProjectTitle {
+        path: String,
+        previous: Option<String>,
+        title: Option<String>,
+    },
     Batch {
         entries: Vec<UndoEntry>,
     },
@@ -129,7 +136,8 @@ impl UndoEntry {
                 | UndoEntry::SetAfter { .. }
                 | UndoEntry::SetOn { .. }
                 | UndoEntry::HideAssignee { .. }
-                | UndoEntry::ShowAssignee { .. } => leaves.push(entry),
+                | UndoEntry::ShowAssignee { .. }
+                | UndoEntry::ProjectTitle { .. } => leaves.push(entry),
             }
         }
 
@@ -196,7 +204,9 @@ impl UndoEntry {
                     expected_revision,
                     ..
                 } => Some((id, expected_revision)),
-                UndoEntry::HideAssignee { .. } | UndoEntry::ShowAssignee { .. } => None,
+                UndoEntry::HideAssignee { .. }
+                | UndoEntry::ShowAssignee { .. }
+                | UndoEntry::ProjectTitle { .. } => None,
                 UndoEntry::Batch { .. } => unreachable!("batches are flattened"),
             })
             .collect()
@@ -268,7 +278,9 @@ impl UndoEntry {
                     *expected_revision = to;
                 }
             }
-            UndoEntry::HideAssignee { .. } | UndoEntry::ShowAssignee { .. } => {}
+            UndoEntry::HideAssignee { .. }
+            | UndoEntry::ShowAssignee { .. }
+            | UndoEntry::ProjectTitle { .. } => {}
         }
     }
 
@@ -299,6 +311,10 @@ impl UndoEntry {
                 state.rehide_assignee(&name);
                 Ok(())
             }
+            UndoEntry::ProjectTitle { path, previous, .. } => {
+                state.restore_project_title(&path, previous);
+                Ok(())
+            }
             UndoEntry::Batch { entries } => {
                 for entry in entries.into_iter().rev() {
                     entry.reverse(state)?;
@@ -318,6 +334,21 @@ impl DomainState {
                 .targets()
                 .into_iter()
                 .all(|(id, revision)| self.get(id).is_some_and(|task| task.revision == revision))
+            && self.stale_project_title(entry).is_none()
+    }
+
+    /// The project of the first title step in `entry` whose project no longer carries the
+    /// title that step set: undoing it would overwrite another writer's change.
+    fn stale_project_title(&self, entry: &UndoEntry) -> Option<String> {
+        entry
+            .leaf_entries()
+            .into_iter()
+            .find_map(|leaf| match leaf {
+                UndoEntry::ProjectTitle { path, .. } if !self.name_leaf_is_live(leaf) => {
+                    Some(path.clone())
+                }
+                _ => None,
+            })
     }
 
     /// Apply the inverse of the last undo entry when its target revision still matches.
@@ -334,6 +365,9 @@ impl DomainState {
                 return Err(DomainError::StaleUndo(id));
             }
         }
+        if let Some(path) = self.stale_project_title(&entry) {
+            return Err(DomainError::StaleProjectUndo(path));
+        }
 
         self.pop_undo()
             .expect("undo entry remains present after revision checks")
@@ -346,7 +380,7 @@ impl DomainState {
         self.last_undo().is_some_and(|entry| {
             entry.targets().into_iter().all(|(id, expected_revision)| {
                 self.get(id).map(|task| task.revision) == Some(expected_revision)
-            })
+            }) && self.stale_project_title(entry).is_none()
         })
     }
 }

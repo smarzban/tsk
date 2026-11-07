@@ -46,7 +46,7 @@ Buy coffee !p !a
 | Token | Sets |
 | --- | --- |
 | `!p` | Desk |
-| `!p name` | The existing project with that basename, ignoring case |
+| `!p name` | The project with that one-word [title](/docs/board/#project-titles), else the existing project with that basename, ignoring case |
 | `!p /path` | An existing absolute directory, creating a project there if needed |
 | `!t` | No thread |
 | `!t name` | That thread |

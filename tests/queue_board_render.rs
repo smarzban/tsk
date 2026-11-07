@@ -11,7 +11,7 @@ use ratatui::style::Modifier;
 use ratatui::{Frame, Terminal};
 use tsk_tui::domain::{
     Dispatch, DomainState, HumanStatus, Notice, ProvenanceOrigin, Task, TaskEvent, TaskEventKind,
-    TaskScope,
+    TaskScope, STORE_FORMAT_VERSION,
 };
 use tsk_tui::ui::input::map_key;
 use tsk_tui::ui::queue::{self, BoardFilter, BoardLens, NavTab, QueueView};
@@ -377,6 +377,8 @@ fn fixture_model<'a>(tasks: &'a [Task], view: &'a QueueView) -> QueueFrameModel<
     fixture_model_on_tab(tasks, view, NavTab::Desk)
 }
 
+static NO_TITLES: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+
 fn fixture_model_on_tab<'a>(
     tasks: &'a [Task],
     view: &'a QueueView,
@@ -384,6 +386,9 @@ fn fixture_model_on_tab<'a>(
 ) -> QueueFrameModel<'a> {
     QueueFrameModel {
         tasks,
+        project_titles: &NO_TITLES,
+        project_title_edit: None,
+        title_edit_path: None,
         view,
         selection_id: Some(Uuid::from_u128(1)),
         marked_ids: std::collections::BTreeSet::new(),
@@ -639,6 +644,7 @@ fn full_thread_selector_and_dropdown_values_are_not_capped_to_the_old_prefix_bud
             title: Some("thread"),
             query: None,
             removable: false,
+            editing: None,
         };
         let dropdown = paint(width, height, &model).0.join("\n");
         assert!(
@@ -1231,6 +1237,7 @@ fn overlay_rows_are_padded_exact_no_base_bleed() {
             title: None,
             query: None,
             removable: false,
+            editing: None,
         };
         let (rows, _geo) = paint(80, 24, &model);
         let desk_row = rows
@@ -3423,6 +3430,7 @@ fn golden_scenes() -> Vec<GoldenScene> {
     )
     .expect("enter projects rail for golden");
     let projects_rail_rows = board_rows(&projects_model, 110, 30);
+    let (titled_index_rows, title_edit_rows, picker_title_edit_rows) = project_title_scenes(&tasks);
 
     let mut search_domain = DomainState::new();
     let mut search_model = BoardModel::from_tasks(tasks.clone(), Some(PathBuf::from("/repos/tsk")));
@@ -3710,10 +3718,81 @@ fn golden_scenes() -> Vec<GoldenScene> {
             rows: projects_rail_rows,
             width: 110,
         },
+        GoldenScene {
+            name: "projects_index_titled_110x30",
+            rows: titled_index_rows,
+            width: 110,
+        },
+        GoldenScene {
+            name: "projects_index_title_edit_110x30",
+            rows: title_edit_rows,
+            width: 110,
+        },
+        GoldenScene {
+            name: "project_picker_title_edit_78x24",
+            rows: picker_title_edit_rows,
+            width: 78,
+        },
     ]
     .into_iter()
     .chain(grouping_scenes())
     .collect()
+}
+
+/// The fixture board with `/repos/tsk` titled `Task Board` (T459): the Projects view
+/// with the title, the Projects view editing `/repos/herdr`'s title, and the project picker
+/// editing it.
+fn project_title_scenes(tasks: &[Task]) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let next = tasks
+        .iter()
+        .filter_map(|task| task.number)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let mut domain: DomainState = serde_json::from_value(serde_json::json!({
+        "format_version": STORE_FORMAT_VERSION,
+        "next_task_number": next,
+        "tasks": tasks,
+        "projects": { "/repos/tsk": { "archived": false, "title": "Task Board" } },
+        "undo_stack": [],
+    }))
+    .expect("titled fixture domain");
+    let new_model = |domain: &DomainState| {
+        let mut model = BoardModel::from_tasks(tasks.to_vec(), Some(PathBuf::from("/repos/tsk")));
+        model.sync_from_domain(domain);
+        model
+    };
+    let apply = |domain: &mut DomainState, model: &mut BoardModel, intent: BoardIntent| {
+        apply_intent(domain, model, intent, None).expect("title scene intent");
+    };
+    let edit_to = |domain: &mut DomainState, model: &mut BoardModel, text: &str| {
+        apply(domain, model, BoardIntent::BeginEditProjectTitle);
+        apply(domain, model, BoardIntent::EditDeleteToLineStart);
+        apply(domain, model, BoardIntent::EditInsertText(text.into()));
+    };
+
+    let mut index = new_model(&domain);
+    apply(
+        &mut domain,
+        &mut index,
+        BoardIntent::SelectNavTab(NavTab::Projects),
+    );
+    let titled = board_rows(&index, 110, 30);
+    while index.selected_project_row().map(|row| row.path) != Some("/repos/herdr".into()) {
+        apply(&mut domain, &mut index, BoardIntent::SelectNext);
+    }
+    edit_to(&mut domain, &mut index, "Herdr plugin");
+    let editing = board_rows(&index, 110, 30);
+
+    let mut picker = new_model(&domain);
+    apply(&mut domain, &mut picker, BoardIntent::OpenProjectSelector);
+    let herdr = tsk_tui::ui::board::ProjectScopeOption::Project(PathBuf::from("/repos/herdr"));
+    while picker.project_options()[picker.project_picker_index().expect("index")] != herdr {
+        apply(&mut domain, &mut picker, BoardIntent::ProjectPickerNext);
+    }
+    edit_to(&mut domain, &mut picker, "Herdr plugin");
+    let picker_editing = board_rows(&picker, 78, 24);
+    (titled, editing, picker_editing)
 }
 
 /// The fixture board with threads spread across projects and the desk, for the group /
@@ -5930,7 +6009,10 @@ fn picker_list_capacity_counts_the_rule_row_on_a_short_frame() {
     let label = match &model.project_options()[last] {
         tsk_tui::ui::board::ProjectScopeOption::Home => "desk".to_string(),
         tsk_tui::ui::board::ProjectScopeOption::Project(path) => {
-            tsk_tui::ui::board::project_option_label(path.as_path())
+            tsk_tui::ui::board::project_option_label(
+                path.as_path(),
+                &tsk_tui::scope::ProjectNames::untitled(),
+            )
         }
     };
     while model.project_picker_index() != Some(last) {

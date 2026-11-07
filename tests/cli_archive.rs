@@ -397,3 +397,147 @@ fn project_archive_refuses_a_basename_shared_by_two_projects() {
     assert_eq!(one.code, 0, "{one:?}");
     assert_eq!(one.stdout, "archived project wp-content\n");
 }
+
+/// `tsk project title`: a title names the project for `-p`, the listings, and the project
+/// verbs; a second project cannot take it in any case; `--clear` gives the folder name back.
+#[test]
+fn project_title_sets_resolves_lists_refuses_a_duplicate_and_clears() {
+    let dir = temp_state_dir("project-title");
+    let _guard = TempDirGuard(dir.clone());
+    let state_dir = dir.to_string_lossy().into_owned();
+    let mut paths = Vec::new();
+    for site in ["site-a", "site-b"] {
+        let project = dir.join(site).join("wordpress").join("wp-content");
+        fs::create_dir_all(&project).expect("create project directory");
+        let path = project.to_string_lossy().into_owned();
+        let added = cli(vec![
+            "tsk".into(),
+            "add".into(),
+            "-t".into(),
+            format!("{site} task"),
+            "-p".into(),
+            path.clone(),
+            "--state-dir".into(),
+            state_dir.clone(),
+        ]);
+        assert_eq!(added.code, 0, "{:?}", added.stderr);
+        paths.push(path);
+    }
+    let run = |args: &[&str]| {
+        let mut argv: Vec<String> = vec!["tsk".into()];
+        argv.extend(args.iter().map(|arg| arg.to_string()));
+        argv.extend(["--state-dir".to_string(), state_dir.clone()]);
+        cli(argv)
+    };
+
+    let titled = run(&["project", "title", &paths[0], "Site A"]);
+    assert_eq!(titled.code, 0, "{titled:?}");
+    assert_eq!(
+        titled.stdout,
+        format!("titled project Site A ({})\n", paths[0])
+    );
+    // Repeating it is safe and changes nothing.
+    assert_eq!(run(&["project", "title", &paths[0], "Site A"]).code, 0);
+
+    // Titles are unique across projects, ignoring case; the refusal names the holder.
+    let taken = run(&["project", "title", &paths[1], "site a"]);
+    assert_eq!(taken.code, 1, "{taken:?}");
+    assert_eq!(
+        taken.stderr,
+        format!(
+            "tsk project: title-taken: title site a is used by {}\n",
+            paths[0]
+        )
+    );
+    let invalid = run(&["project", "title", &paths[1], "desk"]);
+    assert_eq!(invalid.code, 1, "{invalid:?}");
+    assert!(
+        invalid.stderr.starts_with("tsk project: invalid-title: "),
+        "{invalid:?}"
+    );
+
+    // -p takes the title, ignoring case.
+    let listed = run(&["list", "-p", "site A", "--json"]);
+    assert_eq!(listed.code, 0, "{listed:?}");
+    let rows: serde_json::Value = serde_json::from_str(&listed.stdout).expect("json");
+    assert_eq!(rows.as_array().expect("rows").len(), 1);
+    assert_eq!(rows[0]["title"], "site-a task");
+    assert_eq!(rows[0]["project"], paths[0].as_str());
+    assert_eq!(rows[0]["project_title"], "Site A");
+
+    // An untitled project's rows carry no project_title.
+    let all = run(&["list", "--all", "--json"]);
+    let rows: serde_json::Value = serde_json::from_str(&all.stdout).expect("json");
+    let site_b = rows
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["title"] == "site-b task")
+        .expect("site-b row");
+    assert!(site_b.get("project_title").is_none(), "{site_b}");
+
+    // Grouped text names the titled project by its title; the basename is no longer shared
+    // on screen, so the other project keeps its folder name.
+    let grouped = run(&["list", "--all", "--group", "project"]);
+    assert_eq!(grouped.code, 0, "{grouped:?}");
+    assert!(grouped.stdout.contains("  Site A\n"), "{}", grouped.stdout);
+    assert!(
+        grouped.stdout.contains("  wp-content\n"),
+        "{}",
+        grouped.stdout
+    );
+
+    // The basename both share still refuses, listing the titled one as `Title (path)`.
+    let ambiguous = run(&["project", "archive", "wp-content"]);
+    assert_eq!(ambiguous.code, 1, "{ambiguous:?}");
+    assert_eq!(
+        ambiguous.stderr,
+        format!(
+            "tsk project: project wp-content is ambiguous: Site A ({}), {}\n",
+            paths[0], paths[1]
+        )
+    );
+    // The project verbs take the title too.
+    let archived = run(&["project", "archive", "Site A"]);
+    assert_eq!(archived.stdout, "archived project Site A\n");
+    assert_eq!(run(&["project", "unarchive", "site a"]).code, 0);
+
+    let cleared = run(&["project", "title", "Site A", "--clear"]);
+    assert_eq!(cleared.code, 0, "{cleared:?}");
+    assert_eq!(
+        cleared.stdout,
+        format!("cleared title of project wp-content ({})\n", paths[0])
+    );
+    let store = TaskStore::new(&dir).load().expect("load store");
+    assert!(store.projects().is_empty(), "no record is left behind");
+}
+
+#[test]
+fn project_title_usage_errors_exit_2_and_an_unknown_project_refuses() {
+    let dir = temp_state_dir("project-title-usage");
+    let _guard = TempDirGuard(dir.clone());
+    let run = |args: &[&str]| {
+        let mut argv: Vec<String> = vec!["tsk".into()];
+        argv.extend(args.iter().map(|arg| arg.to_string()));
+        argv.extend([
+            "--state-dir".to_string(),
+            dir.to_string_lossy().into_owned(),
+        ]);
+        cli(argv)
+    };
+    for args in [
+        &["project", "title", "atlas"][..],
+        &["project", "title", "atlas", "Atlas", "--clear"][..],
+        &["project", "archive", "atlas", "--clear"][..],
+        &["project", "title"][..],
+    ] {
+        let out = run(args);
+        assert_eq!(out.code, 2, "{args:?}: {out:?}");
+    }
+    let unknown = run(&["project", "title", "atlas", "Atlas"]);
+    assert_eq!(unknown.code, 1, "{unknown:?}");
+    assert_eq!(
+        unknown.stderr,
+        "tsk project: unknown-project: no project named atlas has tasks\n"
+    );
+}

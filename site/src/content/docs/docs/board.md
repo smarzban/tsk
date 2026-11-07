@@ -57,6 +57,16 @@ The project picker and the Projects view share one order:
 - On the Projects view, `s` or the `sort: name ▾` control opens the orders. The `here` project stays first.
 - The choice lasts for this session only.
 
+### Project titles
+
+A project shows under its folder name until you give it a title. A title replaces the folder name everywhere tsk names the project: tabs, picker, Projects view, row labels, and `tsk list`. The footer and `--json` keep the full path.
+
+1. Select the project on the Projects view or in the project picker, and press `ctrl+e`. On a project tab, the palette's **set project title…** opens the picker on that project.
+2. Edit the name in place. The footer shows the project's full path.
+3. Press `Enter` to save, or `Esc` to cancel. Saving an empty name removes the title.
+
+Titles are unique, ignoring case. A taken title is refused on the status row, such as `title Site A is used by ~/sites/a/wp-content`, and the editor stays open. A title cannot contain `/` or be `desk`. A project with no tasks yet, such as a `here` row before its first task, cannot take one. `ctrl+u` undoes a title change. `-p` accepts a title wherever it accepts a project name ([scope](/docs/cli/#scope)), and so does quick-add's `!p` for a one-word title.
+
 ## Search
 
 Press `/` to filter the rows the current tab shows. Typing filters at once: empty sections disappear, and section counts show only matches.
@@ -336,6 +346,7 @@ Press `:` on the board or a task page and type to find an action. Matching takes
 | Add task, undo, show / hide done drawer, show all keys, quit | Always |
 | Group by…, sort by…, fold / unfold group, hide agent messages | A task list has focus |
 | Sort by… | The Projects view has focus |
+| Set project title… | A project tab or a Projects view row has focus |
 | Set open/ready/started/blocked/review, edit notes, move to project / desk, delete task | A task is selected |
 | Set assignee, set base, set after (wait for)… | A task is selected |
 | Set waiting on… | A task with an open block or review is selected or marked |

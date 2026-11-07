@@ -158,7 +158,7 @@ pub fn lift_quick_add_tokens(
                         if domain.is_project_archived(&resolved) {
                             return Err(format!(
                                 "project {} is archived",
-                                crate::ui::render::short_project(&resolved)
+                                domain.project_name(&resolved)
                             ));
                         }
                         TaskScope::Project { path: resolved }

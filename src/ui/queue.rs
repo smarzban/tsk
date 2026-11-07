@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use uuid::Uuid;
 
 use crate::domain::{BlockOn, HumanStatus, Task, TaskScope};
-use crate::scope::PathIdentityCache;
+use crate::scope::{PathIdentityCache, ProjectNames};
 
 /// The board's persistent navigation destinations.
 ///
@@ -191,11 +191,11 @@ pub enum ProjectFilter {
 
 impl ProjectFilter {
     /// The label the desk's filter control paints for this dimension, `None` when unset.
-    pub fn label(&self) -> Option<String> {
+    pub fn label(&self, names: &ProjectNames<'_>) -> Option<String> {
         match self {
             ProjectFilter::All => None,
             ProjectFilter::Desk => Some("desk".to_string()),
-            ProjectFilter::Named(path) => Some(short_project_name(path).to_string()),
+            ProjectFilter::Named(path) => Some(names.name(path).to_string()),
         }
     }
 }
@@ -217,9 +217,9 @@ impl DeskFilter {
 
     /// The desk filter control's label: `all`, or the active choices, e.g.
     /// `tsk #release @claude`.
-    pub fn label(&self) -> String {
+    pub fn label(&self, names: &ProjectNames<'_>) -> String {
         let mut parts = Vec::new();
-        if let Some(project) = self.project.label() {
+        if let Some(project) = self.project.label(names) {
             parts.push(project);
         }
         if self.thread != ThreadFilter::All {
@@ -374,6 +374,7 @@ pub fn sort_projects<T: Clone>(
     path_of: impl Fn(&T) -> String,
     tasks: &[Task],
     sort: ProjectSort,
+    names: &ProjectNames<'_>,
 ) {
     let identities = PathIdentityCache::default();
     // Earliest task per stored spelling first, so aliases are matched once per spelling.
@@ -396,7 +397,7 @@ pub fn sort_projects<T: Clone>(
                 .filter(|(spelling, _)| identities.equivalent(spelling, &path))
                 .map(|(_, at)| *at)
                 .min();
-            (short_project_name(&path).to_lowercase(), path, first, index)
+            (names.name(&path).to_lowercase(), path, first, index)
         })
         .collect();
     keyed.sort_by(|a, b| {
@@ -1425,6 +1426,7 @@ pub fn arrange_view(
     lens: BoardLens<'_>,
     group: GroupBy,
     sort: SortBy,
+    names: &ProjectNames<'_>,
 ) {
     view.group = group;
     if group == GroupBy::None && sort == SortBy::Recent {
@@ -1448,7 +1450,7 @@ pub fn arrange_view(
             .iter()
             .filter_map(|id| by_id.get(id).copied())
             .collect();
-        sort_rows(&mut rows, sort);
+        sort_rows(&mut rows, sort, names);
         // The desk's ON DECK and inbox hold desk tasks only: one project, nothing to group.
         let desk_deck = matches!(section.kind, SectionKind::OnDeck | SectionKind::Inbox)
             && matches!(lens, BoardLens::Desk);
@@ -1461,7 +1463,7 @@ pub fn arrange_view(
             section.task_ids = rows.iter().map(|task| task.id).collect();
             continue;
         }
-        let buckets = bucket_rows(rows, group, &identities);
+        let buckets = bucket_rows(rows, group, &identities, names);
         section.groups = buckets
             .into_iter()
             .map(|(key, label, rows)| QueueGroup {
@@ -1489,10 +1491,11 @@ fn bucket_rows<'a>(
     rows: Vec<&'a Task>,
     group: GroupBy,
     identities: &PathIdentityCache,
+    names: &ProjectNames<'_>,
 ) -> Vec<(String, String, Vec<&'a Task>)> {
     let mut buckets: Vec<(String, String, Vec<&Task>)> = Vec::new();
     for task in rows {
-        let (key, label) = group_key(task, group);
+        let (key, label) = group_key(task, group, names);
         // One project, one group: path spellings of the same repository (a trailing
         // slash, `/tmp` vs `/private/tmp`, a symlink) share a bucket, keyed by the
         // smallest spelling so the fold id survives re-sorting.
@@ -1523,23 +1526,24 @@ fn bucket_rows<'a>(
 /// Sort and group one status's rows the way the board arranges a section, for surfaces
 /// outside the board (`tsk list --group/--sort`). Rows arrive in [`cmp_within_status`]
 /// order; ungrouped output is one unlabeled group.
-pub fn arrange_rows(
-    mut rows: Vec<&Task>,
+pub fn arrange_rows<'a>(
+    mut rows: Vec<&'a Task>,
     group: GroupBy,
     sort: SortBy,
-) -> Vec<(Option<String>, Vec<&Task>)> {
-    sort_rows(&mut rows, sort);
+    names: &ProjectNames<'_>,
+) -> Vec<(Option<String>, Vec<&'a Task>)> {
+    sort_rows(&mut rows, sort, names);
     if group == GroupBy::None {
         return vec![(None, rows)];
     }
-    bucket_rows(rows, group, &PathIdentityCache::default())
+    bucket_rows(rows, group, &PathIdentityCache::default(), names)
         .into_iter()
         .map(|(_, label, rows)| (Some(label), rows))
         .collect()
 }
 
 /// A task's group identity and painted label for one grouping dimension.
-fn group_key(task: &Task, group: GroupBy) -> (String, String) {
+fn group_key(task: &Task, group: GroupBy, names: &ProjectNames<'_>) -> (String, String) {
     match (group, &task.scope, task.thread.as_deref()) {
         (GroupBy::Project, TaskScope::Project { path }, _) => (
             format!(
@@ -1548,7 +1552,7 @@ fn group_key(task: &Task, group: GroupBy) -> (String, String) {
                     |character| character == '/' || (cfg!(windows) && character == '\\')
                 )
             ),
-            short_project_name(path).to_string(),
+            names.name(path).to_string(),
         ),
         (GroupBy::Project, TaskScope::Global, _) => ("desk".to_string(), "desk".to_string()),
         (GroupBy::Thread, _, Some(thread)) => {
@@ -1572,12 +1576,12 @@ fn group_key(task: &Task, group: GroupBy) -> (String, String) {
 /// Stable in-place sort by the chosen key. Desk tasks sort after projects, unthreaded
 /// tasks after threads, and unassigned tasks after assigned ones, with yours first; notice
 /// rows lead regardless.
-fn sort_rows(rows: &mut [&Task], sort: SortBy) {
+fn sort_rows(rows: &mut [&Task], sort: SortBy, names: &ProjectNames<'_>) {
     let key = |task: &Task| -> (bool, String) {
         match sort {
             SortBy::Recent => (false, String::new()),
             SortBy::Project => match &task.scope {
-                TaskScope::Project { path } => (false, short_project_name(path).to_lowercase()),
+                TaskScope::Project { path } => (false, names.name(path).to_lowercase()),
                 TaskScope::Global => (true, String::new()),
             },
             SortBy::Thread => match task.thread.as_deref() {
@@ -1605,10 +1609,7 @@ fn sort_rows(rows: &mut [&Task], sort: SortBy) {
 
 /// Basename of a project path, for labels and search.
 pub fn short_project_name(path: &str) -> &str {
-    path.trim_end_matches(|character| character == '/' || (cfg!(windows) && character == '\\'))
-        .rsplit(|character| character == '/' || (cfg!(windows) && character == '\\'))
-        .find(|component| !component.is_empty())
-        .unwrap_or(path)
+    crate::scope::project_basename(path)
 }
 
 #[cfg(test)]
@@ -3040,6 +3041,7 @@ mod tests {
             BoardLens::Desk,
             GroupBy::Project,
             SortBy::Recent,
+            &ProjectNames::untitled(),
         );
         let motion = section(&view, SectionKind::InMotion);
         assert_eq!(labels(motion), vec!["beta", "desk", "alpha"]);
@@ -3094,6 +3096,7 @@ mod tests {
             BoardLens::Desk,
             GroupBy::Thread,
             SortBy::Project,
+            &ProjectNames::untitled(),
         );
         let need = section(&view, SectionKind::NeedsYou);
         assert_eq!(labels(need), vec!["#ship", "no thread", "#api"]);
@@ -3122,6 +3125,7 @@ mod tests {
             BoardLens::Desk,
             GroupBy::Project,
             SortBy::Title,
+            &ProjectNames::untitled(),
         );
         let deck = section(&view, SectionKind::OnDeck);
         assert!(
@@ -3165,6 +3169,7 @@ mod tests {
             BoardLens::Desk,
             GroupBy::Thread,
             SortBy::Recent,
+            &ProjectNames::untitled(),
         );
         let inbox = section(&view, SectionKind::Inbox);
         assert_eq!(labels(inbox), vec!["#ship", "no thread"]);
@@ -3203,6 +3208,7 @@ mod tests {
             BoardLens::Desk,
             GroupBy::Project,
             SortBy::Title,
+            &ProjectNames::untitled(),
         );
         for kind in [SectionKind::Done, SectionKind::Archived] {
             let section = section(&view, kind);
@@ -3228,6 +3234,7 @@ mod tests {
             BoardLens::Desk,
             GroupBy::Project,
             SortBy::Recent,
+            &ProjectNames::untitled(),
         );
         let groups = section(&view, SectionKind::InMotion).groups.clone();
         assert_eq!(
@@ -3297,7 +3304,7 @@ mod tests {
             thread: ThreadFilter::Named("ship".into()),
             assignee: AssigneeFilter::All,
         };
-        assert_eq!(filter.label(), "a #ship");
+        assert_eq!(filter.label(&ProjectNames::untitled()), "a #ship");
         let view = desk_view(&tasks, &filter);
         assert_eq!(all_listed_ids(&view), vec![Uuid::from_u128(1)]);
         assert_eq!(view.counts.in_motion, 1);
@@ -3313,6 +3320,9 @@ mod tests {
             all_listed_ids(&desk_view(&tasks, &desk_only)),
             vec![Uuid::from_u128(4)]
         );
-        assert_eq!(DeskFilter::default().label(), "all");
+        assert_eq!(
+            DeskFilter::default().label(&ProjectNames::untitled()),
+            "all"
+        );
     }
 }

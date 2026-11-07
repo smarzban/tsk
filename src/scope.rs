@@ -66,6 +66,64 @@ impl PathIdentityCache {
     }
 }
 
+/// The folder name of a project path: its last non-empty component.
+pub fn project_basename(path: &str) -> &str {
+    path.trim_end_matches(is_path_separator)
+        .rsplit(is_path_separator)
+        .find(|component| !component.is_empty())
+        .unwrap_or(path)
+}
+
+/// The names projects show under: a titled project its title, every other project its
+/// folder name. Built for one query or one paint from the store's titles; spellings that
+/// alias a titled project's stored path resolve to its title too.
+#[derive(Debug, Default)]
+pub struct ProjectNames<'a> {
+    titles: Option<&'a BTreeMap<String, String>>,
+    identities: PathIdentityCache,
+    resolved: RefCell<BTreeMap<String, Option<&'a str>>>,
+}
+
+impl<'a> ProjectNames<'a> {
+    /// Names from `titles`, stored path to title.
+    pub fn new(titles: &'a BTreeMap<String, String>) -> Self {
+        Self {
+            titles: Some(titles),
+            ..Self::default()
+        }
+    }
+
+    /// No project is titled: every project shows its folder name.
+    pub fn untitled() -> Self {
+        Self::default()
+    }
+
+    /// The title of the project at `path`, if it has one.
+    pub fn title(&self, path: &str) -> Option<&'a str> {
+        let titles = self.titles.filter(|titles| !titles.is_empty())?;
+        if let Some(title) = titles.get(path) {
+            return Some(title.as_str());
+        }
+        if let Some(known) = self.resolved.borrow().get(path) {
+            return *known;
+        }
+        let found = titles
+            .iter()
+            .find(|(stored, _)| self.identities.equivalent(stored, path))
+            .map(|(_, title)| title.as_str());
+        self.resolved.borrow_mut().insert(path.to_string(), found);
+        found
+    }
+
+    /// The name the project at `path` shows under: its title, else its folder name.
+    pub fn name<'b>(&self, path: &'b str) -> &'b str
+    where
+        'a: 'b,
+    {
+        self.title(path).unwrap_or_else(|| project_basename(path))
+    }
+}
+
 #[cfg(not(windows))]
 fn lexical_path_eq(a: &str, b: &str) -> bool {
     a == b
@@ -85,7 +143,7 @@ fn lexical_path_eq(a: &str, b: &str) -> bool {
     unsafe { CompareStringOrdinal(a.as_ptr(), a_len, b.as_ptr(), b_len, 1) == CSTR_EQUAL }
 }
 
-fn is_path_separator(character: char) -> bool {
+pub(crate) fn is_path_separator(character: char) -> bool {
     character == '/' || (cfg!(windows) && character == '\\')
 }
 
@@ -412,7 +470,8 @@ mod tests {
 pub enum ProjectResolveError {
     /// A bare basename matches no known project.
     Unknown,
-    /// A bare basename matches more than one known project, in sorted path order.
+    /// A bare basename matches more than one known project, in sorted path order. A titled
+    /// candidate reads `Title (path)`.
     Ambiguous(Vec<String>),
     /// A path token is relative or does not name an existing directory.
     NoDirectory(String),
@@ -447,9 +506,11 @@ pub fn resolve_flag_scope(
     }
 }
 
-/// Resolve a project token against task, registered-project, and invocation paths.
+/// Resolve a project token against project titles, task, registered-project, and invocation
+/// paths.
 ///
-/// Bare tokens must have one ASCII-case-insensitive basename match. Path tokens must be
+/// A project title matches first, ignoring case: titles are deliberate and unique.
+/// Bare tokens must otherwise have one ASCII-case-insensitive basename match. Path tokens must be
 /// absolute existing directories; `~/…` expands through `HOME`. An equivalent stored path
 /// wins over a new spelling so capture never rewrites an existing project identity.
 pub fn resolve_project_path(
@@ -457,6 +518,9 @@ pub fn resolve_project_path(
     domain: &DomainState,
     snapshot: Option<&InvocationSnapshot>,
 ) -> Result<String, ProjectResolveError> {
+    if let Some(path) = domain.project_with_title(token, None) {
+        return Ok(path.to_string());
+    }
     let candidates = project_candidates(domain, snapshot);
     if has_path_separator(token) || token == "~" {
         let expanded = expand_home(token);
@@ -474,8 +538,21 @@ pub fn resolve_project_path(
         // A launch-repository match lands on the stored project it aliases, if any.
         [path] => Ok(stored_spelling(domain, path).unwrap_or_else(|| path.clone())),
         [] => Err(ProjectResolveError::Unknown),
-        _ => Err(ProjectResolveError::Ambiguous(matches)),
+        _ => Err(ProjectResolveError::Ambiguous(ambiguous_labels(
+            domain, matches,
+        ))),
     }
+}
+
+/// Ambiguous candidates as a refusal lists them: a titled one as `Title (path)`.
+fn ambiguous_labels(domain: &DomainState, paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .map(|path| match domain.project_title(&path) {
+            Some(title) => format!("{title} ({path})"),
+            None => path,
+        })
+        .collect()
 }
 
 /// The stored spelling of a project equivalent to `path`, exact spelling first.
@@ -514,6 +591,9 @@ pub(crate) fn resolve_permissive_project_path(
     domain: &DomainState,
     snapshot: Option<&InvocationSnapshot>,
 ) -> Result<String, ProjectResolveError> {
+    if let Some(path) = domain.project_with_title(token, None) {
+        return Ok(path.to_string());
+    }
     if has_path_separator(token) {
         return Ok(token.to_string());
     }
@@ -551,7 +631,9 @@ pub(crate) fn resolve_permissive_project_path(
         [] => Ok(token.to_string()),
         _ => {
             matches.sort();
-            Err(ProjectResolveError::Ambiguous(matches))
+            Err(ProjectResolveError::Ambiguous(ambiguous_labels(
+                domain, matches,
+            )))
         }
     }
 }
@@ -661,6 +743,47 @@ fn expand_home_from(token: &str, home: Option<&std::ffi::OsStr>) -> String {
         expanded.push(remainder);
     }
     expanded.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod project_title_tests {
+    use super::*;
+
+    #[test]
+    fn permissive_resolution_takes_a_title_first_and_labels_ambiguity() {
+        let mut domain = DomainState::new();
+        for path in ["/w/site-a/wp-content", "/w/site-b/wp-content", "/w/atlas"] {
+            domain
+                .create(
+                    "seed",
+                    None,
+                    TaskScope::Project { path: path.into() },
+                    crate::domain::ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+        }
+        domain
+            .set_project_title("/w/site-b/wp-content", "Atlas")
+            .expect("title");
+        assert_eq!(
+            resolve_permissive_project_path("atlas", &domain, None),
+            Ok("/w/site-b/wp-content".to_string()),
+            "the title beats /w/atlas's folder name"
+        );
+        assert_eq!(
+            resolve_permissive_project_path("wp-content", &domain, None),
+            Err(ProjectResolveError::Ambiguous(vec![
+                "/w/site-a/wp-content".to_string(),
+                "Atlas (/w/site-b/wp-content)".to_string(),
+            ]))
+        );
+        assert_eq!(ProjectNames::untitled().name("/w/atlas/"), "atlas");
+        let titles = domain.project_titles();
+        let names = ProjectNames::new(&titles);
+        assert_eq!(names.name("/w/site-b/wp-content"), "Atlas");
+        assert_eq!(names.name("/w/site-a/wp-content"), "wp-content");
+    }
 }
 
 #[cfg(test)]

@@ -49,8 +49,8 @@ type MigrationStep = fn(serde_json::Value) -> Result<serde_json::Value, StoreErr
 ///
 /// v1 documents gain the empty per-project record map, v2 documents the notice
 /// counter, v3 documents rewrite ready to open, v4 documents gain batch undo, v5
-/// documents gain everything [`migrate_v5_to_v6`] lists, and v15 documents gain the dispatch
-/// host ([`migrate_v15_to_v16`]).
+/// documents gain everything [`migrate_v5_to_v6`] lists, v15 documents gain the dispatch
+/// host ([`migrate_v15_to_v16`]), and v16 documents project titles ([`migrate_v16_to_v17`]).
 ///
 /// v7..=v15 were dispatch dev builds whose layout equals v6, and released v6 binaries open
 /// them as v6. Their steps change nothing, so a dev document migrates exactly like a v6 one,
@@ -71,6 +71,7 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_dev_layout,
     migrate_dev_layout,
     migrate_v15_to_v16,
+    migrate_v16_to_v17,
 ];
 
 const _: () = assert!(
@@ -197,6 +198,12 @@ fn migrate_v15_to_v16(mut document: serde_json::Value) -> Result<serde_json::Val
             .entry("host".to_string())
             .or_insert_with(|| serde_json::json!(host));
     }
+    Ok(document)
+}
+
+/// v16 -> v17: a project record gains an optional `title`. No existing wire value changes,
+/// so a v16 document reads as v17 as it is, and a v16 binary refuses a v17 store.
+fn migrate_v16_to_v17(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
     Ok(document)
 }
 
@@ -2105,7 +2112,7 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join(STATE_FILE)).expect("read"))
                 .expect("json");
-        assert_eq!(value["format_version"], 16);
+        assert_eq!(value["format_version"], 17);
         assert_eq!(value["next_notice_number"], 1);
     }
 
@@ -2123,7 +2130,7 @@ mod tests {
             error,
             StoreError::UnsupportedFormat {
                 found: 0,
-                supported: 16
+                supported: 17
             }
         ));
         let on_disk: serde_json::Value =
@@ -2134,7 +2141,7 @@ mod tests {
 
     #[test]
     fn load_refuses_noncurrent_format_without_rewriting() {
-        for format_version in [0, 17] {
+        for format_version in [0, 18] {
             let dir = temp_dir("format-noncurrent");
             let _guard = TempDirGuard(dir.clone());
             let document = serde_json::json!({
@@ -2152,7 +2159,7 @@ mod tests {
                     error,
                     StoreError::UnsupportedFormat {
                         found,
-                        supported: 16
+                        supported: 17
                     } if found == format_version
                 ),
                 "{error}"
@@ -2169,7 +2176,7 @@ mod tests {
         let dir = temp_dir("format-save-state");
         let _guard = TempDirGuard(dir.clone());
         let state: DomainState = serde_json::from_value(serde_json::json!({
-            "format_version": 17,
+            "format_version": 18,
             "next_task_number": 1,
             "tasks": [],
             "undo_stack": []
@@ -2182,8 +2189,8 @@ mod tests {
         assert!(matches!(
             error,
             StoreError::UnsupportedFormat {
-                found: 17,
-                supported: 16
+                found: 18,
+                supported: 17
             }
         ));
         assert!(!dir.join(STATE_FILE).exists());
@@ -2197,7 +2204,7 @@ mod tests {
         store.save(&DomainState::new()).expect("seed current store");
         let before = fs::read(dir.join(STATE_FILE)).expect("read current store");
         let mut local: DomainState = serde_json::from_value(serde_json::json!({
-            "format_version": 17,
+            "format_version": 18,
             "next_task_number": 1,
             "tasks": [],
             "undo_stack": []
@@ -2210,8 +2217,8 @@ mod tests {
         assert!(matches!(
             error,
             StoreError::UnsupportedFormat {
-                found: 17,
-                supported: 16
+                found: 18,
+                supported: 17
             }
         ));
         assert_eq!(
@@ -2225,7 +2232,7 @@ mod tests {
         let dir = temp_dir("format-save-newer");
         let _guard = TempDirGuard(dir.clone());
         let newer = serde_json::json!({
-            "format_version": 17,
+            "format_version": 18,
             "tasks": [],
             "undo_stack": []
         });
@@ -2238,8 +2245,8 @@ mod tests {
             matches!(
                 error,
                 StoreError::UnsupportedFormat {
-                    found: 17,
-                    supported: 16
+                    found: 18,
+                    supported: 17
                 }
             ),
             "{error}"
@@ -3570,7 +3577,7 @@ mod tests {
 
     #[test]
     fn load_refuses_a_higher_version_and_changes_nothing_in_the_state_dir() {
-        for (format_version, supported) in [(17u32, 16u32), (18, 17)] {
+        for (format_version, supported) in [(18u32, 17u32), (19, 17)] {
             let dir = temp_dir("format-higher");
             let _guard = TempDirGuard(dir.clone());
             let document = serde_json::json!({
@@ -3591,7 +3598,7 @@ mod tests {
             assert!(
                 matches!(
                     error,
-                    StoreError::UnsupportedFormat { found, supported: 16 } if found == format_version
+                    StoreError::UnsupportedFormat { found, supported: 17 } if found == format_version
                 ),
                 "{error}"
             );

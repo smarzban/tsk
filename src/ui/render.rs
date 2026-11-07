@@ -4,7 +4,7 @@
 //! `Modifier::{BOLD, DIM, UNDERLINED, REVERSED}`, plus [`draw_queue_frame`] for the
 //! the deck-only board skeleton.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -818,6 +818,8 @@ pub enum QueueOverlay<'a> {
         query: Option<&'a str>,
         /// The assignee picker's cursor is on a person: the legend offers `ctrl+x remove`.
         removable: bool,
+        /// The project title editor on the highlighted row: its draft and cursor (characters).
+        editing: Option<(&'a str, usize)>,
     },
     /// The task picker: a search box with the chosen tasks pinned above the matches.
     AfterPicker(AfterPickerPaint<'a>),
@@ -963,6 +965,13 @@ pub struct RowReplyPaint<'a> {
 pub struct QueueFrameModel<'a> {
     /// Task snapshot (lookups by id; soft-deleted rows are already absent from `view`).
     pub tasks: &'a [Task],
+    /// Titled projects, stored path to title: a titled project paints its title.
+    pub project_titles: &'a BTreeMap<String, String>,
+    /// The project title editor on the Projects view's cursor row: its draft and cursor.
+    pub project_title_edit: Option<(&'a str, usize)>,
+    /// The full path of the project a title editor (row or picker) renames: the idle status
+    /// row names it while the editor is open.
+    pub title_edit_path: Option<&'a str>,
     /// Precomputed sections + status-line counts.
     pub view: &'a QueueView,
     /// Selected task id, if any.
@@ -2487,10 +2496,27 @@ fn paint_overlay(
             title,
             query,
             removable,
+            editing,
         } => {
-            let legend = removable.then_some(ASSIGNEE_PERSON_FOOTER);
+            let legend = if editing.is_some() {
+                Some(PROJECT_TITLE_EDIT_FOOTER)
+            } else {
+                removable.then_some(ASSIGNEE_PERSON_FOOTER)
+            };
             paint_scope_dropdown(
-                frame, geo, surface, options, *selected, *tabs, *title, *query, legend, hits,
+                frame,
+                geo,
+                surface,
+                ScopeDropdownPaint {
+                    options,
+                    selected: *selected,
+                    tabs: *tabs,
+                    title_override: *title,
+                    query: *query,
+                    legend,
+                    editing: *editing,
+                },
+                hits,
             );
         }
         QueueOverlay::AfterPicker(picker) => {
@@ -4919,18 +4945,48 @@ fn paint_block_card(
 /// dropdown this used to paint. [`paint_page_scope_dropdown`] (the task-page form's own
 /// scope control) is a separate, unrelated painter and keeps its chip-anchored panel.
 #[allow(clippy::too_many_arguments)]
+/// The picker footer while the title editor is open on one of its rows.
+const PROJECT_TITLE_EDIT_FOOTER: &[VerbEntry<'static>] = &[
+    VerbEntry {
+        key: "enter",
+        label: "save title",
+        shed: 0,
+    },
+    VerbEntry {
+        key: "esc",
+        label: "cancel",
+        shed: 0,
+    },
+];
+
+/// What one scope dropdown paints.
+struct ScopeDropdownPaint<'a> {
+    options: &'a [String],
+    selected: usize,
+    tabs: Option<PickerTabsPaint>,
+    title_override: Option<&'a str>,
+    query: Option<&'a str>,
+    legend: Option<&'static [VerbEntry<'static>]>,
+    /// The project title editor on the highlighted row: its draft and cursor.
+    editing: Option<(&'a str, usize)>,
+}
+
 fn paint_scope_dropdown(
     frame: &mut Frame<'_>,
     geo: &TierGeometry,
     surface: Rect,
-    options: &[String],
-    selected: usize,
-    tabs: Option<PickerTabsPaint>,
-    title_override: Option<&str>,
-    query: Option<&str>,
-    legend: Option<&'static [VerbEntry<'static>]>,
+    paint: ScopeDropdownPaint<'_>,
     hits: &mut QueueHitMap,
 ) {
+    let ScopeDropdownPaint {
+        options,
+        selected,
+        tabs,
+        title_override,
+        query,
+        legend,
+        editing,
+    } = paint;
     if geo.row_width == 0 || (tabs.is_none() && title_override.is_none() && options.is_empty()) {
         return;
     }
@@ -5165,13 +5221,38 @@ fn paint_scope_dropdown(
             .saturating_add((tabs_rows + rule_rows) as u16)
             .saturating_add((j - scroll) as u16);
         let marker = if j == selected { "▸ " } else { "  " };
+        let rect = Rect::new(content.x, y, content.width, 1);
+        if let Some((draft, cursor)) = editing.filter(|_| j == selected) {
+            // The highlighted row is the title editor: the draft windowed round its cursor,
+            // with the terminal's own cursor in it.
+            let marker_w = display_width(marker);
+            let room = (content.width as usize).saturating_sub(marker_w).max(1);
+            let buffer = crate::ui::edit::EditBuffer::new(draft, cursor);
+            let (window, column) = crate::ui::edit::escaped_line_window(&buffer, room);
+            put_line_at(
+                frame,
+                surface,
+                rect,
+                paint_bounded_line(&format!("{marker}{window}"), content.width, style_bold()),
+            );
+            crate::ui::edit::place_edit_cursor(
+                frame,
+                Rect::new(
+                    surface.x.saturating_add(rect.x),
+                    surface.y.saturating_add(rect.y),
+                    rect.width,
+                    1,
+                ),
+                (marker_w as u16).saturating_add(column),
+            );
+            continue;
+        }
         let text = format!("{marker}{opt}");
         let style = if j == selected {
             style_reverse()
         } else {
             style_plain()
         };
-        let rect = Rect::new(content.x, y, content.width, 1);
         put_line_at(
             frame,
             surface,
@@ -5937,6 +6018,8 @@ fn build_list_rows_inner(
     let mut anchor_last_idx: Option<usize> = None;
     let mut selected_idx: Option<usize> = None;
     let reply_caret: std::cell::Cell<Option<(usize, u16)>> = std::cell::Cell::new(None);
+    // One name lookup for the whole list, so a titled board resolves each path once.
+    let names = crate::scope::ProjectNames::new(model.project_titles);
     // Every section heading has one blank list row above it. This row remains ordinary list
     // content, so selection scrolling keeps the section and its first task reachable.
     out.push(ListRow::Blank);
@@ -5966,7 +6049,12 @@ fn build_list_rows_inner(
         // is peeked, on the peek's closing line instead, so it never paints twice. That
         // closing line also names the assignee (unless the filter, the `@name` View, or an
         // assignee sub-header already says it) and the base.
-        let meta = row_label(task, model.thread_labels && thread_label, project_label);
+        let meta = row_label(
+            task,
+            model.thread_labels && thread_label,
+            project_label,
+            &names,
+        );
         let assignee_label =
             model.assignee_labels && !(in_group && model.view.group == GroupBy::Assignee);
         let peek_meta = fit_row_meta(
@@ -6171,12 +6259,13 @@ fn build_list_rows_inner(
         }
         for (index, _row) in model.projects.iter().enumerate() {
             let selected = index == model.projects_cursor;
-            out.push(ListRow::ProjectRow {
-                index,
-                line: paint_project_row(model, index, selected, geo.row_width),
-            });
+            let (line, caret) = paint_project_row(model, &names, index, selected, geo.row_width);
+            out.push(ListRow::ProjectRow { index, line });
             if selected {
                 selected_idx = Some(out.len() - 1);
+                if let Some(column) = caret {
+                    reply_caret.set(Some((out.len() - 1, column)));
+                }
             }
         }
         return (out, anchor_last_idx, selected_idx, reply_caret.get());
@@ -6534,16 +6623,17 @@ pub(crate) fn threads_cell(threads: &[String], width: usize) -> String {
 /// project), the wide-width thread column, and the right-aligned open-work counts.
 fn paint_project_row(
     model: &QueueFrameModel<'_>,
+    names: &crate::scope::ProjectNames<'_>,
     index: usize,
     selected: bool,
     width: u16,
-) -> Line<'static> {
+) -> (Line<'static>, Option<u16>) {
     let Some(row) = model.projects.get(index) else {
-        return paint_bounded_line("", width, style_plain());
+        return (paint_bounded_line("", width, style_plain()), None);
     };
     let columns = index_columns(width as usize);
     let marker = if selected { "\u{25b8} " } else { "  " };
-    let basename = crate::ui::board::project_option_label(Path::new(&row.path));
+    let basename = crate::ui::board::project_option_label(Path::new(&row.path), names);
     let name_style = if selected {
         style_bold()
     } else {
@@ -6559,14 +6649,24 @@ fn paint_project_row(
     // Same-named projects are told apart by the status row, which paints the
     // selected row's full path.
     let name_w = columns.name_w;
-    let (name, suffix) = [here, String::new()]
-        .iter()
-        .find_map(|suffix| {
-            let safe_suffix = present_line(suffix, name_w);
-            (display_width(&basename) + display_width(&safe_suffix) <= name_w)
-                .then(|| (basename.clone(), safe_suffix))
-        })
-        .unwrap_or_else(|| (present_line(&basename, name_w.max(1)), String::new()));
+    // The cursor row under the title editor paints the draft, windowed round its cursor.
+    let editing = model.project_title_edit.filter(|_| selected);
+    let mut caret = None;
+    let (name, suffix) = if let Some((draft, cursor)) = editing {
+        let buffer = crate::ui::edit::EditBuffer::new(draft, cursor);
+        let (window, column) = crate::ui::edit::escaped_line_window(&buffer, name_w.max(1));
+        caret = Some((columns.name_x as u16).saturating_add(column));
+        (window, String::new())
+    } else {
+        [here, String::new()]
+            .iter()
+            .find_map(|suffix| {
+                let safe_suffix = present_line(suffix, name_w);
+                (display_width(&basename) + display_width(&safe_suffix) <= name_w)
+                    .then(|| (basename.clone(), safe_suffix))
+            })
+            .unwrap_or_else(|| (present_line(&basename, name_w.max(1)), String::new()))
+    };
 
     let mut spans = vec![Span::styled(format!(" {marker}"), name_style)];
     let mut x = display_width(&format!(" {marker}"));
@@ -6595,7 +6695,7 @@ fn paint_project_row(
     for (end, (text, style)) in counts {
         place_right(&mut spans, &mut x, end, text, style);
     }
-    bound_line(Line::from(spans), width as usize)
+    (bound_line(Line::from(spans), width as usize), caret)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6954,6 +7054,11 @@ fn idle_context_extra_rows(model: &QueueFrameModel<'_>, geo: &TierGeometry) -> u
                 push_pinned_search(model, &mut context);
                 idle_context_rows(&context, geo.row_width).len()
             })
+            .chain(
+                model
+                    .title_edit_path
+                    .map(|path| idle_context_rows(&format!(" {path}"), geo.row_width).len()),
+            )
             .max()
             .unwrap_or(1) as u16
     } else {
@@ -6980,6 +7085,9 @@ fn idle_context_rows(idle: &str, width: u16) -> Vec<String> {
 }
 
 fn idle_context(model: &QueueFrameModel<'_>) -> String {
+    if let Some(path) = model.title_edit_path {
+        return format!(" {path}");
+    }
     let mut context = if model.projects_index && !model.has_update_notice {
         // The index's status row names the selected project's full path; rows carry
         // only the basename. A release notice owns the idle slot on every surface.
@@ -7554,12 +7662,20 @@ fn paint_fitted_verbs(
 }
 
 /// The row label: `#thread · project`, each part only when its flag is set.
-fn row_label(task: &Task, thread: bool, project: bool) -> String {
+fn row_label(
+    task: &Task,
+    thread: bool,
+    project: bool,
+    names: &crate::scope::ProjectNames<'_>,
+) -> String {
     let thread = thread
         .then(|| task.thread.as_deref().map(|name| format!("#{name}")))
         .flatten();
     let project = project.then(|| match &task.scope {
-        TaskScope::Project { path } => short_project(path).to_string(),
+        TaskScope::Project { path } => names
+            .title(path)
+            .unwrap_or_else(|| short_project(path))
+            .to_string(),
         TaskScope::Global => "desk".to_string(),
     });
     fit_row_meta(None, None, thread, project)
@@ -7693,6 +7809,9 @@ fn sgr_params_contain_color(params: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+static NO_TITLES: BTreeMap<String, String> = BTreeMap::new();
 
 #[cfg(test)]
 mod tests {
@@ -7966,6 +8085,9 @@ mod tests {
         };
         let model = QueueFrameModel {
             tasks: &[],
+            project_titles: &NO_TITLES,
+            project_title_edit: None,
+            title_edit_path: None,
             view: &view,
             selection_id: None,
             marked_ids: BTreeSet::new(),
@@ -8034,6 +8156,9 @@ mod tests {
         });
         QueueFrameModel {
             tasks: &[],
+            project_titles: &NO_TITLES,
+            project_title_edit: None,
+            title_edit_path: None,
             view,
             selection_id: None,
             marked_ids: BTreeSet::new(),
@@ -8167,6 +8292,9 @@ mod tests {
         };
         let model = QueueFrameModel {
             tasks: &[],
+            project_titles: &NO_TITLES,
+            project_title_edit: None,
+            title_edit_path: None,
             view: &view,
             selection_id: None,
             marked_ids: BTreeSet::new(),
@@ -8225,7 +8353,8 @@ mod tests {
 
         // Rows never paint the path, and the basename stays clean at every width.
         for width in [40, 60, 79, 100, 120, 200] {
-            let text = plain(&paint_project_row(&model, 0, false, width));
+            let names = crate::scope::ProjectNames::untitled();
+            let text = plain(&paint_project_row(&model, &names, 0, false, width).0);
             assert!(!text.contains("clipboard"), "{width}: {text}");
             assert!(!text.contains('\u{1b}'), "{width}: {text}");
             assert!(text.contains("repo"), "{width}: {text}");

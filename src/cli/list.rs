@@ -71,6 +71,9 @@ pub(crate) struct ListRow {
     pub(crate) title: String,
     pub(crate) status: HumanStatus,
     pub(crate) project: Option<String>,
+    /// The project's title, left out when the project has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_title: Option<String>,
     pub(crate) thread: Option<String>,
     pub(crate) assignee: Option<String>,
     /// `agent` or `person` (you, or a named person); `null` when unassigned.
@@ -530,15 +533,17 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
         input.group.unwrap_or_default(),
         input.sort.unwrap_or_default(),
     );
+    let titles = domain.project_titles();
+    let names = crate::scope::ProjectNames::new(&titles);
     let arrange = || {
         let mut arranged: Vec<(Option<String>, &crate::domain::Task)> = Vec::new();
         for status in tasks.chunk_by(|a, b| a.status == b.status) {
-            for (label, rows) in arrange_rows(status.to_vec(), group, sort) {
+            for (label, rows) in arrange_rows(status.to_vec(), group, sort, &names) {
                 arranged.extend(rows.into_iter().map(|task| (label.clone(), task)));
             }
         }
         if group == GroupBy::Project {
-            distinguish_project_groups(&mut arranged);
+            distinguish_project_groups(&mut arranged, &names);
         }
         arranged
     };
@@ -643,6 +648,10 @@ fn row_for(task: &crate::domain::Task, domain: &DomainState) -> ListRow {
             TaskScope::Global => None,
             TaskScope::Project { path } => Some(path.clone()),
         },
+        project_title: match &task.scope {
+            TaskScope::Global => None,
+            TaskScope::Project { path } => domain.project_title(path).map(str::to_string),
+        },
         thread: task.thread.clone(),
         assignee: task.assignee.clone(),
         assignee_kind: task.assignee.as_ref().map(|_| task.assignee_kind.name()),
@@ -681,9 +690,13 @@ fn is_open(status: HumanStatus) -> bool {
 }
 
 /// Relabel `--group project` groups whose basenames collide with the shortest unique path
-/// suffix, so two `wp-content` projects read as two groups. Equivalent spellings of one
-/// project (`/tmp/x`, `/private/tmp/x`) share one group and so one label.
-fn distinguish_project_groups(arranged: &mut [(Option<String>, &crate::domain::Task)]) {
+/// suffix, so two `wp-content` projects read as two groups. A titled project keeps its title.
+/// Equivalent spellings of one project (`/tmp/x`, `/private/tmp/x`) share one group and so
+/// one label.
+fn distinguish_project_groups(
+    arranged: &mut [(Option<String>, &crate::domain::Task)],
+    names: &crate::scope::ProjectNames<'_>,
+) {
     let identities = PathIdentityCache::default();
     // One representative spelling per project identity, the first one listed.
     let mut representatives: Vec<String> = Vec::new();
@@ -706,7 +719,9 @@ fn distinguish_project_groups(arranged: &mut [(Option<String>, &crate::domain::T
             TaskScope::Global => None,
         })
         .collect::<Vec<_>>();
-    let labels = crate::cli::presenter::distinct_scope_labels(keys.iter().cloned());
+    let labels = crate::cli::presenter::distinct_scope_labels(keys.iter().cloned(), |path| {
+        names.title(path).map(str::to_string)
+    });
     for ((label, _), key) in arranged.iter_mut().zip(&keys) {
         if key.is_some() {
             *label = labels.get(key).cloned();
