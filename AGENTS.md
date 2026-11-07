@@ -66,12 +66,12 @@ same PR, never leave them apart.
 | `src/activity.rs` | paper trail entries for the task page and `tsk list T12` |
 | `src/backup.rs` | git backups and the versions `tsk restore` picks from |
 | `src/agents.rs` | `config.toml` profile loader, prompt/argv rendering, starter seed |
-| `src/dispatch.rs`, `src/dispatch/pr.rs` | dispatch and cleanup engine behind a `DispatchHost` seam (git, herdr, and `gh` calls), cleanup guardrails, pull request merge |
+| `src/dispatch.rs`, `src/dispatch/pr.rs` | dispatch and cleanup engine behind a `DispatchHost` seam (git, herdr, Rex, and `gh` calls), cleanup guardrails, pull request merge |
 | `src/git_base.rs` | dispatch base branches, resolved in the task's repository |
 | `src/context.rs`, `src/scope.rs` | invocation context from Herdr and the cwd, project path resolution |
 | `src/save_recovery.rs` | retry or cancel of one failed save |
 | `src/fsperm.rs` | private file modes for the state directory |
-| `src/setup.rs`, `src/setup/`, `src/setup_agent.rs` | `tsk setup herdr`, agent skill install (`tsk-cli` and `tsk-coordinator`) |
+| `src/setup.rs`, `src/setup/`, `src/setup_agent.rs` | `tsk setup herdr`, `tsk setup rex` (`src/setup/rex.rs`, `src/setup/rex.lua`), agent skill install (`tsk-cli` and `tsk-coordinator`) |
 | `src/board_pane.rs` | `--find-board-pane` lookup for the launchers |
 | `src/guides.rs`, `src/announcements.rs`, `src/delivery.rs` | seeded notice tasks |
 | `src/update.rs` | release check, `tsk update` |
@@ -382,8 +382,8 @@ migration or design work they imply. What the behaviour *is* lives in the docs
   - uncertainty (the host cannot answer, outside Herdr or Rex) never launches;
   - a gone agent asks (board) or refuses `agent-gone` (CLI).
 
-  Outside Herdr (`HERDR_ENV=1`) or Rex (`REX_SESSION`) `tsk dispatch` refuses; a start there, or on a desk task, is plain
-  and says why (`dispatch::launch_unavailable`).
+  Outside Herdr or Rex (neither `HERDR_ENV=1` nor a non-empty `REX_SESSION`) `tsk dispatch`
+  refuses; a start there, or on a desk task, is plain and says why (`dispatch::launch_unavailable`).
 - Dispatch sets `started` in the same save as the record; a failed launch leaves the task
   unstarted. Only a single-task start that dispatched is undoable (`UndoEntry::Start`:
   status only, the agent keeps running).

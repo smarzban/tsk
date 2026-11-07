@@ -1452,23 +1452,6 @@ impl CleanupRow {
         }
     }
 
-    /// Why `m` did not merge this row: its failure, uncommitted changes, or why its PR is no
-    /// candidate.
-    pub fn merge_skip_reason(&self) -> String {
-        if let Some(reason) = &self.pr.merge_failed {
-            return reason.clone();
-        }
-        if self.dirty {
-            return "uncommitted changes".into();
-        }
-        match (&self.pr.landed, &self.inspected) {
-            (Some(landed), Some(record)) => crate::dispatch::pr::mergeable(&landed.lookup, record)
-                .err()
-                .map_or_else(|| "not merged".into(), |refusal| refusal.message()),
-            _ => "pull request not checked yet".into(),
-        }
-    }
-
     /// The card's line about the PR: `None` without `gh`, so a card without it reads as before.
     pub fn pr_line(&self) -> Option<String> {
         use crate::dispatch::pr::{MergeRefusal, PrLookupError};
@@ -7638,20 +7621,6 @@ impl BoardModel {
         self.delete_notice.as_deref()
     }
 
-    /// True when the chrome row is the board's plain message row rather than the row an
-    /// open field edit owns (which keeps its save chord and `Esc` beside whatever it says).
-    ///
-    /// The renderer and the hit test both read this, so the notice's Undo control can never
-    /// be painted where a click would miss it.
-    pub fn chrome_row_is_plain(&self) -> bool {
-        self.form.is_none()
-    }
-
-    /// The field edit the board has open, if any.
-    ///
-    /// The one answer to "is a field being edited", read by the chrome row, by the compact
-    /// Browse edit band ([`super::mouse::BoardLayout::edit_band`]) and by the renderer, so
-    /// none of the three can decide differently from the others.
     /// The task an open field edit is bound to, or `None` outside an edit session.
     ///
     /// Read-only, and deliberately so: [`apply_board_intent_with_save_recovery`] needs the bound
