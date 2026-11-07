@@ -1,0 +1,100 @@
+{
+  "run_id": "run-2",
+  "repo": "smarzban/tsk",
+  "target": "/agent/repos/tsk",
+  "source_ref": {
+    "commit": "36610e8f012018e3ddd624304dbcf680ae4df56c",
+    "branch": "main",
+    "delta_from": "94b1dc6f864c064f69631d240b1e91c9bece2cdd",
+    "delta_to": "36610e8f012018e3ddd624304dbcf680ae4df56c",
+    "worktree_dirty": false,
+    "note": "HEAD matches the requested audit commit. One commit: project titles."
+  },
+  "profile": "standard",
+  "scope": "scoped delta of 94b1dc6f864c064f69631d240b1e91c9bece2cdd..36610e8f012018e3ddd624304dbcf680ae4df56c and code those changes touch, plus carried windows-state-dir-acl and a same-source recheck that terminal_text and scheme_token remain closed",
+  "scope_paths": [
+    "src/domain/task.rs",
+    "src/domain/undo.rs",
+    "src/scope.rs",
+    "src/store.rs",
+    "src/fsperm.rs",
+    "src/cli/archive.rs",
+    "src/cli/parser.rs",
+    "src/cli/presenter.rs",
+    "src/cli/list.rs",
+    "src/cli/add.rs",
+    "src/cli/mod.rs",
+    "src/ui/board/project_title.rs",
+    "src/ui/board/apply.rs",
+    "src/ui/board/draw.rs",
+    "src/ui/board/model.rs",
+    "src/ui/board/chrome.rs",
+    "src/ui/board/commands.rs",
+    "src/ui/board/launch_card.rs",
+    "src/ui/render.rs",
+    "src/ui/queue.rs",
+    "src/ui/input.rs",
+    "src/ui/mouse.rs",
+    "src/ui/mod.rs",
+    "src/capture.rs",
+    "src/backup.rs",
+    "src/dispatch.rs",
+    "src/agents.rs"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "DATA-ISOLATION-AND-LIFECYCLE.md",
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md"
+  ],
+  "prior_run_paths": [
+    "/home/ubuntu/security-audit-skill/tsk/run-2/prior/coverage-ledger.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-2/prior/findings.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-2/prior/architecture.md",
+    "/home/ubuntu/security-audit-skill/tsk/run-2/prior/REPORT.md",
+    "/home/ubuntu/security-audit-skill/tsk/run-2/prior/NEEDS-VALIDATION.md",
+    "origin/security-audit/2026-11-07:security-audit/2026-11-07/"
+  ],
+  "prior_source_ref": "94b1dc6f864c064f69631d240b1e91c9bece2cdd",
+  "shared_file_owners": {
+    "run-metadata.json": "parent",
+    "architecture.md": "parent",
+    "coverage-ledger.json": "parent",
+    "findings.json": "parent",
+    "REPORT.md": "parent",
+    "FINDINGS-DETAIL.md": "parent",
+    "NEEDS-VALIDATION.md": "parent"
+  },
+  "run_status": "complete",
+  "sandbox_notes": "unshare --user --map-root-user --mount --net succeeds. bubblewrap and firejail are absent. A user systemd bus was not confirmed. Disk quota is not combined with an empty environment, a read-only toolchain, and the other required limits. Target code has not been executed.",
+  "agent_spend": {
+    "budget": null,
+    "judgment_invocations": {
+      "reconnaissance": 4,
+      "hunters_wave_1": 5,
+      "post_wave_critic": 1,
+      "final_clean_critic": 1,
+      "phase3_verifier": 1,
+      "phase5_verifier": 1,
+      "total": 13
+    },
+    "notes": "No second hunter wave. Post-wave and final-clean critics both returned no missing units and no reassignment. The carried Windows lead stayed needs_validation."
+  },
+  "sandbox": {
+    "target_code_executed": false,
+    "reason": "unshare can create a user, mount, and net namespace and remount a bind read-only. bubblewrap and firejail are absent. A user systemd bus is absent, so a disk quota was not enforced together with an empty environment, a read-only toolchain, scratch-only writes, and explicit CPU, memory, process, file-size, and wall-clock limits."
+  },
+  "validators": {
+    "validate-findings.cjs": "PASS",
+    "validate-coverage-ledger.cjs": "PASS"
+  },
+  "coverage": {
+    "covered": 7,
+    "candidate": 1,
+    "out_of_scope": 18,
+    "blocked": 0,
+    "deferred": 0
+  },
+  "new_confirmed_findings": [],
+  "carried_needs_validation": ["windows-state-dir-acl"]
+}
