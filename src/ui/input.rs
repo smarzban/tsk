@@ -237,6 +237,13 @@ pub enum BoardIntent {
     ConfirmProjectChoice,
     /// Close the project selector without changing the selection.
     CancelProjectPicker,
+    /// Open the inline title editor on the selected project row (`ctrl+e` in the picker or
+    /// the Projects view, or the palette's **set project title…** on a project tab).
+    BeginEditProjectTitle,
+    /// Save the open project title editor's draft (`Enter`).
+    ConfirmProjectTitle,
+    /// Close the open project title editor without saving (`Esc`).
+    CancelProjectTitle,
     /// Select project selector option by index and adopt it in one step (mouse click on a
     /// dropdown row;,,). The mouse-only counterpart of `SelectIndex` for
     /// the task list: it runs the same effect `ConfirmProjectChoice` does after enough
@@ -1360,6 +1367,12 @@ fn help_bindings() -> Vec<HelpBinding> {
         ),
         help_binding(
             HelpGroup::PickersEditing,
+            "ctrl+e (picker / Projects)",
+            "edit project title",
+            "rename name title",
+        ),
+        help_binding(
+            HelpGroup::PickersEditing,
             "s (project picker)",
             "next project order",
             "sort projects name newest oldest",
@@ -1627,6 +1640,7 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
     }
     match mode {
         BoardInputMode::Normal => map_normal(key),
+        BoardInputMode::EditProjectTitle => map_project_title_edit(key),
         BoardInputMode::TaskPage => map_task_page(key),
         BoardInputMode::CapturePage => map_capture_page(key),
         BoardInputMode::ProjectPicker => map_project_picker(key),
@@ -2202,7 +2216,8 @@ pub fn map_edit_paste(mode: BoardInputMode, text: &str) -> Option<BoardIntent> {
         | BoardInputMode::EditThread
         | BoardInputMode::EditStep
         | BoardInputMode::BlockCard
-        | BoardInputMode::EditReply => Some(BoardIntent::EditInsertText(text.to_string())),
+        | BoardInputMode::EditReply
+        | BoardInputMode::EditProjectTitle => Some(BoardIntent::EditInsertText(text.to_string())),
         BoardInputMode::SelectThread
         | BoardInputMode::SelectBase
         | BoardInputMode::SelectAfter
@@ -2497,6 +2512,7 @@ fn map_project_picker(key: KeyEvent) -> Option<BoardIntent> {
         return match key.code {
             KeyCode::Char('f') => Some(BoardIntent::File),
             KeyCode::Char('u') => Some(BoardIntent::Undo),
+            KeyCode::Char('e') => Some(BoardIntent::BeginEditProjectTitle),
             _ => None,
         };
     }
@@ -2512,6 +2528,27 @@ fn map_project_picker(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Tab | KeyCode::Left | KeyCode::Right => Some(BoardIntent::ProjectPickerSwitchTab),
         KeyCode::Char('s') => Some(BoardIntent::ProjectPickerCycleSort),
         _ => None,
+    }
+}
+
+/// The inline project title editor: a one-line draft. `Enter` (or `shift+Enter`) saves,
+/// `Esc` or `ctrl+c` cancels, and every other key edits like a task title.
+fn map_project_title_edit(key: KeyEvent) -> Option<BoardIntent> {
+    if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return None;
+    }
+    let plain_or_shift = !key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
+    if key.code == KeyCode::Enter && plain_or_shift {
+        return Some(BoardIntent::ConfirmProjectTitle);
+    }
+    match map_form_edit_key(CaptureField::Thread, FormEditNavigation::None, false, key)? {
+        BoardIntent::CancelEdit => Some(BoardIntent::CancelProjectTitle),
+        BoardIntent::ConfirmEdit | BoardIntent::ShiftEnterAsCtrlJ => {
+            Some(BoardIntent::ConfirmProjectTitle)
+        }
+        intent => Some(intent),
     }
 }
 

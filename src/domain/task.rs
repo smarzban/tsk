@@ -416,6 +416,13 @@ pub enum DomainError {
     AfterDone(u64),
     /// `waiting` already runs after `prerequisite`, directly or through other tasks.
     AfterLoop { waiting: u64, prerequisite: u64 },
+    /// Another project already carries this title.
+    ProjectTitleTaken { title: String, path: String },
+    /// A project title holds a control character or a path separator, reads as the desk,
+    /// or is longer than [`PROJECT_TITLE_MAX`] characters; the reason.
+    ProjectTitleInvalid(&'static str),
+    /// The project's title changed since the undoable title change.
+    StaleProjectUndo(String),
 }
 
 impl std::fmt::Display for DomainError {
@@ -449,6 +456,13 @@ impl std::fmt::Display for DomainError {
                 waiting,
                 prerequisite,
             } => write!(f, "T{waiting} already runs after T{prerequisite}"),
+            DomainError::ProjectTitleTaken { title, path } => {
+                write!(f, "title {title} is used by {path}")
+            }
+            DomainError::ProjectTitleInvalid(reason) => f.write_str(reason),
+            DomainError::StaleProjectUndo(path) => {
+                write!(f, "project {path} changed since the title change")
+            }
         }
     }
 }
@@ -622,19 +636,63 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 16;
+pub const STORE_FORMAT_VERSION: u32 = 17;
 
 fn default_next_notice_number() -> u64 {
     1
 }
 
 /// One per-project record, keyed by the project's scope path. Lazy: a project
-/// appears in the map only while it is archived; the set of projects the board
-/// shows is still derived from tasks.
+/// appears in the map only while it is archived or titled; the set of projects the
+/// board shows is still derived from tasks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectRecord {
     pub archived: bool,
+    /// The project's display name, shown instead of its folder name. Absent before v17,
+    /// and left out of the document while unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+impl ProjectRecord {
+    /// A record carrying nothing is dropped from the map.
+    fn is_empty(&self) -> bool {
+        !self.archived && self.title.is_none()
+    }
+}
+
+/// This process's not-yet-saved change to one project record, field by field. A field
+/// left `None` was not touched here, so the merge keeps whatever the disk holds for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ProjectIntent {
+    archived: Option<bool>,
+    title: Option<Option<String>>,
+}
+
+/// The longest project title, in characters.
+pub const PROJECT_TITLE_MAX: usize = 80;
+
+/// Why `title` (already normalised) cannot be a project title, if it cannot.
+fn project_title_refusal(title: &str) -> Option<&'static str> {
+    if title.chars().any(char::is_control) {
+        Some("a project title cannot hold a control character")
+    } else if title.chars().any(crate::scope::is_path_separator) {
+        Some("a project title cannot hold a path separator")
+    } else if ["desk", "global"].contains(&title.to_lowercase().as_str()) {
+        Some("desk names the desk, not a project")
+    } else if title.chars().count() > PROJECT_TITLE_MAX {
+        Some("a project title is at most 80 characters")
+    } else {
+        None
+    }
+}
+
+/// Normalise a project title: trimmed, inner whitespace runs collapsed to one space; empty
+/// means no title.
+pub fn normalize_project_title(title: &str) -> Option<String> {
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!title.is_empty()).then_some(title)
 }
 
 /// A soft-deleted task older than this moves to `trash.jsonl` at the next save
@@ -705,12 +763,12 @@ pub struct DomainState {
     /// writes `"projects": {}` so the v2 wire shape is pinned.
     #[serde(default)]
     projects: BTreeMap<String, ProjectRecord>,
-    /// This process's not-yet-confirmed project archive/unarchive intents, recorded
-    /// by the two verbs (true = archived, false = unarchived). Transient: skipped in
-    /// serialization, cleared with the merge bases, and re-applied after every disk
-    /// merge so a plain union can never resurrect a record this process just removed.
+    /// This process's not-yet-confirmed project archive, unarchive, and title intents,
+    /// per field. Transient: skipped in serialization, cleared with the merge bases, and
+    /// re-applied after every disk merge so a plain union can never resurrect a record this
+    /// process just removed, nor drop a field another writer set.
     #[serde(skip)]
-    project_intents: BTreeMap<String, bool>,
+    project_intents: BTreeMap<String, ProjectIntent>,
     /// Person names removed from the assignee picker. Tasks keep them; only the picker's
     /// list skips them. Absent before v6, and left out of the document while empty.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -823,9 +881,9 @@ impl DomainState {
         }
     }
 
-    /// Archive a project: write its lazy record. Tasks are untouched; their own
-    /// archived flags are independent of this. Records exist only while archived, so
-    /// unarchiving removes the record entirely.
+    /// Archive a project: set the archived flag on its lazy record. Tasks are untouched;
+    /// their own archived flags are independent of this. A record exists only while the
+    /// project is archived or titled, so unarchiving an untitled project removes it.
     ///
     /// Returns `Ok(false)` when the requested state already holds: no record change,
     /// no intent. Unknown when no task (any status, soft-deleted included) carries the
@@ -834,38 +892,170 @@ impl DomainState {
         if self.is_project_archived(path) {
             return Ok(false);
         }
-        if !self.has_project_task(path) && !self.projects.contains_key(path) {
+        let stored = self.stored_project_key(path);
+        if !self.has_project_task(path) && stored.is_none() {
             return Err(DomainError::UnknownProject(path.to_string()));
         }
-        let stored_path = self
-            .projects
-            .keys()
-            .find(|stored| paths_equivalent(stored, path))
-            .cloned()
-            .unwrap_or_else(|| path.to_string());
-        self.projects
-            .insert(stored_path.clone(), ProjectRecord { archived: true });
-        self.project_intents.insert(stored_path, true);
+        let stored_path = stored.unwrap_or_else(|| path.to_string());
+        self.update_project_record(&stored_path, |record| record.archived = true);
+        self.project_intents
+            .entry(stored_path)
+            .or_default()
+            .archived = Some(true);
         Ok(true)
     }
 
-    /// Unarchive a project: remove its record. `Ok(false)` when no record exists but
-    /// tasks carry the scope (already unarchived); unknown when neither.
+    /// Unarchive a project: clear the archived flag, dropping a record that carries no
+    /// title. `Ok(false)` when the project is known but not archived (a task carries the
+    /// scope, or a titled record exists); unknown when neither.
     pub fn unarchive_project(&mut self, path: &str) -> Result<bool, DomainError> {
-        if let Some(stored_path) = self
-            .projects
-            .keys()
-            .find(|stored| paths_equivalent(stored, path))
-            .cloned()
-        {
-            self.projects.remove(&stored_path);
-            self.project_intents.insert(stored_path, false);
+        if let Some(stored_path) = self.stored_project_key(path) {
+            if !self.projects[&stored_path].archived {
+                return Ok(false);
+            }
+            self.update_project_record(&stored_path, |record| record.archived = false);
+            self.project_intents
+                .entry(stored_path)
+                .or_default()
+                .archived = Some(false);
             return Ok(true);
         }
         if self.has_project_task(path) {
             return Ok(false);
         }
         Err(DomainError::UnknownProject(path.to_string()))
+    }
+
+    /// The stored record key equivalent to `path`, exact spelling first.
+    fn stored_project_key(&self, path: &str) -> Option<String> {
+        if self.projects.contains_key(path) {
+            return Some(path.to_string());
+        }
+        self.projects
+            .keys()
+            .find(|stored| paths_equivalent(stored, path))
+            .cloned()
+    }
+
+    /// Change one project record in place, creating it when absent and dropping it when
+    /// it ends up carrying nothing.
+    fn update_project_record(&mut self, key: &str, change: impl FnOnce(&mut ProjectRecord)) {
+        let mut record = self.projects.remove(key).unwrap_or(ProjectRecord {
+            archived: false,
+            title: None,
+        });
+        change(&mut record);
+        if !record.is_empty() {
+            self.projects.insert(key.to_string(), record);
+        }
+    }
+
+    /// The title of the project at `path`, if it has one.
+    pub fn project_title(&self, path: &str) -> Option<&str> {
+        if let Some(record) = self.projects.get(path) {
+            return record.title.as_deref();
+        }
+        self.projects
+            .iter()
+            .find(|(stored, _)| paths_equivalent(stored, path))
+            .and_then(|(_, record)| record.title.as_deref())
+    }
+
+    /// The name the project at `path` shows under: its title, else its folder name.
+    pub fn project_name(&self, path: &str) -> String {
+        self.project_title(path)
+            .unwrap_or_else(|| crate::scope::project_basename(path))
+            .to_string()
+    }
+
+    /// Every titled project: stored path to title.
+    pub fn project_titles(&self) -> BTreeMap<String, String> {
+        self.projects
+            .iter()
+            .filter_map(|(path, record)| Some((path.clone(), record.title.clone()?)))
+            .collect()
+    }
+
+    /// The stored path of a project other than `except` whose title matches `title`,
+    /// ignoring case.
+    pub fn project_with_title(&self, title: &str, except: Option<&str>) -> Option<&str> {
+        self.projects_with_title(title)
+            .into_iter()
+            .find(|stored| except.is_none_or(|except| !paths_equivalent(stored, except)))
+    }
+
+    /// The stored paths of every project whose title matches `title`, ignoring case, in path
+    /// order. Titles are unique, but two writers saving at once can both land one; a caller
+    /// resolving a name refuses rather than pick one.
+    pub fn projects_with_title(&self, title: &str) -> Vec<&str> {
+        let Some(wanted) = normalize_project_title(title).map(|title| title.to_lowercase()) else {
+            return Vec::new();
+        };
+        self.projects
+            .iter()
+            .filter(|(_, record)| {
+                record
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| title.to_lowercase() == wanted)
+            })
+            .map(|(stored, _)| stored.as_str())
+            .collect()
+    }
+
+    /// Set or clear a project's title, undoably. `title` is normalised first; empty clears.
+    ///
+    /// `Ok(false)` when the title already holds. Refuses a project no task or record names,
+    /// a title another project already carries, one with a path separator, one that reads
+    /// as the desk, and one longer than [`PROJECT_TITLE_MAX`] characters.
+    pub fn set_project_title(&mut self, path: &str, title: &str) -> Result<bool, DomainError> {
+        let key = self.stored_project_key(path);
+        if key.is_none() && !self.has_project_task(path) {
+            return Err(DomainError::UnknownProject(path.to_string()));
+        }
+        let title = normalize_project_title(title);
+        if let Some(title) = &title {
+            if let Some(reason) = project_title_refusal(title) {
+                return Err(DomainError::ProjectTitleInvalid(reason));
+            }
+            if let Some(other) = self.project_with_title(title, Some(path)) {
+                return Err(DomainError::ProjectTitleTaken {
+                    title: title.clone(),
+                    path: other.to_string(),
+                });
+            }
+        }
+        let key = key.unwrap_or_else(|| path.to_string());
+        let previous = self
+            .projects
+            .get(&key)
+            .and_then(|record| record.title.clone());
+        if previous == title {
+            return Ok(false);
+        }
+        self.write_project_title(&key, title.clone());
+        self.undo_stack.push(UndoEntry::ProjectTitle {
+            path: key,
+            previous,
+            title,
+        });
+        Ok(true)
+    }
+
+    /// Put a project title back without recording undo (the undo of a title change).
+    pub(crate) fn restore_project_title(&mut self, path: &str, title: Option<String>) {
+        let key = self
+            .stored_project_key(path)
+            .unwrap_or_else(|| path.to_string());
+        self.write_project_title(&key, title);
+    }
+
+    fn write_project_title(&mut self, key: &str, title: Option<String>) {
+        self.update_project_record(key, |record| record.title = title.clone());
+        self.project_intents
+            .entry(key.to_string())
+            .or_default()
+            .title = Some(title);
     }
 
     /// Person names the assignee picker leaves out.
@@ -915,6 +1105,18 @@ impl DomainState {
         match leaf {
             UndoEntry::HideAssignee { name } => self.hidden_assignees.contains(name),
             UndoEntry::ShowAssignee { name } => !self.hidden_assignees.contains(name),
+            // A title step is live while the project still carries the title it set and the
+            // title it would restore is still free: undoing it never makes a duplicate.
+            UndoEntry::ProjectTitle {
+                path,
+                previous,
+                title,
+            } => {
+                self.project_title(path) == title.as_deref()
+                    && previous.as_deref().is_none_or(|previous| {
+                        self.project_with_title(previous, Some(path)).is_none()
+                    })
+            }
             _ => true,
         }
     }
@@ -2579,14 +2781,18 @@ impl DomainState {
     /// resurrect a record the process just removed (and an archive could be lost).
     fn merge_project_records(&mut self, disk: &BTreeMap<String, ProjectRecord>) {
         self.projects = disk.clone();
-        for (path, archived) in &self.project_intents {
-            if *archived {
-                self.projects
-                    .insert(path.clone(), ProjectRecord { archived: true });
-            } else {
-                self.projects.remove(path);
-            }
+        let intents = std::mem::take(&mut self.project_intents);
+        for (path, intent) in &intents {
+            self.update_project_record(path, |record| {
+                if let Some(archived) = intent.archived {
+                    record.archived = archived;
+                }
+                if let Some(title) = &intent.title {
+                    record.title = title.clone();
+                }
+            });
         }
+        self.project_intents = intents;
     }
 
     /// Take the disk's hidden names, then re-apply this process's unsaved hides and unhides,
@@ -2772,7 +2978,9 @@ impl DomainState {
                             }
                             UndoEntry::SetAfter { .. } => task.last_event_at(TaskEventKind::Edited),
                             UndoEntry::SetOn { .. } => task.last_event_at(TaskEventKind::OnSet),
-                            UndoEntry::HideAssignee { .. } | UndoEntry::ShowAssignee { .. } => None,
+                            UndoEntry::HideAssignee { .. }
+                            | UndoEntry::ShowAssignee { .. }
+                            | UndoEntry::ProjectTitle { .. } => None,
                             // A live entry's target was last changed by the action it records.
                             UndoEntry::Status { .. }
                             | UndoEntry::Steps { .. }
@@ -2875,7 +3083,7 @@ impl DomainState {
                         UndoEntry::HideAssignee { name } => {
                             !name_only || self.name_leaf_is_live(leaf) || shown_later(index, name)
                         }
-                        UndoEntry::ShowAssignee { .. } => {
+                        UndoEntry::ShowAssignee { .. } | UndoEntry::ProjectTitle { .. } => {
                             !name_only || self.name_leaf_is_live(leaf)
                         }
                         leaf => leaf.targets().into_iter().all(|(id, expected_revision)| {
@@ -3253,6 +3461,122 @@ mod tests {
             Err(DomainError::UnknownProject("/nowhere".into()))
         );
         assert!(state.projects().is_empty(), "refusals write no record");
+    }
+
+    fn two_projects() -> DomainState {
+        let mut state = DomainState::new();
+        for path in ["/w/site-a/wp-content", "/w/site-b/wp-content"] {
+            state
+                .create(
+                    "seed",
+                    None,
+                    TaskScope::Project { path: path.into() },
+                    ProvenanceOrigin::Manual,
+                    None,
+                )
+                .expect("create");
+        }
+        state
+    }
+
+    #[test]
+    fn project_titles_are_unique_ignoring_case_and_refuse_desk_slashes_and_controls() {
+        let mut state = two_projects();
+        let a = "/w/site-a/wp-content";
+        let b = "/w/site-b/wp-content";
+        assert_eq!(state.set_project_title(a, "  Site   A "), Ok(true));
+        assert_eq!(state.project_title(a), Some("Site A"), "normalised");
+        assert_eq!(state.project_name(a), "Site A");
+        assert_eq!(
+            state.project_name(b),
+            "wp-content",
+            "untitled keeps the folder"
+        );
+        assert_eq!(
+            state.set_project_title(a, "Site A"),
+            Ok(false),
+            "already so"
+        );
+        assert_eq!(
+            state.set_project_title(b, "site a"),
+            Err(DomainError::ProjectTitleTaken {
+                title: "site a".into(),
+                path: a.into()
+            })
+        );
+        // A project may keep its own title in another case.
+        assert_eq!(state.set_project_title(a, "SITE A"), Ok(true));
+        for bad in ["Desk", "global", "a/b", "tab\u{7}bell", &"x".repeat(81)] {
+            assert!(
+                matches!(
+                    state.set_project_title(b, bad),
+                    Err(DomainError::ProjectTitleInvalid(_))
+                ),
+                "{bad:?} refuses"
+            );
+        }
+        assert_eq!(
+            state.set_project_title("/nowhere", "Nope"),
+            Err(DomainError::UnknownProject("/nowhere".into()))
+        );
+        assert_eq!(state.project_titles().len(), 1, "refusals write nothing");
+    }
+
+    #[test]
+    fn a_project_record_lives_while_archived_or_titled() {
+        let mut state = two_projects();
+        let a = "/w/site-a/wp-content";
+        state.set_project_title(a, "Site A").expect("title");
+        state.archive_project(a).expect("archive");
+        assert_eq!(state.unarchive_project(a), Ok(true));
+        assert_eq!(
+            state.project_title(a),
+            Some("Site A"),
+            "unarchive keeps the title"
+        );
+        assert_eq!(state.unarchive_project(a), Ok(false), "already unarchived");
+        state.archive_project(a).expect("archive again");
+        state.set_project_title(a, "").expect("clear");
+        assert!(state.is_project_archived(a), "clearing keeps the archive");
+        state.unarchive_project(a).expect("unarchive");
+        assert!(state.projects().is_empty(), "nothing left: no record");
+    }
+
+    #[test]
+    fn a_title_change_undoes_once_and_a_stale_one_refuses() {
+        let mut state = two_projects();
+        let a = "/w/site-a/wp-content";
+        state.set_project_title(a, "Site A").expect("title");
+        state.set_project_title(a, "Alpha").expect("rename");
+        state.undo().expect("undo rename");
+        assert_eq!(state.project_title(a), Some("Site A"));
+        state.undo().expect("undo title");
+        assert_eq!(state.project_title(a), None);
+        assert!(state.projects().is_empty());
+
+        // Another writer's change since the entry: the undo refuses and keeps it.
+        state.set_project_title(a, "Site A").expect("title");
+        state.restore_project_title(a, Some("Theirs".into()));
+        assert!(!state.top_undo_is_live());
+        assert_eq!(state.undo(), Err(DomainError::StaleProjectUndo(a.into())));
+        assert_eq!(state.project_title(a), Some("Theirs"));
+        assert_eq!(state.undo_len(), 1, "a refused undo keeps its entry");
+        state.prune_undo_for_persistence();
+        assert_eq!(state.undo_len(), 0, "the save drops the stale entry");
+
+        // A rename whose old title another project has since taken refuses too: the undo
+        // would leave two projects with one title.
+        let b = "/w/site-b/wp-content";
+        state.set_project_title(a, "Alpha").expect("rename");
+        state.set_project_title(a, "Beta").expect("rename again");
+        // Another writer gives B the title A's last rename freed.
+        state.restore_project_title(b, Some("Alpha".into()));
+        assert_eq!(
+            state.undo(),
+            Err(DomainError::StaleProjectUndo(a.into())),
+            "Alpha belongs to B now"
+        );
+        assert_eq!(state.project_title(a), Some("Beta"));
     }
 
     #[test]

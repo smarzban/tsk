@@ -105,6 +105,11 @@ fn edit_chrome_legends(mode: BoardInputMode, review: bool) -> [&'static str; 3] 
             "enter block · tab next · esc",
             "enter · tab · esc",
         ],
+        BoardInputMode::EditProjectTitle => [
+            "enter save · empty clears · esc cancel",
+            "enter save · esc cancel",
+            "enter save · esc",
+        ],
         BoardInputMode::EditStep => [
             "enter next · shift+enter save · esc cancel",
             "enter next · shift+enter save · esc",

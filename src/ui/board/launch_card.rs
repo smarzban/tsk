@@ -36,23 +36,29 @@ impl CardChoice for LaunchChoice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchPrompt {
     pub path: PathBuf,
+    /// The project's title, when it has one: the card names it instead of the folder.
+    pub title: Option<String>,
     pub scroll: usize,
     pub follow: bool,
     pub selector: OptionSelector<LaunchChoice>,
 }
 
 impl LaunchPrompt {
-    pub fn new(path: PathBuf) -> Self {
+    pub fn new(path: PathBuf, title: Option<String>) -> Self {
         Self {
             path,
+            title,
             scroll: 0,
             follow: true,
             selector: OptionSelector::default(),
         }
     }
 
-    /// The project's directory name.
+    /// The project's title, else its directory name.
     pub fn name(&self) -> String {
+        if let Some(title) = &self.title {
+            return title.clone();
+        }
         self.path
             .file_name()
             .and_then(|name| name.to_str())

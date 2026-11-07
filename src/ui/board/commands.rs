@@ -141,6 +141,18 @@ impl BoardModel {
         // Always-available board commands, then selection-gated delete when present.
         // The status commands above are absolute, so `set status: open` replaces the old
         // done-only `reopen` entry and stays useful from every status.
+        // A project tab, or a Projects view row: name the project something else.
+        let titles_project = matches!(self.board_location, super::model::BoardLocation::Project(_))
+            || (self.projects_overview() && self.selected_project_row().is_some());
+        if titles_project
+            && self.project_picker.is_none()
+            && self.input_mode == super::BoardInputMode::Normal
+        {
+            commands.push(command(
+                "set project title…",
+                BoardIntent::BeginEditProjectTitle,
+            ));
+        }
         commands.push(command("add task", BoardIntent::OpenCapture));
         if self.selected_id().is_some() {
             commands.push(command("delete task", BoardIntent::SoftDelete));

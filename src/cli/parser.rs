@@ -206,8 +206,17 @@ pub enum TrashAction {
 /// One project archive action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectAction {
-    Archive { name: String },
-    Unarchive { name: String },
+    Archive {
+        name: String,
+    },
+    Unarchive {
+        name: String,
+    },
+    /// Set (`Some`) or clear (`None`) a project's title.
+    Title {
+        name: String,
+        title: Option<String>,
+    },
 }
 
 /// Parsed `tsk project archive|unarchive <name>` input.
@@ -230,6 +239,7 @@ pub fn parse_flag_project(args: &[String]) -> Result<FlagProject, String> {
         state_dir: None,
         help: false,
     };
+    let mut clear = false;
     let mut positionals: Vec<&str> = Vec::new();
     let mut index = 2;
     while let Some(flag) = args.get(index).map(String::as_str) {
@@ -250,11 +260,15 @@ pub fn parse_flag_project(args: &[String]) -> Result<FlagProject, String> {
                 parsed.state_dir = Some(PathBuf::from(value(flag)?));
                 index += 2;
             }
+            "--clear" => {
+                clear = true;
+                index += 1;
+            }
             flag if flag.starts_with('-') => {
                 return Err(format!("unknown project argument {flag}"))
             }
             positional => {
-                if positionals.len() == 2 {
+                if positionals.len() == 3 {
                     return Err(format!("unexpected project argument {positional}"));
                 }
                 positionals.push(positional);
@@ -266,8 +280,29 @@ pub fn parse_flag_project(args: &[String]) -> Result<FlagProject, String> {
     if parsed.help {
         return Ok(parsed);
     }
+    if clear && positionals.first() != Some(&"title") {
+        return Err("--clear goes with project title".into());
+    }
     match positionals.as_slice() {
         [] => {}
+        ["title", name, title] if !clear => {
+            parsed.action = Some(ProjectAction::Title {
+                name: (*name).to_string(),
+                title: Some((*title).to_string()),
+            });
+        }
+        ["title", _, _] => return Err("give a title or --clear, not both".into()),
+        ["title", name] if clear => {
+            parsed.action = Some(ProjectAction::Title {
+                name: (*name).to_string(),
+                title: None,
+            });
+        }
+        ["title", _] => return Err("project title needs a title or --clear".into()),
+        ["title"] => return Err("project name is required".into()),
+        [action, _, positional] if *action != "title" => {
+            return Err(format!("unexpected project argument {positional}"))
+        }
         ["archive", name] => {
             parsed.action = Some(ProjectAction::Archive {
                 name: (*name).to_string(),
@@ -285,7 +320,7 @@ pub fn parse_flag_project(args: &[String]) -> Result<FlagProject, String> {
                 other => format!("unknown project action {other}"),
             })
         }
-        _ => unreachable!("positionals are capped at two"),
+        _ => unreachable!("positionals are capped at three"),
     }
     Ok(parsed)
 }

@@ -574,6 +574,22 @@ pub fn board_verb_items(model: &BoardModel) -> Vec<VerbEntry<'static>> {
         ];
     }
 
+    // The inline project title editor: Enter saves (an empty draft clears), Esc cancels.
+    if model.input_mode() == BoardInputMode::EditProjectTitle {
+        return vec![
+            VerbEntry {
+                key: "enter",
+                label: "save title",
+                shed: 0,
+            },
+            VerbEntry {
+                key: "esc",
+                label: "cancel",
+                shed: 0,
+            },
+        ];
+    }
+
     // The inline step editor: Enter saves this step (and opens the next row on an add),
     // Shift+Enter saves the whole task session.
     if model.input_mode() == BoardInputMode::EditStep {
@@ -1058,7 +1074,7 @@ fn build_task_page_overlay<'a>(
     let show_scope = !column || editing_session;
     let meta_scope = if show_scope {
         match &form.scope {
-            TaskScope::Project { path } => render::short_project(path).to_string(),
+            TaskScope::Project { path } => model.project_name(Path::new(path)),
             TaskScope::Global => "desk".to_string(),
         }
     } else {
@@ -2058,13 +2074,17 @@ fn status_reserve(model: &BoardModel, surface: BoardSurface, has_message: bool) 
 }
 
 fn footer_context(model: &BoardModel, surface: BoardSurface) -> String {
+    // The project title editor names the full path of the project it renames.
+    if let Some(edit) = model.project_title_edit() {
+        return format!(" {}", edit.path);
+    }
     match surface {
         BoardSurface::Desk => " desk".to_string(),
         BoardSurface::Projects | BoardSurface::ThreadView => " projects".to_string(),
         BoardSurface::Project => {
             let path = model.archived_focus().or_else(|| model.active_project());
             let name = path
-                .map(|path| render::short_project(&path.to_string_lossy()).to_string())
+                .map(|path| model.project_name(path))
                 .unwrap_or_else(|| "desk".to_string());
             let mut context = format!(" {name}");
             if model.focus_is_archived() {
@@ -2080,21 +2100,25 @@ fn footer_context(model: &BoardModel, surface: BoardSurface) -> String {
 /// The persistent navigation row's paint for this model: fixed tabs, slot 2's label,
 /// and the active destination's right-side control.
 fn nav_paint(model: &BoardModel) -> NavPaint {
+    let names = model.project_names();
     let slot2_label = match &model.board_location {
         // AC-41: the read-only focus says so in its slot.
         BoardLocation::ArchivedProject(path) => {
-            format!("{} \u{b7} archived", project_option_label(path.as_path()))
+            format!(
+                "{} \u{b7} archived",
+                project_option_label(path.as_path(), &names)
+            )
         }
-        BoardLocation::Project(path) => project_option_label(path.as_path()),
+        BoardLocation::Project(path) => project_option_label(path.as_path(), &names),
         // Slot 2 carries the remembered project even while another destination is active.
         BoardLocation::Desk | BoardLocation::Projects => model
             .selected_project()
-            .map(project_option_label)
+            .map(|path| project_option_label(path, &names))
             .unwrap_or_else(|| "select project".to_string()),
     };
     let chip = match (&model.board_location, model.projects_view()) {
         (BoardLocation::Desk, _) => Some(NavChipPaint {
-            label: model.desk_filter().label(),
+            label: model.desk_filter().label(&model.project_names()),
             kind: NavChipKind::ThreadFilter,
             optional: model.desk_filter().is_all(),
         }),
@@ -2222,18 +2246,22 @@ impl OverlayPayloads {
                 Vec::new()
             };
         let scope_options: Vec<String> = if model.popup() == BoardPopup::ProjectPicker {
+            let names = model.project_names();
             let labels = match model.picker_tab() {
                 Some(PickerTab::Archived) => model
                     .archived_project_options()
                     .iter()
                     .map(|path| {
-                        project_scope_option_label(&ProjectScopeOption::Project(path.clone()))
+                        project_scope_option_label(
+                            &ProjectScopeOption::Project(path.clone()),
+                            &names,
+                        )
                     })
                     .collect(),
                 _ => model
                     .project_options()
                     .iter()
-                    .map(project_scope_option_label)
+                    .map(|option| project_scope_option_label(option, &names))
                     .collect(),
             };
             labels
@@ -2244,7 +2272,7 @@ impl OverlayPayloads {
                     .iter()
                     .map(|scope| match scope {
                         TaskScope::Global => "desk".to_string(),
-                        TaskScope::Project { path } => render::short_project(path).to_string(),
+                        TaskScope::Project { path } => model.project_name(Path::new(path)),
                     })
                     .collect(),
                 Some(CaptureField::Assignee) => model
@@ -2378,7 +2406,9 @@ impl OverlayPayloads {
             // The row names its destination so Enter never has to move the user's
             // view to prove where the task went.
             let destination = match &quick_add.scope {
-                TaskScope::Project { path } => project_option_label(Path::new(path)).to_string(),
+                TaskScope::Project { path } => {
+                    project_option_label(Path::new(path), &model.project_names())
+                }
                 TaskScope::Global => "desk".to_string(),
             };
             return Some(QueueOverlay::QuickAdd {
@@ -2475,6 +2505,7 @@ impl OverlayPayloads {
                 title: Some(title),
                 query: self.list_picker_query.as_deref(),
                 removable: model.assignee_picker_person().is_some(),
+                editing: None,
             });
         }
         if model.popup() == BoardPopup::ProjectPicker {
@@ -2485,6 +2516,9 @@ impl OverlayPayloads {
                 title: None,
                 query: None,
                 removable: false,
+                editing: model
+                    .project_title_edit()
+                    .map(|edit| (edit.buffer.value(), edit.buffer.cursor())),
             });
         }
         None
@@ -2597,7 +2631,7 @@ fn task_header_state(model: &BoardModel, form: &BoardForm, task: &crate::domain:
         }
     };
     let project = match &task.scope {
-        TaskScope::Project { path } => render::short_project(path).to_string(),
+        TaskScope::Project { path } => model.project_name(Path::new(path)),
         TaskScope::Global => "desk".to_string(),
     };
     format!("{status} · {project}")
@@ -2680,6 +2714,12 @@ fn draw_board_hits(frame: &mut Frame, model: &BoardModel) -> render::QueueHitMap
     };
     let frame_model = QueueFrameModel {
         tasks: &model.tasks,
+        project_titles: &model.project_titles,
+        project_title_edit: model
+            .project_title_edit()
+            .filter(|_| model.project_picker.is_none())
+            .map(|edit| (edit.buffer.value(), edit.buffer.cursor())),
+        title_edit_path: model.project_title_edit().map(|edit| edit.path.as_str()),
         view: &queue_view,
         selection_id,
         marked_ids: model.marked_ids.clone(),
@@ -2866,6 +2906,12 @@ fn draw_wide_board(
 
     let board_frame = QueueFrameModel {
         tasks: &model.tasks,
+        project_titles: &model.project_titles,
+        project_title_edit: model
+            .project_title_edit()
+            .filter(|_| model.project_picker.is_none())
+            .map(|edit| (edit.buffer.value(), edit.buffer.cursor())),
+        title_edit_path: model.project_title_edit().map(|edit| edit.path.as_str()),
         view: &queue_view,
         selection_id,
         marked_ids: model.marked_ids.clone(),
@@ -3012,9 +3058,11 @@ fn draw_projects_wide_board(
     };
 
     let right = model.right_seat();
-    let right_project_name = right
-        .and_then(BoardModel::active_project)
-        .map(project_option_label);
+    let right_project_name = right.and_then(|right| {
+        right
+            .active_project()
+            .map(|path| project_option_label(path, &right.project_names()))
+    });
     let right_view = right.map(BoardModel::queue_view);
     let right_payloads = right.map(OverlayPayloads::collect);
     let right_area = responsive.task_content();
@@ -3124,6 +3172,12 @@ fn draw_projects_wide_board(
     let outer_verbs = board_verb_items(model);
     let outer_frame = QueueFrameModel {
         tasks: &model.tasks,
+        project_titles: &model.project_titles,
+        project_title_edit: model
+            .project_title_edit()
+            .filter(|_| model.project_picker.is_none())
+            .map(|edit| (edit.buffer.value(), edit.buffer.cursor())),
+        title_edit_path: model.project_title_edit().map(|edit| edit.path.as_str()),
         view: &outer_view,
         selection_id: None,
         marked_ids: BTreeSet::new(),
@@ -3166,6 +3220,9 @@ fn draw_projects_wide_board(
         let verbs = right_verbs.as_ref()?;
         Some(QueueFrameModel {
             tasks: &right.tasks,
+            project_titles: &right.project_titles,
+            project_title_edit: None,
+            title_edit_path: None,
             view,
             selection_id: right.saved_task.or(right.selection_id),
             marked_ids: right.marked_ids.clone(),

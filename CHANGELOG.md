@@ -15,7 +15,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 ### Breaking
 
 - Dispatch refusal codes name no host: `not-in-herdr` is `no-host` and `herdr-failed` is `host-failed` ([refusal codes](https://gettsk.sh/docs/cli/#exit-contract)).
-- Store format 16 records each dispatch's host: `tsk list T12 --json` shows `host` and `session`, and Herdr keeps `herdr_workspace_id`. tsk 0.13 and older refuse it; roll back with `tsk.json.v6`.
+- Store format 17 records each dispatch's host and project titles: `tsk list T12 --json` shows `host` and `session`, and Herdr keeps `herdr_workspace_id`. tsk 0.13 and older refuse it; roll back with `tsk.json.v6`.
 
 ### Added
 
@@ -23,6 +23,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - Dispatch in Rex: each task gets its own tab in the Rex session you dispatch from; relaunch, reply delivery, cleanup, and `--merge` work as in Herdr ([dispatch](https://gettsk.sh/docs/dispatch/)).
 - A task dispatched in Herdr or Rex starts plainly in the other; relaunch, reply delivery, and cleanup there refuse with `other-host`.
 - `[dispatch] worktrees` in `config.toml` sets where dispatch puts new worktrees ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
+- Project titles: `ctrl+e` on a project row or `tsk project title` names a project; `-p` accepts the title ([project titles](https://gettsk.sh/docs/board/#project-titles)). Thanks @s3rgiosan (#249).
 
 ### Changed
 

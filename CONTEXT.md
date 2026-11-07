@@ -51,7 +51,10 @@ this file names things.
 - **desk**: the scope for tasks not tied to a project. Selected by `--desk` and by a bare
   `!p`.
 - **project**: the directory a task belongs to, usually a Git repo root, named by its
-  basename.
+  basename until it has a title.
+- **project title**: the name a project shows under instead of its basename, set with
+  `ctrl+e` on a project row or `tsk project title`. Unique across projects, ignoring case.
+  `-p` and `!p` match a title before a basename; the full path stays in footers and JSON.
 - **thread**: an optional name grouping tasks in the same scope. Not an entity: no
   identity beyond the name, no status, no lifecycle. It shows on the board while at least
   one working task in its scope carries it; the task keeps the name whatever its status.
@@ -135,8 +138,8 @@ this file names things.
   the desk's sections, and the picker's main list; it shows only on the picker's archived
   tab. Its tasks' own archived flags are independent of it.
 - **project record**: the store's entry for one project, keyed by its path. It exists only
-  while the project is archived; the projects the board shows are still derived from
-  tasks.
+  while the project is archived or titled; the projects the board shows are still derived
+  from tasks.
 - **archived group**: the `archived · n` fold and its dimmed rows inside the done drawer.
   Folded by default; the fold is session-only.
 - **hidden**: archived, or in an archived project. The one test every working lens filters

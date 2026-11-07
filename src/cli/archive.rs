@@ -85,10 +85,10 @@ pub fn run_project(
             };
             match result {
                 Ok(changed) => {
-                    let short = crate::ui::render::short_project(&resolved).to_string();
+                    let name = domain.project_name(&resolved);
                     Ok((
                         Ok(ProjectResult {
-                            name: short,
+                            name,
                             archived: archive,
                         }),
                         changed,
@@ -103,6 +103,89 @@ pub fn run_project(
             }
         })
         .map_err(ArchiveCliError::Store)?
+}
+
+/// A successful project title change, or a repeat of one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectTitleResult {
+    /// The resolved project's stored path.
+    pub path: String,
+    /// The title now set, `None` when cleared.
+    pub title: Option<String>,
+}
+
+/// A `tsk project title` refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectTitleError {
+    /// No project of that name, or a name two projects share.
+    UnknownProject(String),
+    /// Another project already carries the title.
+    TitleTaken(String),
+    /// The title cannot be a project title.
+    InvalidTitle(String),
+    Store(String),
+}
+
+impl ProjectTitleError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::UnknownProject(_) => "unknown-project",
+            Self::TitleTaken(_) => "title-taken",
+            Self::InvalidTitle(_) => "invalid-title",
+            Self::Store(_) => "store-error",
+        }
+    }
+}
+
+/// Set or clear one project's title. The project resolves like `tsk project archive`, its
+/// title included. Idempotent: setting the title it already has writes nothing.
+pub fn run_project_title(
+    name: String,
+    title: Option<String>,
+    state_dir: Option<PathBuf>,
+) -> Result<ProjectTitleResult, ProjectTitleError> {
+    let store = TaskStore::new(state_dir.unwrap_or_else(default_state_dir));
+    store
+        .locked_transition_if_changed(|domain: &mut DomainState| {
+            let resolved = match crate::scope::resolve_permissive_project_path(
+                &name,
+                domain,
+                Some(&crate::context::snapshot_from_env()),
+            ) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    return Ok((
+                        Err(ProjectTitleError::UnknownProject(error.message(&name))),
+                        false,
+                    ))
+                }
+            };
+            let outcome = match domain.set_project_title(&resolved, title.as_deref().unwrap_or(""))
+            {
+                Ok(changed) => (
+                    Ok(ProjectTitleResult {
+                        title: domain.project_title(&resolved).map(str::to_string),
+                        path: resolved,
+                    }),
+                    changed,
+                ),
+                Err(DomainError::UnknownProject(_)) => (
+                    Err(ProjectTitleError::UnknownProject(format!(
+                        "no project named {name} has tasks"
+                    ))),
+                    false,
+                ),
+                Err(error @ DomainError::ProjectTitleTaken { .. }) => {
+                    (Err(ProjectTitleError::TitleTaken(error.to_string())), false)
+                }
+                Err(error) => (
+                    Err(ProjectTitleError::InvalidTitle(error.to_string())),
+                    false,
+                ),
+            };
+            Ok(outcome)
+        })
+        .map_err(ProjectTitleError::Store)?
 }
 
 /// Archive or unarchive one task by address.

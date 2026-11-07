@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use super::CliOutput;
 use crate::cli::add::{AddError, FlagAddResult};
-use crate::cli::archive::{ArchiveCliError, ArchiveResult, ProjectResult};
+use crate::cli::archive::{
+    ArchiveCliError, ArchiveResult, ProjectResult, ProjectTitleError, ProjectTitleResult,
+};
 use crate::cli::edit::{EditError, EditResult};
 use crate::cli::list::{ListError, ListResult, ListRow, ListView};
 use crate::cli::parser::TaskAddress;
@@ -144,6 +146,8 @@ const CLEAN_USAGE: &[&str] = &["tsk clean <task> [--merge] [--json] [--state-dir
 const PROJECT_USAGE: &[&str] = &[
     "tsk project archive <name> [--state-dir <dir>]",
     "tsk project unarchive <name> [--state-dir <dir>]",
+    "tsk project title <name> <title> [--state-dir <dir>]",
+    "tsk project title <name> --clear [--state-dir <dir>]",
 ];
 const TRASH_USAGE: &[&str] = &["tsk trash restore <task> [--state-dir <dir>]"];
 const BACKUP_USAGE: &[&str] = &[
@@ -390,9 +394,9 @@ pub fn added(result: FlagAddResult, json: bool) -> CliOutput {
             number,
             title,
             project,
+            project_title,
             assignee,
-        } if json => format!(
-            "{}\n",
+        } if json => added_json(
             serde_json::json!({
                 "outcome": "created",
                 "id": id,
@@ -401,16 +405,17 @@ pub fn added(result: FlagAddResult, json: bool) -> CliOutput {
                 "project": project,
                 "assignee": assignee.as_ref().map(|assignee| &assignee.name),
                 "assignee_kind": assignee.as_ref().map(|assignee| assignee.kind.name()),
-            })
+            }),
+            project_title,
         ),
         FlagAddResult::Existing {
             id,
             number,
             title,
             project,
+            project_title,
             assignee,
-        } if json => format!(
-            "{}\n",
+        } if json => added_json(
             serde_json::json!({
                 "outcome": "existing",
                 "id": id,
@@ -419,7 +424,8 @@ pub fn added(result: FlagAddResult, json: bool) -> CliOutput {
                 "project": project,
                 "assignee": assignee.as_ref().map(|assignee| &assignee.name),
                 "assignee_kind": assignee.as_ref().map(|assignee| assignee.kind.name()),
-            })
+            }),
+            project_title,
         ),
         FlagAddResult::Created {
             number,
@@ -438,6 +444,14 @@ pub fn added(result: FlagAddResult, json: bool) -> CliOutput {
         stderr: String::new(),
         code: 0,
     }
+}
+
+/// One add outcome as a JSON line, with `project_title` only when the project has one.
+fn added_json(mut value: serde_json::Value, project_title: Option<String>) -> String {
+    if let (Some(title), Some(object)) = (project_title, value.as_object_mut()) {
+        object.insert("project_title".into(), serde_json::json!(title));
+    }
+    format!("{value}\n")
 }
 
 pub fn plan(result: crate::cli::add::PlanResult) -> CliOutput {
@@ -502,6 +516,8 @@ fn list_json(result: &ListResult) -> String {
             id: uuid::Uuid,
             number: u64,
             project: &'a Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            project_title: &'a Option<String>,
             status: HumanStatus,
             title: &'a str,
             notes: &'a Option<String>,
@@ -530,6 +546,7 @@ fn list_json(result: &ListResult) -> String {
             id: row.id,
             number: row.number,
             project: &row.project,
+            project_title: &row.project_title,
             status: row.status,
             title: &row.title,
             notes: &direct.notes,
@@ -1277,13 +1294,19 @@ fn append_wrapped(
 }
 
 fn scope_labels(rows: &[ListRow]) -> BTreeMap<Option<String>, String> {
-    distinct_scope_labels(rows.iter().map(|row| row.project.clone()))
+    distinct_scope_labels(rows.iter().map(|row| row.project.clone()), |path| {
+        rows.iter()
+            .find(|row| row.project.as_deref() == Some(path))
+            .and_then(|row| row.project_title.clone())
+    })
 }
 
-/// One distinct label per scope (`None` is the desk): a project's basename, widened to
-/// the shortest unique path suffix where basenames collide (`site-a/wordpress/wp-content`).
+/// One distinct label per scope (`None` is the desk): a titled project's title, else its
+/// basename, widened to the shortest unique path suffix where names collide
+/// (`site-a/wordpress/wp-content`). A title never widens: titles are unique.
 pub(crate) fn distinct_scope_labels(
     scopes: impl IntoIterator<Item = Option<String>>,
+    title_of: impl Fn(&str) -> Option<String>,
 ) -> BTreeMap<Option<String>, String> {
     let mut entries = Vec::new();
     let mut empty_projects = 0;
@@ -1300,7 +1323,8 @@ pub(crate) fn distinct_scope_labels(
         } else {
             0
         };
-        entries.push(ScopeLabel::new(scope, empty_number));
+        let title = scope.as_deref().and_then(&title_of);
+        entries.push(ScopeLabel::new(scope, empty_number, title));
     }
 
     loop {
@@ -1342,6 +1366,7 @@ pub(crate) fn distinct_scope_labels(
 
 struct ScopeLabel {
     scope: Option<String>,
+    title: Option<String>,
     segments: Vec<String>,
     depth: usize,
     prefixed: bool,
@@ -1350,7 +1375,7 @@ struct ScopeLabel {
 }
 
 impl ScopeLabel {
-    fn new(scope: Option<String>, empty_number: usize) -> Self {
+    fn new(scope: Option<String>, empty_number: usize, title: Option<String>) -> Self {
         let segments = scope
             .as_deref()
             .filter(|path| !path.trim().is_empty())
@@ -1358,6 +1383,7 @@ impl ScopeLabel {
             .unwrap_or_default();
         Self {
             scope,
+            title,
             depth: 1,
             segments,
             prefixed: false,
@@ -1367,6 +1393,9 @@ impl ScopeLabel {
     }
 
     fn label(&self) -> String {
+        if let Some(title) = &self.title {
+            return title.clone();
+        }
         let mut label = match self.scope.as_deref() {
             None => "desk".into(),
             Some(path) if path.trim().is_empty() => {
@@ -1389,7 +1418,8 @@ impl ScopeLabel {
     }
 
     fn widen(&mut self) -> bool {
-        if self.scope.is_none()
+        if self.title.is_some()
+            || self.scope.is_none()
             || self
                 .scope
                 .as_deref()
@@ -2458,11 +2488,15 @@ pub fn archive_usage(verb: &str, reason: &str) -> CliOutput {
 pub fn project_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(PROJECT_USAGE),
-        purpose: "Archive or unarchive a whole project. Its tasks keep their statuses.".into(),
+        purpose: "Archive, unarchive, or title a whole project. Its tasks keep their statuses."
+            .into(),
         groups: vec![
             group(
                 "Arguments",
-                &[("<name>", "a project basename, or its path")],
+                &[
+                    ("<name>", "a project title, basename, or path"),
+                    ("<title>", "the name the project shows under, unique"),
+                ],
             ),
             group(
                 "Actions",
@@ -2472,24 +2506,33 @@ pub fn project_help() -> CliOutput {
                         "unarchive",
                         "put it back; tasks archived on their own stay archived",
                     ),
+                    (
+                        "title",
+                        "show the project under <title>, or its folder name with --clear",
+                    ),
                 ],
             ),
             group(
                 "Options",
-                &[("--state-dir <dir>", "use another board store")],
+                &[
+                    ("--clear", "with title: remove the title"),
+                    ("--state-dir <dir>", "use another board store"),
+                ],
             ),
         ],
         examples: vec![
             "tsk project archive atlas".into(),
             "tsk project unarchive atlas".into(),
+            "tsk project title ~/sites/a/wp-content \"Site A\"".into(),
         ],
         refusals: vec![
             "no project named <name> has tasks".into(),
             "project <name> is ambiguous: <paths>".into(),
+            "title: unknown-project, title-taken, invalid-title".into(),
         ],
         exit: exit_line(
-            "project archived or unarchived, or already was",
-            Some("no project of that name has tasks, or the name is ambiguous"),
+            "project archived, unarchived, or titled, or already was",
+            Some("no project of that name has tasks, the name is ambiguous, or the title refuses"),
             true,
         ),
     })
@@ -2497,6 +2540,42 @@ pub fn project_help() -> CliOutput {
 
 pub fn project_usage(reason: &str) -> CliOutput {
     usage_error("project", reason, PROJECT_USAGE)
+}
+
+pub fn project_titled(result: ProjectTitleResult) -> CliOutput {
+    let folder = crate::scope::project_basename(&result.path);
+    let stdout = match &result.title {
+        Some(title) => format!(
+            "titled project {} ({})\n",
+            terminal_text(title),
+            terminal_text(&result.path)
+        ),
+        None => format!(
+            "cleared title of project {} ({})\n",
+            terminal_text(folder),
+            terminal_text(&result.path)
+        ),
+    };
+    CliOutput {
+        stdout,
+        stderr: String::new(),
+        code: 0,
+    }
+}
+
+pub fn project_title_rejected(error: ProjectTitleError) -> CliOutput {
+    let code = error.code();
+    let (detail, exit) = match error {
+        ProjectTitleError::Store(detail) => (detail, 3),
+        ProjectTitleError::UnknownProject(detail)
+        | ProjectTitleError::TitleTaken(detail)
+        | ProjectTitleError::InvalidTitle(detail) => (format!("{code}: {detail}"), 1),
+    };
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!("tsk project: {}\n", terminal_text(&detail)),
+        code: exit,
+    }
 }
 
 pub fn project_archived(result: ProjectResult, verb: &str) -> CliOutput {
