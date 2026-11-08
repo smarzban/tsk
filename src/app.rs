@@ -1869,15 +1869,13 @@ fn board_scrollbar_mouse_route<E>(
     Ok((false, mode, routed))
 }
 
-/// Route a mouse event to the board intent the painted frame accepts.
+/// Seat a mouse-mapped intent belongs on: the focused right column, or the outer board.
 ///
-/// `resolve_board_surface`'s side effects run first, exactly as for a key press: a shrink
-/// past the classic Resize threshold collapses whatever surface it left open before the
-/// hit-map is rebuilt, so a click can never land on a control the shrink already withdrew.
-/// The hit-map itself comes from [`crate::ui::board::board_hit_map`], the same painter
-/// [`draw_board`] uses, so the click and the screen the user is looking at can never
-/// disagree about where a control is. The area gate and command resolution afterward are
-/// the same ones the key and paste routes already pass through.
+/// `resolve_board_surface` does not collapse anything on shrink; it only returns the model's
+/// input mode. The hit-map comes from [`crate::ui::board::board_hit_map`], the same painter
+/// [`draw_board`] uses, so the click and the screen the user is looking at can never disagree
+/// about where a control is. The area gate and command resolution afterward are the same ones
+/// the key and paste routes already pass through.
 fn mouse_intent_target(
     model: &BoardModel,
     area: Rect,
@@ -1944,9 +1942,9 @@ fn board_mouse_intent(
     // `Down(Left)`/`ScrollUp`/`ScrollDown` (every other kind falls through its own leading
     // match to `None`), so gate on the event kind *before* paying for a full board paint
     // (`board_hit_map` renders into a scratch `TestBackend`) and before
-    // `resolve_board_surface`'s side effects run for a kind that was never going to
-    // dispatch anything. This also stops `resolve_board_surface` firing on motion, which
-    // was itself a second reason to gate first.
+    // `resolve_board_surface` runs for a kind that was never going to dispatch anything.
+    // `resolve_board_surface` only returns the model's input mode; it has no shrink-collapse
+    // side effects. Gate first so motion never pays for the hit-map or that call.
     use crossterm::event::{MouseButton, MouseEventKind};
     if !matches!(
         mouse.kind,
