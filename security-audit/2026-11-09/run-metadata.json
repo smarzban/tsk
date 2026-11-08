@@ -1,0 +1,91 @@
+{
+  "run_id": "run-1",
+  "repo": "smarzban/tsk",
+  "target": "/agent/repos/tsk",
+  "source_ref": {
+    "commit": "5b30b8d6475114bb1312f4bb451f65216d3e7990",
+    "branch": "main",
+    "delta_from": "36610e8f012018e3ddd624304dbcf680ae4df56c",
+    "delta_to": "5b30b8d6475114bb1312f4bb451f65216d3e7990",
+    "worktree_dirty": false,
+    "commits": [
+      "952eddf68faba6ff51f107a1cd9778591635b912",
+      "5b30b8d6475114bb1312f4bb451f65216d3e7990"
+    ],
+    "note": "HEAD matched the requested audit commit. Two commits: test clock pinning (T466, #296) and nightly docs, dead-helper, comment, and rustdoc cleanup (#294)."
+  },
+  "profile": "standard",
+  "scope": "scoped delta of 36610e8f012018e3ddd624304dbcf680ae4df56c..5b30b8d6475114bb1312f4bb451f65216d3e7990 and the live controls those edits touch, plus carried windows-state-dir-acl",
+  "scope_paths": [
+    "AGENTS.md",
+    "src/app.rs",
+    "src/ui/board/model.rs",
+    "src/ui/render.rs",
+    "src/ui/mod.rs",
+    "src/ui/mouse.rs",
+    "src/dispatch.rs",
+    "src/dispatch/pr.rs",
+    "src/dispatch/host.rs",
+    "src/fsperm.rs",
+    "src/store.rs",
+    "src/agents.rs",
+    "tests/queue_board_render.rs",
+    "tests/fixtures/queue_board/project_picker_110x30.txt"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md"
+  ],
+  "prior_run_paths": [
+    "/home/ubuntu/security-audit-skill/tsk/run-1/prior/coverage-ledger.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-1/prior/findings.json",
+    "origin/security-audit/2026-11-08:security-audit/2026-11-08/"
+  ],
+  "prior_source_ref": "36610e8f012018e3ddd624304dbcf680ae4df56c",
+  "shared_file_owners": {
+    "run-metadata.json": "parent",
+    "architecture.md": "parent",
+    "coverage-ledger.json": "parent",
+    "findings.json": "parent",
+    "REPORT.md": "parent",
+    "FINDINGS-DETAIL.md": "parent",
+    "NEEDS-VALIDATION.md": "parent"
+  },
+  "run_status": "complete",
+  "sandbox_notes": "unshare --user --map-root-user --mount --net succeeds. bubblewrap, firejail, and quota tools are absent. A read-only toolchain mount was not established together with an empty environment and a disk bound. Target code was not executed. Promotion allowlist was empty.",
+  "agent_spend": {
+    "budget": null,
+    "judgment_invocations": {
+      "reconnaissance": 4,
+      "hunters_wave_1": 8,
+      "post_wave_critic": 1,
+      "final_clean_critic": 1,
+      "phase3_verifier": 1,
+      "phase5_verifier": 1,
+      "total": 16
+    },
+    "notes": "Two hunter replies omitted the units wrapper and were discarded. Fresh hunters closed those units. No second wave. Both critics returned no missing units and no reassignment. The carried Windows lead stayed needs_validation."
+  },
+  "sandbox": {
+    "target_code_executed": false,
+    "reason": "unshare can create a user, mount, and net namespace. bubblewrap and firejail are absent. Disk quota tools are absent, so a disk bound was not enforced together with an empty environment, a read-only toolchain, scratch-only writes, and explicit CPU, memory, process, and file-size limits."
+  },
+  "validators": {
+    "validate-findings.cjs": "PASS",
+    "validate-coverage-ledger.cjs": "PASS"
+  },
+  "coverage": {
+    "covered": 6,
+    "candidate": 1,
+    "out_of_scope": 25,
+    "blocked": 0,
+    "deferred": 0
+  },
+  "new_confirmed_findings": [],
+  "carried_needs_validation": ["windows-state-dir-acl"],
+  "critics": {
+    "post_wave": {"missing_units": 0, "reassign_ids": 0, "stop": true},
+    "final_clean": {"missing_units": 0, "reassign_ids": 0, "stop": true}
+  }
+}
