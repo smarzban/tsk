@@ -5,7 +5,7 @@
 │ NEEDS YOU ─────────────────────────────────────────────────────────────────────────────────────────────────2 │
 │                                                                                                              │
 │  ■ T5 Wire dispatch cleanup receipts  herdr                                                                  │
-│    └─ @claude: Which receipt format? · 1088d                                                                 │
+│    └─ @claude: Which receipt format? · 41m                                                                   │
 │  ▲ T6 Docs refresh pass after F9 ships  herdr                                                                │
 │        ┌─ project ──────────────────────────────────────────────────────────────────────────── [x]─┐         │
 │ IN MOTI│                                                                                           │───────2 │

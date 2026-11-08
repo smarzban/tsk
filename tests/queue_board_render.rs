@@ -3300,7 +3300,10 @@ fn filter_golden_rows() -> (Vec<String>, Vec<String>) {
         }
     }
     let mut domain = DomainState::new();
-    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    let mut model = clocked(BoardModel::from_tasks(
+        tasks,
+        Some(PathBuf::from("/repos/tsk")),
+    ));
     let mut apply = |model: &mut BoardModel, intent: BoardIntent| {
         apply_intent(&mut domain, model, intent, None).expect("filter golden intent");
     };
@@ -3311,9 +3314,9 @@ fn filter_golden_rows() -> (Vec<String>, Vec<String>) {
     apply(&mut model, BoardIntent::OpenThreadFilterPicker);
     apply(&mut model, BoardIntent::ListPickerTabNext);
     apply(&mut model, BoardIntent::ListPickerNext);
-    let picker = board_rows(&model, 40, 24);
+    let picker = scene_rows(&model, 40, 24);
     apply(&mut model, BoardIntent::ConfirmListPicker);
-    let board = board_rows(&model, 40, 24);
+    let board = scene_rows(&model, 40, 24);
     (picker, board)
 }
 
@@ -3321,7 +3324,7 @@ fn filter_golden_rows() -> (Vec<String>, Vec<String>) {
 /// neither the thread nor the assignee choice is ever cut off.
 fn filter_long_golden_rows() -> Vec<String> {
     let model = long_filter_model();
-    board_rows(&model, 40, 24)
+    scene_rows(&model, 40, 24)
 }
 
 fn long_filter_model() -> BoardModel {
@@ -3337,7 +3340,10 @@ fn long_filter_model() -> BoardModel {
         }
     }
     let mut domain = DomainState::new();
-    let mut model = BoardModel::from_tasks(tasks, Some(PathBuf::from("/repos/tsk")));
+    let mut model = clocked(BoardModel::from_tasks(
+        tasks,
+        Some(PathBuf::from("/repos/tsk")),
+    ));
     for intent in [
         BoardIntent::SelectNavTab(NavTab::ProjectBoard),
         BoardIntent::OpenThreadFilterPicker,
@@ -3403,8 +3409,10 @@ fn golden_scenes() -> Vec<GoldenScene> {
     // Keep the projects-preview scenes on the real board painter: the nested right seat and its
     // shared footer are not representable by a standalone QueueFrameModel.
     let mut projects_domain = DomainState::new();
-    let mut projects_model =
-        BoardModel::from_tasks(tasks.clone(), Some(PathBuf::from("/repos/tsk")));
+    let mut projects_model = clocked(BoardModel::from_tasks(
+        tasks.clone(),
+        Some(PathBuf::from("/repos/tsk")),
+    ));
     apply_intent(
         &mut projects_domain,
         &mut projects_model,
@@ -3412,8 +3420,8 @@ fn golden_scenes() -> Vec<GoldenScene> {
         None,
     )
     .expect("open projects overview for goldens");
-    let projects_index_50_rows = board_rows(&projects_model, 50, 20);
-    let projects_index_110_rows = board_rows(&projects_model, 110, 30);
+    let projects_index_50_rows = scene_rows(&projects_model, 50, 20);
+    let projects_index_110_rows = scene_rows(&projects_model, 110, 30);
     apply_intent(
         &mut projects_domain,
         &mut projects_model,
@@ -3421,7 +3429,7 @@ fn golden_scenes() -> Vec<GoldenScene> {
         None,
     )
     .expect("enter projects split for golden");
-    let projects_split_rows = board_rows(&projects_model, 110, 30);
+    let projects_split_rows = scene_rows(&projects_model, 110, 30);
     apply_intent(
         &mut projects_domain,
         &mut projects_model,
@@ -3429,12 +3437,15 @@ fn golden_scenes() -> Vec<GoldenScene> {
         None,
     )
     .expect("enter projects rail for golden");
-    let projects_rail_rows = board_rows(&projects_model, 110, 30);
+    let projects_rail_rows = scene_rows(&projects_model, 110, 30);
     let (titled_index_rows, title_edit_rows, picker_title_edit_rows) = project_title_scenes(&tasks);
     // The project picker's own footer, wide and narrow, so its `ctrl+e title` hint and the
     // way the hints shed are pinned.
     let mut picker_domain = DomainState::new();
-    let mut picker_model = BoardModel::from_tasks(tasks.clone(), Some(PathBuf::from("/repos/tsk")));
+    let mut picker_model = clocked(BoardModel::from_tasks(
+        tasks.clone(),
+        Some(PathBuf::from("/repos/tsk")),
+    ));
     apply_intent(
         &mut picker_domain,
         &mut picker_model,
@@ -3442,11 +3453,14 @@ fn golden_scenes() -> Vec<GoldenScene> {
         None,
     )
     .expect("open the project picker for goldens");
-    let picker_wide_rows = board_rows(&picker_model, 110, 30);
-    let picker_narrow_rows = board_rows(&picker_model, 40, 24);
+    let picker_wide_rows = scene_rows(&picker_model, 110, 30);
+    let picker_narrow_rows = scene_rows(&picker_model, 40, 24);
 
     let mut search_domain = DomainState::new();
-    let mut search_model = BoardModel::from_tasks(tasks.clone(), Some(PathBuf::from("/repos/tsk")));
+    let mut search_model = clocked(BoardModel::from_tasks(
+        tasks.clone(),
+        Some(PathBuf::from("/repos/tsk")),
+    ));
     apply_intent(
         &mut search_domain,
         &mut search_model,
@@ -3461,7 +3475,7 @@ fn golden_scenes() -> Vec<GoldenScene> {
         None,
     )
     .expect("type board search for golden");
-    let board_search_rows = board_rows(&search_model, 80, 24);
+    let board_search_rows = scene_rows(&search_model, 80, 24);
     apply_intent(
         &mut search_domain,
         &mut search_model,
@@ -3469,10 +3483,12 @@ fn golden_scenes() -> Vec<GoldenScene> {
         None,
     )
     .expect("pin board search for golden");
-    let board_search_pinned_rows = board_rows(&search_model, 80, 24);
+    let board_search_pinned_rows = scene_rows(&search_model, 80, 24);
 
-    let mut empty_search_model =
-        BoardModel::from_tasks(tasks.clone(), Some(PathBuf::from("/repos/tsk")));
+    let mut empty_search_model = clocked(BoardModel::from_tasks(
+        tasks.clone(),
+        Some(PathBuf::from("/repos/tsk")),
+    ));
     apply_intent(
         &mut search_domain,
         &mut empty_search_model,
@@ -3487,7 +3503,7 @@ fn golden_scenes() -> Vec<GoldenScene> {
         None,
     )
     .expect("type empty board search for golden");
-    let board_search_empty_rows = board_rows(&empty_search_model, 80, 24);
+    let board_search_empty_rows = scene_rows(&empty_search_model, 80, 24);
 
     let board_view = fixture_view(&tasks, false);
     let board_model = fixture_model(&tasks, &board_view);
@@ -3520,7 +3536,7 @@ fn golden_scenes() -> Vec<GoldenScene> {
         None,
     )
     .expect("mark destination row");
-    let marked_rows = board_rows(&marked_model, 80, 24);
+    let marked_rows = scene_rows(&marked_model, 80, 24);
     let (default_split_rows, default_split_geo) = paint(78, 24, &board_model);
     assert_eq!(
         default_split_geo.tier,
@@ -3618,7 +3634,7 @@ fn golden_scenes() -> Vec<GoldenScene> {
     let filtered_long_rows = filter_long_golden_rows();
     let mut long_message_model = long_filter_model();
     long_message_model.set_message("moved T3 to started");
-    let filtered_long_message_rows = board_rows(&long_message_model, 40, 24);
+    let filtered_long_message_rows = scene_rows(&long_message_model, 40, 24);
 
     vec![
         GoldenScene {
@@ -3781,7 +3797,10 @@ fn project_title_scenes(tasks: &[Task]) -> (Vec<String>, Vec<String>, Vec<String
     }))
     .expect("titled fixture domain");
     let new_model = |domain: &DomainState| {
-        let mut model = BoardModel::from_tasks(tasks.to_vec(), Some(PathBuf::from("/repos/tsk")));
+        let mut model = clocked(BoardModel::from_tasks(
+            tasks.to_vec(),
+            Some(PathBuf::from("/repos/tsk")),
+        ));
         model.sync_from_domain(domain);
         model
     };
@@ -3800,12 +3819,12 @@ fn project_title_scenes(tasks: &[Task]) -> (Vec<String>, Vec<String>, Vec<String
         &mut index,
         BoardIntent::SelectNavTab(NavTab::Projects),
     );
-    let titled = board_rows(&index, 110, 30);
+    let titled = scene_rows(&index, 110, 30);
     while index.selected_project_row().map(|row| row.path) != Some("/repos/herdr".into()) {
         apply(&mut domain, &mut index, BoardIntent::SelectNext);
     }
     edit_to(&mut domain, &mut index, "Herdr plugin");
-    let editing = board_rows(&index, 110, 30);
+    let editing = scene_rows(&index, 110, 30);
 
     let mut picker = new_model(&domain);
     apply(&mut domain, &mut picker, BoardIntent::OpenProjectSelector);
@@ -3814,7 +3833,7 @@ fn project_title_scenes(tasks: &[Task]) -> (Vec<String>, Vec<String>, Vec<String
         apply(&mut domain, &mut picker, BoardIntent::ProjectPickerNext);
     }
     edit_to(&mut domain, &mut picker, "Herdr plugin");
-    let picker_editing = board_rows(&picker, 78, 24);
+    let picker_editing = scene_rows(&picker, 78, 24);
     (titled, editing, picker_editing)
 }
 
@@ -3860,6 +3879,17 @@ fn clocked(mut model: BoardModel) -> BoardModel {
     model
 }
 
+/// [`board_rows`] for a golden scene: refuses a model whose clock was never pinned, so a
+/// painted age can never drift with the wall clock (wrap the model in [`clocked`]).
+fn scene_rows(model: &BoardModel, width: u16, height: u16) -> Vec<String> {
+    assert_eq!(
+        model.now(),
+        now(),
+        "golden scene model reads the wall clock: wrap it in clocked()"
+    );
+    board_rows(model, width, height)
+}
+
 fn grouping_scenes() -> Vec<GoldenScene> {
     let tasks = threaded_fixture_tasks();
     let mut domain = DomainState::new();
@@ -3871,9 +3901,9 @@ fn grouping_scenes() -> Vec<GoldenScene> {
     ));
     pick(&mut domain, &mut desk, BoardIntent::OpenGroupPicker, 1);
     pick(&mut domain, &mut desk, BoardIntent::OpenSortPicker, 2);
-    let desk_project_110 = board_rows(&desk, 110, 30);
-    let desk_project_78 = board_rows(&desk, 78, 24);
-    let desk_project_40 = board_rows(&desk, 40, 24);
+    let desk_project_110 = scene_rows(&desk, 110, 30);
+    let desk_project_78 = scene_rows(&desk, 78, 24);
+    let desk_project_40 = scene_rows(&desk, 40, 24);
 
     // Desk grouped by thread, sorted by project.
     let mut by_thread = clocked(BoardModel::from_tasks(
@@ -3882,7 +3912,7 @@ fn grouping_scenes() -> Vec<GoldenScene> {
     ));
     pick(&mut domain, &mut by_thread, BoardIntent::OpenGroupPicker, 2);
     pick(&mut domain, &mut by_thread, BoardIntent::OpenSortPicker, 1);
-    let desk_thread_78 = board_rows(&by_thread, 78, 24);
+    let desk_thread_78 = scene_rows(&by_thread, 78, 24);
 
     // A project board grouped by thread with the cursor's group folded.
     let mut project_board = clocked(BoardModel::from_tasks(
@@ -3903,7 +3933,7 @@ fn grouping_scenes() -> Vec<GoldenScene> {
         None,
     )
     .expect("fold");
-    let project_folded_78 = board_rows(&project_board, 78, 24);
+    let project_folded_78 = scene_rows(&project_board, 78, 24);
 
     // A project board grouped by thread whose inbox groups too, under its own fold.
     let mut inbox_tasks = tasks.clone();
@@ -3936,7 +3966,7 @@ fn grouping_scenes() -> Vec<GoldenScene> {
         BoardIntent::OpenGroupPicker,
         1,
     );
-    let project_inbox_78 = board_rows(&inbox_board, 78, 24);
+    let project_inbox_78 = scene_rows(&inbox_board, 78, 24);
 
     // The desk filter on its projects tab, and the group picker.
     let mut filter = clocked(BoardModel::from_tasks(
@@ -3957,7 +3987,7 @@ fn grouping_scenes() -> Vec<GoldenScene> {
         None,
     )
     .expect("projects tab");
-    let filter_picker_78 = board_rows(&filter, 78, 24);
+    let filter_picker_78 = scene_rows(&filter, 78, 24);
     let mut group_picker = clocked(BoardModel::from_tasks(
         tasks,
         Some(PathBuf::from("/repos/tsk")),
@@ -3969,7 +3999,7 @@ fn grouping_scenes() -> Vec<GoldenScene> {
         None,
     )
     .expect("open group picker");
-    let group_picker_78 = board_rows(&group_picker, 78, 24);
+    let group_picker_78 = scene_rows(&group_picker, 78, 24);
 
     // Group and sort by assignee (T238): the desk, a project board, and the desk filter's
     // `@assignees` tab, reached with ← from threads (the tabs wrap).
@@ -3990,9 +4020,9 @@ fn grouping_scenes() -> Vec<GoldenScene> {
         BoardIntent::OpenSortPicker,
         3,
     );
-    let desk_assignee_110 = board_rows(&desk_assignee, 110, 30);
-    let desk_assignee_78 = board_rows(&desk_assignee, 78, 24);
-    let desk_assignee_40 = board_rows(&desk_assignee, 40, 24);
+    let desk_assignee_110 = scene_rows(&desk_assignee, 110, 30);
+    let desk_assignee_78 = scene_rows(&desk_assignee, 78, 24);
+    let desk_assignee_40 = scene_rows(&desk_assignee, 40, 24);
     let mut project_assignee = clocked(BoardModel::from_tasks(
         assigned.clone(),
         Some(PathBuf::from("/repos/tsk")),
@@ -4004,9 +4034,9 @@ fn grouping_scenes() -> Vec<GoldenScene> {
         BoardIntent::OpenGroupPicker,
         2,
     );
-    let project_assignee_110 = board_rows(&project_assignee, 110, 30);
-    let project_assignee_78 = board_rows(&project_assignee, 78, 24);
-    let project_assignee_40 = board_rows(&project_assignee, 40, 24);
+    let project_assignee_110 = scene_rows(&project_assignee, 110, 30);
+    let project_assignee_78 = scene_rows(&project_assignee, 78, 24);
+    let project_assignee_40 = scene_rows(&project_assignee, 40, 24);
     let mut assignee_filter = clocked(BoardModel::from_tasks(
         assigned,
         Some(PathBuf::from("/repos/tsk")),
@@ -4025,8 +4055,8 @@ fn grouping_scenes() -> Vec<GoldenScene> {
         None,
     )
     .expect("assignees tab");
-    let assignee_filter_78 = board_rows(&assignee_filter, 78, 24);
-    let assignee_filter_40 = board_rows(&assignee_filter, 40, 24);
+    let assignee_filter_78 = scene_rows(&assignee_filter, 78, 24);
+    let assignee_filter_40 = scene_rows(&assignee_filter, 40, 24);
 
     vec![
         GoldenScene {
