@@ -4949,10 +4949,6 @@ fn paint_block_card(
     }
 }
 
-/// The board's `P` project-scope picker: a centered modal card, not the chip-anchored
-/// dropdown this used to paint. [`paint_page_scope_dropdown`] (the task-page form's own
-/// scope control) is a separate, unrelated painter and keeps its chip-anchored panel.
-#[allow(clippy::too_many_arguments)]
 /// The picker footer while the title editor is open on one of its rows.
 const PROJECT_TITLE_EDIT_FOOTER: &[VerbEntry<'static>] = &[
     VerbEntry {
@@ -4979,6 +4975,9 @@ struct ScopeDropdownPaint<'a> {
     editing: Option<(&'a str, usize)>,
 }
 
+/// The board's `P` project-scope picker: a centered modal card, not the chip-anchored
+/// dropdown this used to paint. [`paint_page_scope_dropdown`] (the task-page form's own
+/// scope control) is a separate, unrelated painter and keeps its chip-anchored panel.
 fn paint_scope_dropdown(
     frame: &mut Frame<'_>,
     geo: &TierGeometry,
