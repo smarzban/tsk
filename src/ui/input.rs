@@ -1036,6 +1036,12 @@ fn help_bindings() -> Vec<HelpBinding> {
             "exit close app",
         ),
         help_binding(
+            HelpGroup::AppControls,
+            "ctrl+l",
+            "redraw the screen",
+            "repaint refresh blank screen",
+        ),
+        help_binding(
             HelpGroup::CreateEdit,
             "ctrl+e",
             "edit title / selected step (task page)",

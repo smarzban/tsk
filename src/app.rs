@@ -480,6 +480,9 @@ fn run_board_loop(
                 event::read()?
             };
             reflow_click.observe(&next);
+            if forget_frame_on_repaint_request(terminal, &next)? {
+                continue;
+            }
             let event_area = match &next {
                 Event::Resize(width, height) => Rect::new(0, 0, *width, *height),
                 _ => terminal_area(terminal)?,
@@ -808,6 +811,40 @@ fn run_board_loop(
         Ok(())
     })?;
     Ok(())
+}
+
+/// Whether `event` asks for a full repaint: focus returning to the pane, or `ctrl+l`.
+///
+/// Ratatui writes only the cells that differ from its last frame. A host terminal that
+/// drops its alternate screen while the pane is hidden (some embedded terminals do on
+/// tab switches) would otherwise show only the cells that changed since, on a blank pane.
+fn is_full_repaint_request(event: &Event) -> bool {
+    match event {
+        Event::FocusGained => true,
+        Event::Key(key) => {
+            key.kind == KeyEventKind::Press
+                && key.code == KeyCode::Char('l')
+                && key.modifiers == KeyModifiers::CONTROL
+        }
+        _ => false,
+    }
+}
+
+/// On a [full repaint request](is_full_repaint_request), clear the screen and forget the
+/// last frame so the next paint writes every cell. Returns whether the event was consumed.
+///
+/// `Terminal::resize` to the current size does that without `Terminal::clear`'s cursor
+/// position query, which errors out of the board when the terminal never answers it.
+fn forget_frame_on_repaint_request<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+    event: &Event,
+) -> Result<bool, B::Error> {
+    if !is_full_repaint_request(event) {
+        return Ok(false);
+    }
+    let size = terminal.size()?;
+    terminal.resize(Rect::new(0, 0, size.width, size.height))?;
+    Ok(true)
 }
 
 /// Copy a finished drag selection from the last painted frame to the clipboard.
@@ -6933,6 +6970,152 @@ mod tests {
         }
         assert_eq!(model.wide_stage(), crate::ui::tier::WideStage::Split);
         assert!(!model.project_right_seat_focused());
+    }
+
+    #[test]
+    fn focus_gained_and_ctrl_l_request_a_full_repaint() {
+        let ctrl_l = Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        assert!(is_full_repaint_request(&Event::FocusGained));
+        assert!(is_full_repaint_request(&ctrl_l));
+        for other in [
+            Event::FocusLost,
+            Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)),
+            Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::ALT)),
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Char('l'),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Release,
+            )),
+            Event::Resize(80, 24),
+        ] {
+            assert!(!is_full_repaint_request(&other), "{other:?}");
+        }
+    }
+
+    /// A host terminal that dropped the screen gets the whole board back on focus in or
+    /// `ctrl+l`, not just the cells that changed since the last frame.
+    #[test]
+    fn repaint_request_restores_a_screen_the_host_terminal_dropped() {
+        let area = Rect::new(0, 0, 110, 30);
+        let (_domain, model, _) = projects_preview_fixture();
+        let screen = |terminal: &Terminal<TestBackend>| {
+            let buffer = terminal.backend().buffer();
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+        terminal
+            .draw(|frame| drop(draw_board(frame, &model)))
+            .expect("draw");
+        let painted = screen(&terminal);
+        assert!(painted.trim().len() > 20, "board painted: {painted}");
+
+        for request in [
+            Event::FocusGained,
+            Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+        ] {
+            // The host drops the screen behind tsk's back.
+            ratatui::backend::Backend::clear(terminal.backend_mut()).expect("host clear");
+            terminal
+                .draw(|frame| drop(draw_board(frame, &model)))
+                .expect("diff draw");
+            assert_ne!(
+                screen(&terminal),
+                painted,
+                "a diff paint alone leaves it blank"
+            );
+
+            assert!(forget_frame_on_repaint_request(&mut terminal, &request).expect("clear"));
+            terminal
+                .draw(|frame| drop(draw_board(frame, &model)))
+                .expect("full draw");
+            assert_eq!(
+                screen(&terminal),
+                painted,
+                "{request:?} repaints every cell"
+            );
+        }
+        assert!(!forget_frame_on_repaint_request(&mut terminal, &Event::FocusLost).expect("noop"));
+    }
+
+    /// A terminal that never answers the cursor position query, like a host that drops
+    /// the request; everything else is a [`TestBackend`].
+    struct NoCursorReplyBackend(TestBackend);
+
+    impl ratatui::backend::Backend for NoCursorReplyBackend {
+        type Error = io::Error;
+
+        fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+        {
+            self.0.draw(content).map_err(|never| match never {})
+        }
+        fn hide_cursor(&mut self) -> io::Result<()> {
+            self.0.hide_cursor().map_err(|never| match never {})
+        }
+        fn show_cursor(&mut self) -> io::Result<()> {
+            self.0.show_cursor().map_err(|never| match never {})
+        }
+        fn get_cursor_position(&mut self) -> io::Result<ratatui::layout::Position> {
+            Err(io::Error::other("cursor position query unanswered"))
+        }
+        fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+            &mut self,
+            position: P,
+        ) -> io::Result<()> {
+            self.0
+                .set_cursor_position(position)
+                .map_err(|never| match never {})
+        }
+        fn clear(&mut self) -> io::Result<()> {
+            self.0.clear().map_err(|never| match never {})
+        }
+        fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> io::Result<()> {
+            self.0
+                .clear_region(clear_type)
+                .map_err(|never| match never {})
+        }
+        fn size(&self) -> io::Result<ratatui::layout::Size> {
+            self.0.size().map_err(|never| match never {})
+        }
+        fn window_size(&mut self) -> io::Result<ratatui::backend::WindowSize> {
+            self.0.window_size().map_err(|never| match never {})
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            ratatui::backend::Backend::flush(&mut self.0).map_err(|never| match never {})
+        }
+    }
+
+    /// The repaint must not ask for the cursor position: a terminal that never answers
+    /// would otherwise end the board with an error instead of repainting it.
+    #[test]
+    fn repaint_request_never_queries_the_cursor_position() {
+        let area = Rect::new(0, 0, 110, 30);
+        let (_domain, model, _) = projects_preview_fixture();
+        let backend = NoCursorReplyBackend(TestBackend::new(area.width, area.height));
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| drop(draw_board(frame, &model)))
+            .expect("draw");
+        let painted = terminal.backend().0.buffer().clone();
+
+        ratatui::backend::Backend::clear(&mut terminal.backend_mut().0).expect("host clear");
+        assert!(
+            forget_frame_on_repaint_request(&mut terminal, &Event::FocusGained)
+                .expect("repaint without a cursor query")
+        );
+        terminal
+            .draw(|frame| drop(draw_board(frame, &model)))
+            .expect("full draw");
+        assert_eq!(terminal.backend().0.buffer(), &painted);
     }
 
     #[test]
