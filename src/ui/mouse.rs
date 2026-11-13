@@ -3,9 +3,9 @@
 use std::io::{self, stdout, Write};
 
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
+    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::supports_keyboard_enhancement;
@@ -75,6 +75,9 @@ pub struct CaptureLayout {
 pub(crate) enum TerminalInputCapability {
     MouseCapture,
     BracketedPaste,
+    /// Focus in/out reports: on focus in the event loop repaints every cell, since a
+    /// host terminal may have dropped the screen while the pane was hidden.
+    FocusChange,
     KeyboardProtocol,
 }
 
@@ -84,6 +87,7 @@ pub(crate) fn requested_terminal_input(
     let mut requested = vec![
         TerminalInputCapability::MouseCapture,
         TerminalInputCapability::BracketedPaste,
+        TerminalInputCapability::FocusChange,
     ];
     if keyboard_enhancement_supported {
         requested.push(TerminalInputCapability::KeyboardProtocol);
@@ -95,6 +99,7 @@ fn enable_capability(out: &mut impl Write, capability: TerminalInputCapability) 
     match capability {
         TerminalInputCapability::MouseCapture => execute!(out, EnableMouseCapture),
         TerminalInputCapability::BracketedPaste => execute!(out, EnableBracketedPaste),
+        TerminalInputCapability::FocusChange => execute!(out, EnableFocusChange),
         TerminalInputCapability::KeyboardProtocol => execute!(
             out,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
@@ -106,6 +111,7 @@ fn disable_capability(out: &mut impl Write, capability: TerminalInputCapability)
     match capability {
         TerminalInputCapability::MouseCapture => execute!(out, DisableMouseCapture),
         TerminalInputCapability::BracketedPaste => execute!(out, DisableBracketedPaste),
+        TerminalInputCapability::FocusChange => execute!(out, DisableFocusChange),
         TerminalInputCapability::KeyboardProtocol => execute!(out, PopKeyboardEnhancementFlags),
     }
 }
@@ -1134,4 +1140,26 @@ pub fn capture_mouse_paths_complete(layout: &CaptureLayout) -> bool {
             .and_then(|intent| super::input::intent_primary_capture_action(&intent))
             == Some(action)
     })
+}
+
+#[cfg(test)]
+mod terminal_input_tests {
+    use super::*;
+
+    #[test]
+    fn focus_reporting_is_enabled_and_restored() {
+        let mut out = Vec::new();
+        {
+            let guard = enable_terminal_input_on(&mut out, false).expect("enable");
+            assert!(guard
+                .enabled
+                .contains(&TerminalInputCapability::FocusChange));
+        }
+        let written = String::from_utf8(out).expect("utf8");
+        let on = written.find("\x1b[?1004h").expect("focus reporting on");
+        let off = written
+            .find("\x1b[?1004l")
+            .expect("focus reporting off on drop");
+        assert!(on < off);
+    }
 }

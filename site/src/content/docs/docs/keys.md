@@ -255,10 +255,12 @@ With the right board focused, board keys act on that board.
 | Quit from any surface except text entry | `ctrl+q` |
 | Quit from the board, the task page, quick-add details, Help, or the archived-project card | `ctrl+c` |
 | Cancel a field, an edit, the block or review card, or the reply box | `Esc` or `ctrl+c` |
+| Redraw the whole screen, from any surface | `ctrl+l` |
 
 - With tasks marked, `Esc` first leaves multi-select and clears the marks. In a picker you type into, a card, or the reply box, it closes that first and keeps them.
 - At the board root, `Esc` quits from any tab. It does not go back to the desk. With the cursor on the inbox or archived header, it does nothing.
 - On an archived project's board, `Esc` returns to the desk.
 - In a wide split, `Esc` closes the right column once no editor or overlay is open. If narrowing the terminal hides the right column, `Esc` quits at once.
 - `ctrl+q` does not quit from a text field, board search, the quick-add line, the palette, the block or review card, or the reply box.
+- tsk also redraws the whole screen when its pane gets focus back. Press `ctrl+l` if the board still shows only scattered text, for example after the terminal hid the pane.
 - Unsaved work blocks quitting and closing the Projects view's right board. Save or cancel the draft first. During a failed save, retry or cancel it first.
