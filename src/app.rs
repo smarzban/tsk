@@ -7045,6 +7045,79 @@ mod tests {
         assert!(!forget_frame_on_repaint_request(&mut terminal, &Event::FocusLost).expect("noop"));
     }
 
+    /// A terminal that never answers the cursor position query, like a host that drops
+    /// the request; everything else is a [`TestBackend`].
+    struct NoCursorReplyBackend(TestBackend);
+
+    impl ratatui::backend::Backend for NoCursorReplyBackend {
+        type Error = io::Error;
+
+        fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+        {
+            self.0.draw(content).map_err(|never| match never {})
+        }
+        fn hide_cursor(&mut self) -> io::Result<()> {
+            self.0.hide_cursor().map_err(|never| match never {})
+        }
+        fn show_cursor(&mut self) -> io::Result<()> {
+            self.0.show_cursor().map_err(|never| match never {})
+        }
+        fn get_cursor_position(&mut self) -> io::Result<ratatui::layout::Position> {
+            Err(io::Error::other("cursor position query unanswered"))
+        }
+        fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+            &mut self,
+            position: P,
+        ) -> io::Result<()> {
+            self.0
+                .set_cursor_position(position)
+                .map_err(|never| match never {})
+        }
+        fn clear(&mut self) -> io::Result<()> {
+            self.0.clear().map_err(|never| match never {})
+        }
+        fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> io::Result<()> {
+            self.0
+                .clear_region(clear_type)
+                .map_err(|never| match never {})
+        }
+        fn size(&self) -> io::Result<ratatui::layout::Size> {
+            self.0.size().map_err(|never| match never {})
+        }
+        fn window_size(&mut self) -> io::Result<ratatui::backend::WindowSize> {
+            self.0.window_size().map_err(|never| match never {})
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            ratatui::backend::Backend::flush(&mut self.0).map_err(|never| match never {})
+        }
+    }
+
+    /// The repaint must not ask for the cursor position: a terminal that never answers
+    /// would otherwise end the board with an error instead of repainting it.
+    #[test]
+    fn repaint_request_never_queries_the_cursor_position() {
+        let area = Rect::new(0, 0, 110, 30);
+        let (_domain, model, _) = projects_preview_fixture();
+        let backend = NoCursorReplyBackend(TestBackend::new(area.width, area.height));
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| drop(draw_board(frame, &model)))
+            .expect("draw");
+        let painted = terminal.backend().0.buffer().clone();
+
+        ratatui::backend::Backend::clear(&mut terminal.backend_mut().0).expect("host clear");
+        assert!(
+            forget_frame_on_repaint_request(&mut terminal, &Event::FocusGained)
+                .expect("repaint without a cursor query")
+        );
+        terminal
+            .draw(|frame| drop(draw_board(frame, &model)))
+            .expect("full draw");
+        assert_eq!(terminal.backend().0.buffer(), &painted);
+    }
+
     #[test]
     fn projects_preview_task_page_paints_its_wide_column_header() {
         let area = Rect::new(0, 0, 110, 30);
