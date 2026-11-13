@@ -832,6 +832,9 @@ fn is_full_repaint_request(event: &Event) -> bool {
 
 /// On a [full repaint request](is_full_repaint_request), clear the screen and forget the
 /// last frame so the next paint writes every cell. Returns whether the event was consumed.
+///
+/// `Terminal::resize` to the current size does that without `Terminal::clear`'s cursor
+/// position query, which errors out of the board when the terminal never answers it.
 fn forget_frame_on_repaint_request<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     event: &Event,
@@ -839,7 +842,8 @@ fn forget_frame_on_repaint_request<B: ratatui::backend::Backend>(
     if !is_full_repaint_request(event) {
         return Ok(false);
     }
-    terminal.clear()?;
+    let size = terminal.size()?;
+    terminal.resize(Rect::new(0, 0, size.width, size.height))?;
     Ok(true)
 }
 
