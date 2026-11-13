@@ -1,0 +1,102 @@
+{
+  "run_id": "run-1",
+  "repo": "smarzban/tsk",
+  "target": "/agent/repos/tsk",
+  "source_ref": {
+    "commit": "93d085e8244b57882eed0c1d1e071039593f0dda",
+    "branch": "main",
+    "delta_from": "5b30b8d6475114bb1312f4bb451f65216d3e7990",
+    "delta_to": "93d085e8244b57882eed0c1d1e071039593f0dda",
+    "worktree_dirty": false,
+    "commits": [
+      "93d085e8244b57882eed0c1d1e071039593f0dda"
+    ],
+    "subject": "Redraw the whole board on focus in and ctrl+l (#297)"
+  },
+  "profile": "standard",
+  "scope": "scoped delta of 5b30b8d6475114bb1312f4bb451f65216d3e7990..93d085e8244b57882eed0c1d1e071039593f0dda and the terminal input, focus-event, and redraw paths that commit touches, plus carried windows-state-dir-acl",
+  "scope_paths": [
+    "src/app.rs",
+    "src/ui/input.rs",
+    "src/ui/mouse.rs",
+    "src/ui/mod.rs",
+    "src/ui/render.rs",
+    "CHANGELOG.md",
+    "site/src/content/docs/docs/keys.md",
+    "src/fsperm.rs",
+    "src/store.rs",
+    "src/dispatch.rs",
+    "src/agents.rs"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md"
+  ],
+  "prior_run_paths": [
+    "/home/ubuntu/security-audit-skill/tsk/run-1/prior/coverage-ledger.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-1/prior/findings.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-1/prior/architecture.md",
+    "origin/security-audit/2026-11-09@afddf36b7823a9b5de6971caa84ee98e442fca1e:security-audit/2026-11-09/"
+  ],
+  "prior_source_ref": "5b30b8d6475114bb1312f4bb451f65216d3e7990",
+  "prior_audit_commit": "afddf36b7823a9b5de6971caa84ee98e442fca1e",
+  "shared_file_owners": {
+    "run-metadata.json": "parent",
+    "architecture.md": "parent",
+    "coverage-ledger.json": "parent",
+    "findings.json": "parent",
+    "REPORT.md": "parent",
+    "FINDINGS-DETAIL.md": "parent",
+    "NEEDS-VALIDATION.md": "parent"
+  },
+  "run_status": "complete",
+  "sandbox_notes": "unshare --user --map-root-user --mount --net succeeds. bubblewrap, firejail, and quota tools are absent. A read-only toolchain mount was not established together with an empty environment and a disk bound. Target code was not executed. Promotion allowlist was empty.",
+  "agent_spend": {
+    "budget": null,
+    "judgment_invocations": {
+      "reconnaissance": 4,
+      "hunters_wave_1": 6,
+      "post_wave_critic": 1,
+      "final_clean_critic": 1,
+      "phase3_verifier": 1,
+      "phase5_verifier": 1,
+      "total": 14
+    },
+    "notes": "hunter-repaint omitted check fields and hunter-repaint-b used the wrong id key. Both replies were discarded. hunter-repaint-c closed those two units. No second wave. Both critics returned no missing units and no reassignment. The carried Windows lead stayed needs_validation."
+  },
+  "sandbox": {
+    "target_code_executed": false,
+    "reason": "unshare can create a user, mount, and net namespace. bubblewrap and firejail are absent. Disk quota tools are absent, so a disk bound was not enforced together with an empty environment, a read-only toolchain, scratch-only writes, and explicit CPU, memory, process, and file-size limits."
+  },
+  "validators": {
+    "validate-findings.cjs": "PASS",
+    "validate-coverage-ledger.cjs": "PASS"
+  },
+  "coverage": {
+    "covered": 5,
+    "candidate": 1,
+    "out_of_scope": 29,
+    "blocked": 0,
+    "deferred": 0
+  },
+  "new_confirmed_findings": [],
+  "carried_needs_validation": [
+    "windows-state-dir-acl"
+  ],
+  "critics": {
+    "post_wave": {
+      "missing_units": 0,
+      "reassign_ids": 0,
+      "stop": true
+    },
+    "final_clean": {
+      "missing_units": 0,
+      "reassign_ids": 0,
+      "stop": true
+    }
+  },
+  "phase5": {
+    "windows-state-dir-acl": "verified"
+  }
+}
