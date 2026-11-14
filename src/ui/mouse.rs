@@ -1202,8 +1202,10 @@ mod terminal_input_tests {
 
     #[test]
     fn reassert_resends_reporting_and_only_full_touches_screen_and_keyboard() {
+        // crossterm refuses keyboard flags on Windows, and the board never enables them there.
+        let keyboard = cfg!(not(windows));
         let mut out = Vec::new();
-        let mut guard = enable_terminal_input_on(&mut out, true).expect("enable");
+        let mut guard = enable_terminal_input_on(&mut out, keyboard).expect("enable");
         guard.out.clear();
         guard.reassert(false).expect("light reassert");
         let light = String::from_utf8(std::mem::take(guard.out)).expect("utf8");
@@ -1226,9 +1228,11 @@ mod terminal_input_tests {
         guard.reassert(true).expect("full reassert");
         let full = String::from_utf8(std::mem::take(guard.out)).expect("utf8");
         let screen = full.find("\x1b[?1049h").expect("alternate screen");
-        let pop = full.find("\x1b[<1u").expect("pop keyboard flags");
-        let push = full.find("\x1b[>1u").expect("push keyboard flags");
-        assert!(screen < pop && pop < push, "{full:?}");
+        if keyboard {
+            let pop = full.find("\x1b[<1u").expect("pop keyboard flags");
+            let push = full.find("\x1b[>1u").expect("push keyboard flags");
+            assert!(screen < pop && pop < push, "{full:?}");
+        }
         assert!(full.contains("\x1b[?1004h"));
     }
 }

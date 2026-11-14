@@ -7233,8 +7233,10 @@ mod tests {
         let backend = NoCursorReplyBackend(TestBackend::new(area.width, area.height), 0);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut out = Vec::new();
+        // crossterm refuses keyboard flags on Windows, and the board never enables them there.
+        let keyboard = cfg!(not(windows));
         let mut input =
-            crate::ui::mouse::enable_terminal_input_on(&mut out, true).expect("input guard");
+            crate::ui::mouse::enable_terminal_input_on(&mut out, keyboard).expect("input guard");
         input.take_written();
         let start = Instant::now();
         let mut keyframe = Keyframe::new(start);
@@ -7340,8 +7342,10 @@ mod tests {
         let backend = NoCursorReplyBackend(TestBackend::new(area.width, area.height), 0);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut out = Vec::new();
+        // crossterm refuses keyboard flags on Windows, and the board never enables them there.
+        let keyboard = cfg!(not(windows));
         let mut input =
-            crate::ui::mouse::enable_terminal_input_on(&mut out, true).expect("input guard");
+            crate::ui::mouse::enable_terminal_input_on(&mut out, keyboard).expect("input guard");
         terminal
             .draw(|frame| drop(draw_board(frame, &model)))
             .expect("draw");
@@ -7355,14 +7359,11 @@ mod tests {
             ratatui::backend::Backend::clear(&mut terminal.backend_mut().0).expect("host clear");
             assert!(repaint_on_request(&mut terminal, &mut input, &request).expect("repaint"));
             let resent = String::from_utf8(input.take_written()).expect("utf8");
-            for mode in [
-                "\x1b[?1049h",
-                "\x1b[?1000h",
-                "\x1b[?1004h",
-                "\x1b[?2004h",
-                "\x1b[>1u",
-            ] {
+            for mode in ["\x1b[?1049h", "\x1b[?1000h", "\x1b[?1004h", "\x1b[?2004h"] {
                 assert!(resent.contains(mode), "{request:?}: {mode} in {resent:?}");
+            }
+            if keyboard {
+                assert!(resent.contains("\x1b[>1u"), "{request:?}: keyboard push");
             }
             terminal
                 .draw(|frame| drop(draw_board(frame, &model)))
