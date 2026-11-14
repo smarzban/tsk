@@ -3,12 +3,12 @@
 use std::io::{self, stdout, Write};
 
 use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
-    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
-use crossterm::terminal::supports_keyboard_enhancement;
+use crossterm::terminal::{supports_keyboard_enhancement, EnterAlternateScreen};
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::Block;
 
@@ -75,9 +75,6 @@ pub struct CaptureLayout {
 pub(crate) enum TerminalInputCapability {
     MouseCapture,
     BracketedPaste,
-    /// Focus in/out reports: on focus in the event loop repaints every cell, since a
-    /// host terminal may have dropped the screen while the pane was hidden.
-    FocusChange,
     KeyboardProtocol,
 }
 
@@ -87,7 +84,6 @@ pub(crate) fn requested_terminal_input(
     let mut requested = vec![
         TerminalInputCapability::MouseCapture,
         TerminalInputCapability::BracketedPaste,
-        TerminalInputCapability::FocusChange,
     ];
     if keyboard_enhancement_supported {
         requested.push(TerminalInputCapability::KeyboardProtocol);
@@ -99,7 +95,6 @@ fn enable_capability(out: &mut impl Write, capability: TerminalInputCapability) 
     match capability {
         TerminalInputCapability::MouseCapture => execute!(out, EnableMouseCapture),
         TerminalInputCapability::BracketedPaste => execute!(out, EnableBracketedPaste),
-        TerminalInputCapability::FocusChange => execute!(out, EnableFocusChange),
         TerminalInputCapability::KeyboardProtocol => execute!(
             out,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
@@ -111,7 +106,6 @@ fn disable_capability(out: &mut impl Write, capability: TerminalInputCapability)
     match capability {
         TerminalInputCapability::MouseCapture => execute!(out, DisableMouseCapture),
         TerminalInputCapability::BracketedPaste => execute!(out, DisableBracketedPaste),
-        TerminalInputCapability::FocusChange => execute!(out, DisableFocusChange),
         TerminalInputCapability::KeyboardProtocol => execute!(out, PopKeyboardEnhancementFlags),
     }
 }
@@ -128,6 +122,35 @@ pub(crate) struct TerminalInputGuard<W: Write> {
     enabled: Vec<TerminalInputCapability>,
 }
 
+impl<W: Write> TerminalInputGuard<W> {
+    /// Take the bytes written so far, for tests that check what a restore wrote.
+    #[cfg(test)]
+    pub(crate) fn take_written(&mut self) -> Vec<u8>
+    where
+        W: std::ops::DerefMut<Target = Vec<u8>>,
+    {
+        std::mem::take(&mut *self.out)
+    }
+
+    /// Enter the alternate screen and send every capability this guard enabled again.
+    ///
+    /// A host terminal can drop the modes tsk set at startup (one that rebuilds a hidden
+    /// pane from a trimmed output log does), and mouse and paste reports then silently
+    /// stop. Setting a mode that is already on is a no-op. The keyboard flags are popped
+    /// before the push, so the terminal's flag stack does not grow. Entering the alternate
+    /// screen can clear it, so call this only before a repaint that clears anyway.
+    pub(crate) fn restore(&mut self) -> io::Result<()> {
+        execute!(self.out, EnterAlternateScreen)?;
+        for capability in self.enabled.clone() {
+            if capability == TerminalInputCapability::KeyboardProtocol {
+                execute!(self.out, PopKeyboardEnhancementFlags)?;
+            }
+            enable_capability(&mut self.out, capability)?;
+        }
+        Ok(())
+    }
+}
+
 impl<W: Write> Drop for TerminalInputGuard<W> {
     fn drop(&mut self) {
         disable_all(&mut self.out, &self.enabled);
@@ -138,7 +161,7 @@ pub(crate) fn keyboard_enhancement_supported() -> bool {
     supports_keyboard_enhancement().unwrap_or(false)
 }
 
-fn enable_terminal_input_on<W: Write>(
+pub(crate) fn enable_terminal_input_on<W: Write>(
     out: W,
     keyboard_enhancement_supported: bool,
 ) -> io::Result<TerminalInputGuard<W>> {
@@ -1147,19 +1170,33 @@ mod terminal_input_tests {
     use super::*;
 
     #[test]
-    fn focus_reporting_is_enabled_and_restored() {
+    fn restore_enters_the_screen_and_resends_every_mode() {
+        // crossterm refuses keyboard flags on Windows, and the board never enables them there.
+        let keyboard = cfg!(not(windows));
         let mut out = Vec::new();
-        {
-            let guard = enable_terminal_input_on(&mut out, false).expect("enable");
-            assert!(guard
-                .enabled
-                .contains(&TerminalInputCapability::FocusChange));
+        let mut guard = enable_terminal_input_on(&mut out, keyboard).expect("enable");
+        guard.take_written();
+        guard.restore().expect("restore");
+        let written = String::from_utf8(guard.take_written()).expect("utf8");
+        let screen = written.find("\x1b[?1049h").expect("alternate screen");
+        // On Windows crossterm turns mouse capture on through the console API, not a code.
+        if cfg!(not(windows)) {
+            assert!(written.contains("\x1b[?1000h"), "mouse in {written:?}");
+            assert!(written.contains("\x1b[?1006h"), "mouse in {written:?}");
         }
+        assert!(written.contains("\x1b[?2004h"), "paste in {written:?}");
+        if keyboard {
+            let pop = written.find("\x1b[<1u").expect("pop keyboard flags");
+            let push = written.find("\x1b[>1u").expect("push keyboard flags");
+            assert!(screen < pop && pop < push, "{written:?}");
+        }
+    }
+
+    #[test]
+    fn focus_reporting_is_never_requested() {
+        let mut out = Vec::new();
+        drop(enable_terminal_input_on(&mut out, false).expect("enable"));
         let written = String::from_utf8(out).expect("utf8");
-        let on = written.find("\x1b[?1004h").expect("focus reporting on");
-        let off = written
-            .find("\x1b[?1004l")
-            .expect("focus reporting off on drop");
-        assert!(on < off);
+        assert!(!written.contains("\x1b[?1004"), "{written:?}");
     }
 }

@@ -1038,7 +1038,7 @@ fn help_bindings() -> Vec<HelpBinding> {
         help_binding(
             HelpGroup::AppControls,
             "ctrl+l",
-            "redraw the screen",
+            "redraw, restore the mouse",
             "repaint refresh blank screen",
         ),
         help_binding(
