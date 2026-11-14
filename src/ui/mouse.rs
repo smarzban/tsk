@@ -8,7 +8,7 @@ use crossterm::event::{
     MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
-use crossterm::terminal::supports_keyboard_enhancement;
+use crossterm::terminal::{supports_keyboard_enhancement, EnterAlternateScreen};
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::Block;
 
@@ -128,6 +128,43 @@ pub(crate) struct TerminalInputGuard<W: Write> {
     enabled: Vec<TerminalInputCapability>,
 }
 
+impl<W: Write> TerminalInputGuard<W> {
+    /// Take the bytes written so far, for tests that check what a re-send wrote.
+    #[cfg(test)]
+    pub(crate) fn take_written(&mut self) -> Vec<u8>
+    where
+        W: std::ops::DerefMut<Target = Vec<u8>>,
+    {
+        std::mem::take(&mut *self.out)
+    }
+
+    /// Send every capability this guard enabled again.
+    ///
+    /// A host terminal that rebuilds the pane by replaying a trimmed output log (T3 Code's
+    /// terminal panel does) loses the escape codes tsk sent at startup, so mouse, focus and
+    /// paste reports silently stop. Setting a mode that is already on is a no-op everywhere.
+    ///
+    /// `full` also re-enters the alternate screen and pushes the keyboard flags again (popping
+    /// first, so the terminal's flag stack does not grow). Re-entering the alternate screen
+    /// can clear it, so `full` belongs only with a repaint that clears anyway.
+    pub(crate) fn reassert(&mut self, full: bool) -> io::Result<()> {
+        if full {
+            execute!(self.out, EnterAlternateScreen)?;
+        }
+        for capability in self.enabled.clone() {
+            match capability {
+                TerminalInputCapability::KeyboardProtocol if !full => {}
+                TerminalInputCapability::KeyboardProtocol => {
+                    execute!(self.out, PopKeyboardEnhancementFlags)?;
+                    enable_capability(&mut self.out, capability)?;
+                }
+                _ => enable_capability(&mut self.out, capability)?,
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<W: Write> Drop for TerminalInputGuard<W> {
     fn drop(&mut self) {
         disable_all(&mut self.out, &self.enabled);
@@ -138,7 +175,7 @@ pub(crate) fn keyboard_enhancement_supported() -> bool {
     supports_keyboard_enhancement().unwrap_or(false)
 }
 
-fn enable_terminal_input_on<W: Write>(
+pub(crate) fn enable_terminal_input_on<W: Write>(
     out: W,
     keyboard_enhancement_supported: bool,
 ) -> io::Result<TerminalInputGuard<W>> {
@@ -1161,5 +1198,45 @@ mod terminal_input_tests {
             .find("\x1b[?1004l")
             .expect("focus reporting off on drop");
         assert!(on < off);
+    }
+
+    #[test]
+    fn reassert_resends_reporting_and_only_full_touches_screen_and_keyboard() {
+        // crossterm refuses keyboard flags on Windows, and the board never enables them there.
+        let keyboard = cfg!(not(windows));
+        let mut out = Vec::new();
+        let mut guard = enable_terminal_input_on(&mut out, keyboard).expect("enable");
+        guard.out.clear();
+        guard.reassert(false).expect("light reassert");
+        let light = String::from_utf8(std::mem::take(guard.out)).expect("utf8");
+        // On Windows crossterm turns mouse capture on through the console API, not a code.
+        for mode in ["\x1b[?1000h", "\x1b[?1006h", "\x1b[?2004h", "\x1b[?1004h"]
+            .into_iter()
+            .filter(|mode| cfg!(not(windows)) || !matches!(*mode, "\x1b[?1000h" | "\x1b[?1006h"))
+        {
+            assert!(light.contains(mode), "{mode} in {light:?}");
+        }
+        assert!(
+            !light.contains("\x1b[?1049h"),
+            "light must not touch the screen"
+        );
+        assert!(
+            !light.contains("\x1b[>"),
+            "light must not push keyboard flags"
+        );
+        assert!(
+            !light.contains("\x1b[<"),
+            "light must not pop keyboard flags"
+        );
+
+        guard.reassert(true).expect("full reassert");
+        let full = String::from_utf8(std::mem::take(guard.out)).expect("utf8");
+        let screen = full.find("\x1b[?1049h").expect("alternate screen");
+        if keyboard {
+            let pop = full.find("\x1b[<1u").expect("pop keyboard flags");
+            let push = full.find("\x1b[>1u").expect("push keyboard flags");
+            assert!(screen < pop && pop < push, "{full:?}");
+        }
+        assert!(full.contains("\x1b[?1004h"));
     }
 }
