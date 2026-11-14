@@ -830,8 +830,8 @@ fn is_full_repaint_request(event: &Event) -> bool {
     }
 }
 
-/// On a [full repaint request](is_full_repaint_request), clear the screen and forget the
-/// last frame so the next paint writes every cell. Returns whether the event was consumed.
+/// On a [`is_full_repaint_request`], clear the screen and forget the last frame so the next
+/// paint writes every cell. Returns whether the event was consumed.
 ///
 /// `Terminal::resize` to the current size does that without `Terminal::clear`'s cursor
 /// position query, which errors out of the board when the terminal never answers it.
@@ -1087,11 +1087,6 @@ pub struct BoardSaveContext<'a> {
     pub snapshot: Option<&'a InvocationSnapshot>,
 }
 
-/// Apply one board intent through the save-recovery boundary.
-///
-/// A failed save transfers the working state into [`SaveRecovery`] and leaves the caller's
-/// domain empty until explicit Retry promotes that state or Cancel restores the baseline. The
-/// board model continues to render the retained working snapshot throughout recovery.
 /// Which mapper owns a board keypress. The shared form field map applies only while a
 /// field of the open form actually has focus (or its scope dropdown is open). The task
 /// page's view mode keeps its own keymap even though a form is open -- otherwise a bare
@@ -1405,6 +1400,11 @@ fn resolve_save_recovery(model: &mut BoardModel, domain: &DomainState, resolutio
     }
 }
 
+/// Apply one board intent through the save-recovery boundary.
+///
+/// A failed save transfers the working state into [`SaveRecovery`] and leaves the caller's
+/// domain empty until explicit Retry promotes that state or Cancel restores the baseline. The
+/// board model continues to render the retained working snapshot throughout recovery.
 pub fn apply_board_intent_with_save_recovery(
     domain: &mut DomainState,
     model: &mut BoardModel,
@@ -2078,11 +2078,9 @@ fn board_rejection_message(error: &DomainError) -> String {
 /// the subsequent `edit` records a merge base taken from the *disk* revision, `merge_for_save`
 /// then sees a base that matches, and a concurrent same-task edit by another actor is silently
 /// overwritten instead of raising a save conflict. That was measured, not assumed — see
-/// [`confirm_edit_consults_the_record_without_merging_it`] and the conflict-detection test in
+/// `a_concurrent_edit_to_the_bound_task_still_reaches_the_save_conflict` in
 /// `tests/edit_target_binding.rs`. The availability judgment is made instead by
 /// [`confirm_edit_refusal_against_the_record`], which *reads* the baseline and never merges it.
-///
-/// [`confirm_edit_consults_the_record_without_merging_it`]: self::tests
 pub fn board_intent_needs_fresh_state(intent: &BoardIntent) -> bool {
     matches!(
         intent,
@@ -12512,15 +12510,8 @@ mod tests {
         }
     }
 
-    /// `ConfirmEdit` reads the durable record for its availability verdict and is **not**
-    /// merged from it.
-    ///
-    /// The distinction is the whole design, and neither half is safe to leave implicit. Adding
-    /// `ConfirmEdit` to the merge set is the obvious-looking way to satisfy decision 8 and it
-    /// silently defeats same-task save-conflict detection (measured: see
-    /// `a_concurrent_edit_to_the_bound_task_still_reaches_the_save_conflict` in
-    /// `tests/edit_target_binding.rs`). Dropping the verdict entirely puts the stale-snapshot
-    /// hole back. This pins both sides.
+    /// Refusal lines stay human-readable: `EmptyTitle` uses the shared title-required words,
+    /// and id-bearing errors never dump the UUID.
     #[test]
     fn a_refusals_line_is_readable_and_never_a_uuid_dump() {
         let id = uuid::Uuid::from_u128(7);

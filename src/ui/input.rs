@@ -2649,14 +2649,14 @@ fn map_edit(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
 /// Only press (and repeat) events produce intents. Unknown keys → `None`.
 /// Printable characters insert when title/notes are focused so letters like `s`
 /// remain typeable; scope override keys apply when the scope row is focused.
-///
-/// When `path_editing` is true (scope path buffer active), printable keys insert
-/// into the path buffer instead of cycling scope.
 pub fn map_capture_key(focused: CaptureField, key: KeyEvent) -> Option<CaptureIntent> {
     map_capture_key_state(focused, false, false, key)
 }
 
 /// Like [`map_capture_key`], with scope path-edit and save-recovery awareness.
+///
+/// When `path_editing` is true (scope path buffer active), printable keys insert
+/// into the path buffer instead of cycling scope.
 pub fn map_capture_key_state(
     focused: CaptureField,
     path_editing: bool,
