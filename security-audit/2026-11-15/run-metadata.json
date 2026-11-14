@@ -1,0 +1,110 @@
+{
+  "run_id": "run-2",
+  "repo": "smarzban/tsk",
+  "target": "/agent/repos/tsk",
+  "source_ref": {
+    "commit": "d1430bff16823bf3647bace6016dac30bfa8981f",
+    "branch": "main",
+    "delta_from": "93d085e8244b57882eed0c1d1e071039593f0dda",
+    "delta_to": "d1430bff16823bf3647bace6016dac30bfa8981f",
+    "worktree_dirty": false,
+    "commits": [
+      "d1430bff16823bf3647bace6016dac30bfa8981f"
+    ],
+    "subject": "ctrl+l restores terminal modes; drop the focus redraw (#300)"
+  },
+  "profile": "standard",
+  "scope": "scoped delta of 93d085e8244b57882eed0c1d1e071039593f0dda..d1430bff16823bf3647bace6016dac30bfa8981f and the terminal mode, input-parse, and untrusted-terminal-text paths that commit touches, plus carried windows-state-dir-acl",
+  "scope_paths": [
+    "src/app.rs",
+    "src/ui/input.rs",
+    "src/ui/mouse.rs",
+    "src/ui/mod.rs",
+    "src/ui/render.rs",
+    "src/ui/edit.rs",
+    "src/ui/text_select.rs",
+    "CHANGELOG.md",
+    "site/src/content/docs/docs/keys.md",
+    "src/fsperm.rs",
+    "src/store.rs",
+    "src/dispatch.rs",
+    "src/agents.rs"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md"
+  ],
+  "prior_run_paths": [
+    "/home/ubuntu/security-audit-skill/tsk/run-2/prior/coverage-ledger.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-2/prior/findings.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-2/prior/architecture.md",
+    "origin/security-audit/2026-11-14@83011bc2bdcc667ead8636cfec278529d2078f10:security-audit/2026-11-14/"
+  ],
+  "prior_source_ref": "93d085e8244b57882eed0c1d1e071039593f0dda",
+  "prior_audit_commit": "83011bc2bdcc667ead8636cfec278529d2078f10",
+  "shared_file_owners": {
+    "run-metadata.json": "parent",
+    "architecture.md": "parent",
+    "coverage-ledger.json": "parent",
+    "findings.json": "parent",
+    "REPORT.md": "parent",
+    "FINDINGS-DETAIL.md": "parent",
+    "NEEDS-VALIDATION.md": "parent"
+  },
+  "run_status": "complete",
+  "agent_spend": {
+    "budget": null,
+    "judgment_invocations": {
+      "reconnaissance": 4,
+      "hunters_wave_1": 4,
+      "hunter_reassignment": 1,
+      "post_wave_critic": 1,
+      "post_wave_critic_followup": 1,
+      "final_clean_critic": 1,
+      "phase3_verifier": 2,
+      "phase5_verifier": 2,
+      "total": 16
+    },
+    "notes": "hunter-paint returned a malformed unit and was discarded. hunter-paint-b closed that unit as a needs_validation candidate. The post-wave critic proposed a redraw reassignment and withdrew it. The final-clean critic returned no missing units and no reassignment. Phase 5 verified both needs_validation records."
+  },
+  "validators": {
+    "validate-findings.cjs": "PASS",
+    "validate-coverage-ledger.cjs": "PASS"
+  },
+  "coverage": {
+    "covered": 3,
+    "candidate": 2,
+    "out_of_scope": 32,
+    "blocked": 0,
+    "deferred": 0
+  },
+  "new_confirmed_findings": [],
+  "carried_needs_validation": [
+    "windows-state-dir-acl"
+  ],
+  "new_needs_validation": [
+    "ui.paint.project-basename.c0"
+  ],
+  "critics": {
+    "post_wave": {
+      "missing_units": 0,
+      "reassign_ids": 0,
+      "stop": true,
+      "note": "One reassignment was proposed and then withdrawn."
+    },
+    "final_clean": {
+      "missing_units": 0,
+      "reassign_ids": 0,
+      "stop": true
+    }
+  },
+  "phase5": {
+    "ui.paint.project-basename.c0": "verified",
+    "windows-state-dir-acl": "verified"
+  },
+  "sandbox": {
+    "target_code_executed": false,
+    "reason": "unshare user/mount/net, read-only bind mounts, a sized tmpfs scratch, env -i, and prlimit CPU/address-space/process/file-size limits were demonstrated together. bubblewrap and firejail are absent. Cargo registry sources and target/ are not present, and fetching dependencies is prohibited, so the crate cannot be compiled or executed."
+  }
+}
