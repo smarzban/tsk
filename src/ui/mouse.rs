@@ -1209,7 +1209,11 @@ mod terminal_input_tests {
         guard.out.clear();
         guard.reassert(false).expect("light reassert");
         let light = String::from_utf8(std::mem::take(guard.out)).expect("utf8");
-        for mode in ["\x1b[?1000h", "\x1b[?1006h", "\x1b[?2004h", "\x1b[?1004h"] {
+        // On Windows crossterm turns mouse capture on through the console API, not a code.
+        for mode in ["\x1b[?1000h", "\x1b[?1006h", "\x1b[?2004h", "\x1b[?1004h"]
+            .into_iter()
+            .filter(|mode| cfg!(not(windows)) || !matches!(*mode, "\x1b[?1000h" | "\x1b[?1006h"))
+        {
             assert!(light.contains(mode), "{mode} in {light:?}");
         }
         assert!(

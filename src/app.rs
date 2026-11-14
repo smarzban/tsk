@@ -7273,7 +7273,11 @@ mod tests {
             "a keyframe never clears"
         );
         let resent = String::from_utf8(input.take_written()).expect("utf8");
-        for mode in ["\x1b[?1000h", "\x1b[?1004h", "\x1b[?2004h"] {
+        // On Windows crossterm turns mouse capture on through the console API, not a code.
+        for mode in ["\x1b[?1000h", "\x1b[?1004h", "\x1b[?2004h"]
+            .into_iter()
+            .filter(|mode| cfg!(not(windows)) || !matches!(*mode, "\x1b[?1000h" | "\x1b[?1006h"))
+        {
             assert!(resent.contains(mode), "{mode} in {resent:?}");
         }
         assert!(
@@ -7359,7 +7363,13 @@ mod tests {
             ratatui::backend::Backend::clear(&mut terminal.backend_mut().0).expect("host clear");
             assert!(repaint_on_request(&mut terminal, &mut input, &request).expect("repaint"));
             let resent = String::from_utf8(input.take_written()).expect("utf8");
-            for mode in ["\x1b[?1049h", "\x1b[?1000h", "\x1b[?1004h", "\x1b[?2004h"] {
+            // On Windows crossterm turns mouse capture on through the console API, not a code.
+            for mode in ["\x1b[?1049h", "\x1b[?1000h", "\x1b[?1004h", "\x1b[?2004h"]
+                .into_iter()
+                .filter(|mode| {
+                    cfg!(not(windows)) || !matches!(*mode, "\x1b[?1000h" | "\x1b[?1006h")
+                })
+            {
                 assert!(resent.contains(mode), "{request:?}: {mode} in {resent:?}");
             }
             if keyboard {
