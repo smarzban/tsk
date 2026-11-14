@@ -648,7 +648,7 @@ fn confirm_through_the_board_loop(
 /// title gone; without it, the confirm does not persist and the durable title survives.
 ///
 /// So the availability verdict reads the record and never merges it, and this test fails if that
-/// ever regresses — which no other test would catch, because every and assertion is
+/// ever regresses — which no other test would catch, because every other assertion is
 /// equally satisfied by the broken version.
 #[test]
 fn a_concurrent_edit_to_the_bound_task_still_reaches_the_save_conflict() {

@@ -1248,10 +1248,10 @@ pub enum QueueHitTarget {
     /// [`BoardIntent::Undo`]: crate::ui::input::BoardIntent::Undo
     DeleteNoticeUndo,
     /// The command surface's own painted chrome -- its `command` header row, the query
-    /// row, and the gap rows between command rows -- that is *not* one of its rows (I4,
-    /// ). A click here is deliberately inert (it neither runs a command nor
-    /// dismisses the surface), matching the pre-rewrite behavior a click on the palette's
-    /// own furniture had; only a click genuinely outside the whole surface closes it.
+    /// row, and the gap rows between command rows -- that is *not* one of its rows. A
+    /// click here is deliberately inert (it neither runs a command nor dismisses the
+    /// surface), matching the pre-rewrite behavior a click on the palette's own furniture
+    /// had; only a click genuinely outside the whole surface closes it.
     CommandChrome,
     /// The shared modal card's `[x]` close control (Help / Palette / project-scope
     /// picker; [`paint_modal_card`]). Dismisses whatever overlay painted it -- the same
@@ -4976,7 +4976,7 @@ struct ScopeDropdownPaint<'a> {
 }
 
 /// The board's `P` project-scope picker: a centered modal card, not the chip-anchored
-/// dropdown this used to paint. [`paint_page_scope_dropdown`] (the task-page form's own
+/// dropdown this used to paint. [`paint_page_form_dropdown`] (the task-page form's own
 /// scope control) is a separate, unrelated painter and keeps its chip-anchored panel.
 fn paint_scope_dropdown(
     frame: &mut Frame<'_>,
@@ -6900,17 +6900,6 @@ fn paint_rule_row(width: u16) -> Line<'static> {
     Line::from(Span::styled(rule, style_dim()))
 }
 
-/// The status line, plus the `ctrl+u undo` control's (column, width) inside it when the
-/// delete-recovery notice actually painted one that survived clipping (I2, Minor 1,
-/// round 2).
-///
-/// `undo_offset` is the column the caller's own composition put [`DELETE_NOTICE_UNDO`] at
-/// inside `message` (see [`QueueFrameModel::status_undo_offset`]), not a position this
-/// function locates itself: `message` is partly user text (the deleted task's title), so a
-/// `find` for the control's literal words here would resolve to whichever occurrence came
-/// first in that text rather than the one actually painted -- Minor 1's regression. The one
-/// thing this function still verifies is that the control survived the row's own width
-/// clipping, exactly as the pre-fix code did for a control it had located by search.
 /// An input's placeholder in `width` cells. Its ` · `-separated hints (quick-add's
 /// `!p project · !t thread …`) leave whole from the right, never cut, as footer entries do.
 fn fit_placeholder(placeholder: &str, width: usize) -> String {
@@ -7124,6 +7113,17 @@ fn index_selected_path(model: &QueueFrameModel<'_>) -> String {
         .unwrap_or_default()
 }
 
+/// The status line, plus the `ctrl+u undo` control's (column, width) inside it when the
+/// delete-recovery notice actually painted one that survived clipping.
+///
+/// `undo_offset` is the column the caller's own composition put
+/// [`crate::ui::board::DELETE_NOTICE_UNDO`] at inside `message` (see
+/// [`QueueFrameModel::status_undo_offset`]), not a position this function locates itself:
+/// `message` is partly user text (the deleted task's title), so a `find` for the control's
+/// literal words here would resolve to whichever occurrence came first in that text rather
+/// than the one actually painted. The one thing this function still verifies is that the
+/// control survived the row's own width clipping, exactly as the pre-fix code did for a
+/// control it had located by search.
 fn paint_status_line(
     message: Option<&str>,
     undo_offset: Option<usize>,
@@ -7479,9 +7479,6 @@ fn paint_selector_chip(model: &QueueFrameModel<'_>, width: u16) -> Vec<ControlRo
         .collect()
 }
 
-/// Verb bar: ` key label · key label …`, trimmed to `budget` entries.
-///
-/// Returns hit regions as (verb_index, x, width).
 fn mutating_verb_key(key: &str) -> bool {
     matches!(
         key,
@@ -7499,6 +7496,9 @@ fn compact_verb_label(label: &str) -> &str {
     }
 }
 
+/// Verb bar: ` key label · key label …`, trimmed to `budget` entries.
+///
+/// Returns hit regions as (verb_index, x, width).
 fn paint_verb_bar(
     entries: &[VerbEntry<'_>],
     budget: usize,

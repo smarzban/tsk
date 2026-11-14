@@ -7681,13 +7681,6 @@ impl BoardModel {
         }
     }
 
-    /// The chrome row an open field edit owns, composed for `width` columns.
-    ///
-    /// Same order as [`Self::chrome_row`], with two differences the mode forces: the edit's
-    /// own legend is never dropped (it is the only statement of the save chord and `Esc` in
-    /// Browse), and the notice is stated **without** its `u Undo` control, because `u` types
-    /// a `u` into the draft here and there is no hit region on this row. The deletion stays
-    /// visible; the route it names comes back with the row when the edit closes.
     /// Seed selection on open: first visible NEEDS YOU id, else IN MOTION, else ON DECK.
     ///
     /// Honors collapse state via [`Self::visible_ids`]: a seeded row must be one the

@@ -6,6 +6,12 @@ use super::model::{BoardInputMode, BoardModel};
 
 impl BoardModel {
     /// The chrome row an open field edit owns, composed for `width` columns.
+    ///
+    /// The edit's own legend is never dropped (it is the only statement of the save chord
+    /// and `Esc` in Browse), and the notice is stated **without** its Undo control, because
+    /// that key types into the draft here and there is no hit region on this row. The
+    /// deletion stays visible; the route it names comes back with the row when the edit
+    /// closes.
     pub(super) fn edit_chrome_row(&self, width: usize) -> String {
         let mut parts = Vec::new();
         let bulk_notice = self.visible_delete_notice_count().map(|count| {
