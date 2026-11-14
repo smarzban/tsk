@@ -391,7 +391,7 @@ fn run_board_loop(
     // and a blank alternate screen is what the user would be staring at meanwhile.
     let keyboard_enhancement = keyboard_enhancement_supported();
     ratatui::run(|terminal| -> io::Result<()> {
-        let _input = enable_terminal_input(keyboard_enhancement)?;
+        let mut input = enable_terminal_input(keyboard_enhancement)?;
         let mut save_recovery = SaveRecovery::new();
         // The painted frame's text and its declared copyable rects, refreshed by
         // every board paint: the snapshot a finished drag selection slices its
@@ -480,7 +480,7 @@ fn run_board_loop(
                 event::read()?
             };
             reflow_click.observe(&next);
-            if forget_frame_on_repaint_request(terminal, &next)? {
+            if redraw_on_request(terminal, &mut input, &next)? {
                 continue;
             }
             let event_area = match &next {
@@ -813,38 +813,48 @@ fn run_board_loop(
     Ok(())
 }
 
-/// Whether `event` asks for a full repaint: focus returning to the pane, or `ctrl+l`.
-///
-/// Ratatui writes only the cells that differ from its last frame. A host terminal that
-/// drops its alternate screen while the pane is hidden (some embedded terminals do on
-/// tab switches) would otherwise show only the cells that changed since, on a blank pane.
-fn is_full_repaint_request(event: &Event) -> bool {
-    match event {
-        Event::FocusGained => true,
-        Event::Key(key) => {
-            key.kind == KeyEventKind::Press
-                && key.code == KeyCode::Char('l')
-                && key.modifiers == KeyModifiers::CONTROL
-        }
-        _ => false,
-    }
+/// Whether `event` asks for a full redraw: `ctrl+l`.
+fn is_redraw_request(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(key) if key.kind == KeyEventKind::Press
+            && key.code == KeyCode::Char('l')
+            && key.modifiers == KeyModifiers::CONTROL
+    )
 }
 
-/// On a [full repaint request](is_full_repaint_request), clear the screen and forget the
-/// last frame so the next paint writes every cell. Returns whether the event was consumed.
+/// On a [redraw request](is_redraw_request), send every terminal mode again and
+/// [forget the frame](forget_frame). Returns whether the event was consumed.
+///
+/// Ratatui writes only the cells that differ from its last frame, and sets the terminal's
+/// modes once at startup. A host terminal that drops the screen or the modes while the pane
+/// is hidden leaves scattered text that ignores clicks until both come back.
+fn redraw_on_request<B, W>(
+    terminal: &mut ratatui::Terminal<B>,
+    input: &mut crate::ui::mouse::TerminalInputGuard<W>,
+    event: &Event,
+) -> io::Result<bool>
+where
+    B: ratatui::backend::Backend<Error = io::Error>,
+    W: io::Write,
+{
+    if !is_redraw_request(event) {
+        return Ok(false);
+    }
+    input.restore()?;
+    forget_frame(terminal)?;
+    Ok(true)
+}
+
+/// Clear the screen and forget the last frame so the next paint writes every cell.
 ///
 /// `Terminal::resize` to the current size does that without `Terminal::clear`'s cursor
 /// position query, which errors out of the board when the terminal never answers it.
-fn forget_frame_on_repaint_request<B: ratatui::backend::Backend>(
+fn forget_frame<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
-    event: &Event,
-) -> Result<bool, B::Error> {
-    if !is_full_repaint_request(event) {
-        return Ok(false);
-    }
+) -> Result<(), B::Error> {
     let size = terminal.size()?;
-    terminal.resize(Rect::new(0, 0, size.width, size.height))?;
-    Ok(true)
+    terminal.resize(Rect::new(0, 0, size.width, size.height))
 }
 
 /// Copy a finished drag selection from the last painted frame to the clipboard.
@@ -6973,11 +6983,13 @@ mod tests {
     }
 
     #[test]
-    fn focus_gained_and_ctrl_l_request_a_full_repaint() {
-        let ctrl_l = Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
-        assert!(is_full_repaint_request(&Event::FocusGained));
-        assert!(is_full_repaint_request(&ctrl_l));
+    fn only_ctrl_l_requests_a_redraw() {
+        assert!(is_redraw_request(&Event::Key(KeyEvent::new(
+            KeyCode::Char('l'),
+            KeyModifiers::CONTROL
+        ))));
         for other in [
+            Event::FocusGained,
             Event::FocusLost,
             Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)),
             Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::ALT)),
@@ -6988,61 +7000,8 @@ mod tests {
             )),
             Event::Resize(80, 24),
         ] {
-            assert!(!is_full_repaint_request(&other), "{other:?}");
+            assert!(!is_redraw_request(&other), "{other:?}");
         }
-    }
-
-    /// A host terminal that dropped the screen gets the whole board back on focus in or
-    /// `ctrl+l`, not just the cells that changed since the last frame.
-    #[test]
-    fn repaint_request_restores_a_screen_the_host_terminal_dropped() {
-        let area = Rect::new(0, 0, 110, 30);
-        let (_domain, model, _) = projects_preview_fixture();
-        let screen = |terminal: &Terminal<TestBackend>| {
-            let buffer = terminal.backend().buffer();
-            (0..area.height)
-                .map(|y| {
-                    (0..area.width)
-                        .map(|x| buffer[(x, y)].symbol())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let mut terminal =
-            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
-        terminal
-            .draw(|frame| drop(draw_board(frame, &model)))
-            .expect("draw");
-        let painted = screen(&terminal);
-        assert!(painted.trim().len() > 20, "board painted: {painted}");
-
-        for request in [
-            Event::FocusGained,
-            Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)),
-        ] {
-            // The host drops the screen behind tsk's back.
-            ratatui::backend::Backend::clear(terminal.backend_mut()).expect("host clear");
-            terminal
-                .draw(|frame| drop(draw_board(frame, &model)))
-                .expect("diff draw");
-            assert_ne!(
-                screen(&terminal),
-                painted,
-                "a diff paint alone leaves it blank"
-            );
-
-            assert!(forget_frame_on_repaint_request(&mut terminal, &request).expect("clear"));
-            terminal
-                .draw(|frame| drop(draw_board(frame, &model)))
-                .expect("full draw");
-            assert_eq!(
-                screen(&terminal),
-                painted,
-                "{request:?} repaints every cell"
-            );
-        }
-        assert!(!forget_frame_on_repaint_request(&mut terminal, &Event::FocusLost).expect("noop"));
     }
 
     /// A terminal that never answers the cursor position query, like a host that drops
@@ -7094,28 +7053,65 @@ mod tests {
         }
     }
 
-    /// The repaint must not ask for the cursor position: a terminal that never answers
-    /// would otherwise end the board with an error instead of repainting it.
+    /// `ctrl+l` on a screen and modes the host terminal dropped sends every mode again,
+    /// the alternate screen and keyboard flags included, and repaints the whole board
+    /// rather than just the cells that changed. It never asks for the cursor position: a
+    /// terminal that does not answer would otherwise end the board with an error.
     #[test]
-    fn repaint_request_never_queries_the_cursor_position() {
+    fn ctrl_l_restores_the_modes_and_a_screen_the_host_terminal_dropped() {
         let area = Rect::new(0, 0, 110, 30);
         let (_domain, model, _) = projects_preview_fixture();
         let backend = NoCursorReplyBackend(TestBackend::new(area.width, area.height));
         let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut out = Vec::new();
+        // crossterm refuses keyboard flags on Windows, and the board never enables them there.
+        let keyboard = cfg!(not(windows));
+        let mut input =
+            crate::ui::mouse::enable_terminal_input_on(&mut out, keyboard).expect("input guard");
         terminal
             .draw(|frame| drop(draw_board(frame, &model)))
             .expect("draw");
         let painted = terminal.backend().0.buffer().clone();
 
+        // The host drops the screen behind tsk's back.
         ratatui::backend::Backend::clear(&mut terminal.backend_mut().0).expect("host clear");
-        assert!(
-            forget_frame_on_repaint_request(&mut terminal, &Event::FocusGained)
-                .expect("repaint without a cursor query")
+        terminal
+            .draw(|frame| drop(draw_board(frame, &model)))
+            .expect("diff draw");
+        assert_ne!(
+            terminal.backend().0.buffer(),
+            &painted,
+            "a diff paint alone leaves it blank"
         );
+
+        input.take_written();
+        let ctrl_l = Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        assert!(redraw_on_request(&mut terminal, &mut input, &ctrl_l).expect("redraw"));
+        let resent = String::from_utf8(input.take_written()).expect("utf8");
+        assert!(
+            resent.contains("\x1b[?1049h"),
+            "alternate screen in {resent:?}"
+        );
+        assert!(resent.contains("\x1b[?2004h"), "paste in {resent:?}");
+        // On Windows crossterm turns mouse capture on through the console API, not a code.
+        if cfg!(not(windows)) {
+            assert!(resent.contains("\x1b[?1000h"), "mouse in {resent:?}");
+        }
+        if keyboard {
+            assert!(resent.contains("\x1b[>1u"), "keyboard push in {resent:?}");
+        }
         terminal
             .draw(|frame| drop(draw_board(frame, &model)))
             .expect("full draw");
         assert_eq!(terminal.backend().0.buffer(), &painted);
+
+        for other in [
+            Event::FocusGained,
+            Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)),
+        ] {
+            assert!(!redraw_on_request(&mut terminal, &mut input, &other).expect("noop"));
+        }
+        assert!(input.take_written().is_empty(), "other events send nothing");
     }
 
     #[test]
