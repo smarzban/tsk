@@ -129,13 +129,13 @@ pub(crate) struct TerminalInputGuard<W: Write> {
 }
 
 impl<W: Write> TerminalInputGuard<W> {
-    /// Bytes written so far, for tests that check a re-send happened.
+    /// Take the bytes written so far, for tests that check what a re-send wrote.
     #[cfg(test)]
-    pub(crate) fn written_len(&self) -> usize
+    pub(crate) fn take_written(&mut self) -> Vec<u8>
     where
-        W: std::ops::Deref<Target = Vec<u8>>,
+        W: std::ops::DerefMut<Target = Vec<u8>>,
     {
-        self.out.len()
+        std::mem::take(&mut *self.out)
     }
 
     /// Send every capability this guard enabled again.
