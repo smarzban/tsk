@@ -35,7 +35,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ### Fixed
 
-- The board redraws in full when its pane gets focus back, and on `ctrl+l`, instead of showing scattered text after a terminal hid the pane ([keys](https://gettsk.sh/docs/keys/#esc-and-quit)).
+- A board whose terminal panel was hidden and reopened comes back whole and clickable within two minutes, or at once on `ctrl+l` ([keys](https://gettsk.sh/docs/keys/#esc-and-quit)).
 - The starter tour and the site footer link to https://x.com/smarzban. A tour already on your board keeps its notes.
 - `tsk list -p` and `tsk project archive|unarchive` refuse a name two projects share, like `tsk add`, instead of matching nothing. Thanks @s3rgiosan (#249).
 - `tsk list --all --group project` labels projects that share a name by their shortest distinct path, such as `site-a/wordpress/wp-content`. Thanks @s3rgiosan (#249).

@@ -391,7 +391,8 @@ fn run_board_loop(
     // and a blank alternate screen is what the user would be staring at meanwhile.
     let keyboard_enhancement = keyboard_enhancement_supported();
     ratatui::run(|terminal| -> io::Result<()> {
-        let _input = enable_terminal_input(keyboard_enhancement)?;
+        let mut input = enable_terminal_input(keyboard_enhancement)?;
+        let mut keyframe = Keyframe::new(Instant::now());
         let mut save_recovery = SaveRecovery::new();
         // The painted frame's text and its declared copyable rects, refreshed by
         // every board paint: the snapshot a finished drag selection slices its
@@ -431,6 +432,7 @@ fn run_board_loop(
             let next = if let Some(event) = take_pending_after_paint(&mut pending_event, || {
                 let area = terminal_area(terminal)?;
                 sync_frame_presentation(area, &model);
+                refresh_keyframe_if_due(terminal, &mut input, &mut keyframe, Instant::now())?;
                 terminal.draw(|frame| {
                     let hits = draw_board(frame, &model);
                     frame_rows = frame_text_rows(frame.buffer_mut());
@@ -446,6 +448,12 @@ fn run_board_loop(
                     |model: &BoardModel| {
                         let area = terminal_area(terminal)?;
                         sync_frame_presentation(area, model);
+                        refresh_keyframe_if_due(
+                            terminal,
+                            &mut input,
+                            &mut keyframe,
+                            Instant::now(),
+                        )?;
                         terminal
                             .draw(|frame| {
                                 let hits = draw_board(frame, model);
@@ -480,7 +488,9 @@ fn run_board_loop(
                 event::read()?
             };
             reflow_click.observe(&next);
-            if forget_frame_on_repaint_request(terminal, &next)? {
+            if is_full_repaint_request(&next) {
+                input.reassert(true)?;
+                forget_frame(terminal)?;
                 continue;
             }
             let event_area = match &next {
@@ -830,21 +840,61 @@ fn is_full_repaint_request(event: &Event) -> bool {
     }
 }
 
-/// On a [full repaint request](is_full_repaint_request), clear the screen and forget the
-/// last frame so the next paint writes every cell. Returns whether the event was consumed.
+/// Clear the screen and forget the last frame so the next paint writes every cell.
 ///
 /// `Terminal::resize` to the current size does that without `Terminal::clear`'s cursor
 /// position query, which errors out of the board when the terminal never answers it.
-fn forget_frame_on_repaint_request<B: ratatui::backend::Backend>(
+fn forget_frame<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
-    event: &Event,
-) -> Result<bool, B::Error> {
-    if !is_full_repaint_request(event) {
-        return Ok(false);
-    }
+) -> Result<(), B::Error> {
     let size = terminal.size()?;
-    terminal.resize(Rect::new(0, 0, size.width, size.height))?;
-    Ok(true)
+    terminal.resize(Rect::new(0, 0, size.width, size.height))
+}
+
+/// How often the board re-sends its terminal modes and rewrites the whole frame.
+const KEYFRAME_INTERVAL: Duration = Duration::from_secs(120);
+
+/// When the next [keyframe](refresh_keyframe_if_due) is due.
+struct Keyframe {
+    next: Instant,
+}
+
+impl Keyframe {
+    fn new(now: Instant) -> Self {
+        Self {
+            next: now + KEYFRAME_INTERVAL,
+        }
+    }
+
+    /// Whether a keyframe is due at `now`; if so, schedule the next one.
+    fn take_due(&mut self, now: Instant) -> bool {
+        if now < self.next {
+            return false;
+        }
+        self.next = now + KEYFRAME_INTERVAL;
+        true
+    }
+}
+
+/// Every [`KEYFRAME_INTERVAL`], re-send mouse, focus and paste reporting and make the next
+/// paint write every non-blank cell, without clearing the screen.
+///
+/// A host terminal that rebuilds a hidden pane by replaying a capped output log (T3 Code)
+/// drops the startup modes and the older paints once the log is trimmed. A keyframe in the
+/// log's tail puts both back on the next replay, so the board comes back whole and clickable
+/// without a keypress. Dropping the last frame (`swap_buffers` resets the previous buffer)
+/// rewrites cells with what is already there, so a live terminal shows no change.
+fn refresh_keyframe_if_due<B: ratatui::backend::Backend, W: io::Write>(
+    terminal: &mut ratatui::Terminal<B>,
+    input: &mut crate::ui::mouse::TerminalInputGuard<W>,
+    keyframe: &mut Keyframe,
+    now: Instant,
+) -> io::Result<()> {
+    if keyframe.take_due(now) {
+        input.reassert(false)?;
+        terminal.swap_buffers();
+    }
+    Ok(())
 }
 
 /// Copy a finished drag selection from the last painted frame to the clipboard.
@@ -7032,7 +7082,8 @@ mod tests {
                 "a diff paint alone leaves it blank"
             );
 
-            assert!(forget_frame_on_repaint_request(&mut terminal, &request).expect("clear"));
+            assert!(is_full_repaint_request(&request));
+            forget_frame(&mut terminal).expect("clear");
             terminal
                 .draw(|frame| drop(draw_board(frame, &model)))
                 .expect("full draw");
@@ -7042,12 +7093,11 @@ mod tests {
                 "{request:?} repaints every cell"
             );
         }
-        assert!(!forget_frame_on_repaint_request(&mut terminal, &Event::FocusLost).expect("noop"));
     }
 
     /// A terminal that never answers the cursor position query, like a host that drops
-    /// the request; everything else is a [`TestBackend`].
-    struct NoCursorReplyBackend(TestBackend);
+    /// the request, and counts screen clears; everything else is a [`TestBackend`].
+    struct NoCursorReplyBackend(TestBackend, usize);
 
     impl ratatui::backend::Backend for NoCursorReplyBackend {
         type Error = io::Error;
@@ -7076,9 +7126,11 @@ mod tests {
                 .map_err(|never| match never {})
         }
         fn clear(&mut self) -> io::Result<()> {
+            self.1 += 1;
             self.0.clear().map_err(|never| match never {})
         }
         fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> io::Result<()> {
+            self.1 += 1;
             self.0
                 .clear_region(clear_type)
                 .map_err(|never| match never {})
@@ -7100,7 +7152,7 @@ mod tests {
     fn repaint_request_never_queries_the_cursor_position() {
         let area = Rect::new(0, 0, 110, 30);
         let (_domain, model, _) = projects_preview_fixture();
-        let backend = NoCursorReplyBackend(TestBackend::new(area.width, area.height));
+        let backend = NoCursorReplyBackend(TestBackend::new(area.width, area.height), 0);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         terminal
             .draw(|frame| drop(draw_board(frame, &model)))
@@ -7108,14 +7160,71 @@ mod tests {
         let painted = terminal.backend().0.buffer().clone();
 
         ratatui::backend::Backend::clear(&mut terminal.backend_mut().0).expect("host clear");
-        assert!(
-            forget_frame_on_repaint_request(&mut terminal, &Event::FocusGained)
-                .expect("repaint without a cursor query")
-        );
+        forget_frame(&mut terminal).expect("repaint without a cursor query");
         terminal
             .draw(|frame| drop(draw_board(frame, &model)))
             .expect("full draw");
         assert_eq!(terminal.backend().0.buffer(), &painted);
+    }
+
+    #[test]
+    fn keyframe_is_due_every_interval_and_reschedules() {
+        let start = Instant::now();
+        let mut keyframe = Keyframe::new(start);
+        assert!(!keyframe.take_due(start));
+        assert!(!keyframe.take_due(start + KEYFRAME_INTERVAL - Duration::from_millis(1)));
+        assert!(keyframe.take_due(start + KEYFRAME_INTERVAL));
+        assert!(!keyframe.take_due(start + KEYFRAME_INTERVAL + Duration::from_secs(1)));
+        assert!(keyframe.take_due(start + KEYFRAME_INTERVAL * 2));
+    }
+
+    /// A host that replays a trimmed log starts from a blank screen with no modes on. The
+    /// next keyframe re-sends the modes and rewrites every painted cell, with no clear, so
+    /// a live terminal sees nothing change and a replayed one gets the whole board back.
+    #[test]
+    fn keyframe_restores_modes_and_a_dropped_screen_without_clearing() {
+        let area = Rect::new(0, 0, 110, 30);
+        let (_domain, model, _) = projects_preview_fixture();
+        let backend = NoCursorReplyBackend(TestBackend::new(area.width, area.height), 0);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut out = Vec::new();
+        let mut input =
+            crate::ui::mouse::enable_terminal_input_on(&mut out, false).expect("input guard");
+        let start = Instant::now();
+        let mut keyframe = Keyframe::new(start);
+        terminal
+            .draw(|frame| drop(draw_board(frame, &model)))
+            .expect("draw");
+        let painted = terminal.backend().0.buffer().clone();
+
+        ratatui::backend::Backend::clear(&mut terminal.backend_mut().0).expect("host clear");
+        let clears_before = terminal.backend().1;
+
+        refresh_keyframe_if_due(&mut terminal, &mut input, &mut keyframe, start).expect("early");
+        terminal
+            .draw(|frame| drop(draw_board(frame, &model)))
+            .expect("diff draw");
+        assert_ne!(terminal.backend().0.buffer(), &painted, "no keyframe yet");
+
+        input.reassert(false).expect("warm");
+        let resent_before = input.written_len();
+        refresh_keyframe_if_due(
+            &mut terminal,
+            &mut input,
+            &mut keyframe,
+            start + KEYFRAME_INTERVAL,
+        )
+        .expect("keyframe");
+        assert!(input.written_len() > resent_before, "modes re-sent");
+        terminal
+            .draw(|frame| drop(draw_board(frame, &model)))
+            .expect("keyframe draw");
+        assert_eq!(terminal.backend().0.buffer(), &painted);
+        assert_eq!(
+            terminal.backend().1,
+            clears_before,
+            "a keyframe never clears"
+        );
     }
 
     #[test]
