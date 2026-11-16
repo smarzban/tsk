@@ -149,6 +149,7 @@ w waiting on
 - Passed checks fold into a dim `N passed ▸` line. A check you pass stays in place until the page opens again, or until you fold the line.
 - The page opens on the first open check.
 - Checks belong to the review and never become steps.
+- Scripts and agents mark checks with [`tsk checks`](/docs/cli/#checks).
 - When the round closes, it moves to the paper trail. The page shows no round number.
 
 ### Feedback box

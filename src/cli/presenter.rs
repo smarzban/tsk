@@ -7,6 +7,7 @@ use crate::cli::add::{AddError, FlagAddResult};
 use crate::cli::archive::{
     ArchiveCliError, ArchiveResult, ProjectResult, ProjectTitleError, ProjectTitleResult,
 };
+use crate::cli::checks::{ChecksError, ChecksResult};
 use crate::cli::edit::{EditError, EditResult};
 use crate::cli::list::{ListError, ListResult, ListRow, ListView};
 use crate::cli::parser::TaskAddress;
@@ -137,6 +138,7 @@ const STEPS_USAGE: &[&str] = &[
     "tsk steps <task> move <step-short-id> <place> [--state-dir <dir>]",
     "tsk steps <task> remove <step-short-id> [--state-dir <dir>]",
 ];
+const CHECKS_USAGE: &[&str] = &["tsk checks <task> set <n> open|passed|failed [--state-dir <dir>]"];
 const REPLY_USAGE: &[&str] = &["tsk reply <task> <text> [--send] [--state-dir <dir>]"];
 const DISPATCH_USAGE: &[&str] = &[
     "tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]",
@@ -210,6 +212,7 @@ pub fn top_level_help() -> String {
         "  status   set a task's status, block it, or put it up for review\n",
         "  edit     change title, notes, assignee, base, after list, or who it waits on\n",
         "  steps    add, toggle, rename, move, or remove a step\n",
+        "  checks   mark a review check open, passed, or failed\n",
         "  reply    answer a block, or give feedback on a review\n",
         "  dispatch launch a task's assigned agent in its own worktree\n",
         "  clean    remove a dispatched task's worktree and merged branch\n\n",
@@ -1574,6 +1577,8 @@ fn task_refusal_message(code: &str, task: TaskAddress) -> String {
         "not-blocked" => format!("{display} is not blocked or in review; nothing to reply to"),
         "empty-reply" => "the reply is empty".to_string(),
         "same-step" => "a step cannot be placed relative to itself".to_string(),
+        "not-in-review" => format!("{display} has no open review round"),
+        "unknown-check" => format!("{display}'s review round has no check at that position"),
         _ => return code.to_string(),
     };
     format!("{code}: {message}")
@@ -1587,6 +1592,72 @@ pub fn steps_rejected(error: StepsError, task: TaskAddress) -> CliOutput {
     CliOutput {
         stdout: String::new(),
         stderr: format!("tsk steps: {detail}\n"),
+        code,
+    }
+}
+
+pub fn checks_help() -> CliOutput {
+    help(HelpDoc {
+        usage: lines(CHECKS_USAGE),
+        purpose: "Mark one check of a task's open review round.".into(),
+        groups: vec![
+            group(
+                "Arguments",
+                &[
+                    ("<task>", "a task number or UUID"),
+                    (
+                        "<n>",
+                        "the check's position, from 1, in tsk list <task> --json order",
+                    ),
+                ],
+            ),
+            group(
+                "Actions",
+                &[("set", "set the check to open, passed, or failed")],
+            ),
+            group(
+                "Options",
+                &[("--state-dir <dir>", "use another board store")],
+            ),
+        ],
+        examples: vec![
+            "tsk checks T12 set 2 passed".into(),
+            "tsk checks T12 set 1 failed".into(),
+        ],
+        refusals: vec!["unknown-task, soft-deleted-task, not-in-review, unknown-check".into()],
+        exit: exit_line(
+            "check set, or it already had that state",
+            Some("check refusal, nothing persisted"),
+            true,
+        ),
+    })
+}
+
+pub fn checks(result: ChecksResult) -> CliOutput {
+    CliOutput {
+        stdout: format!(
+            "check {} {}: {}\n",
+            result.position,
+            result.state.name(),
+            terminal_text(&result.text)
+        ),
+        stderr: String::new(),
+        code: 0,
+    }
+}
+
+pub fn checks_usage(reason: &str) -> CliOutput {
+    usage_error("checks", reason, CHECKS_USAGE)
+}
+
+pub fn checks_rejected(error: ChecksError, task: TaskAddress) -> CliOutput {
+    let (detail, code) = match error {
+        ChecksError::Store(detail) => (detail, 3),
+        other => (task_refusal_message(other.code(), task), 1),
+    };
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!("tsk checks: {detail}\n"),
         code,
     }
 }

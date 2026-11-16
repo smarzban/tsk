@@ -9,6 +9,7 @@ pub enum Surface {
     Capture,
     Add,
     Steps,
+    Checks,
     List,
     Status,
     Reply,
@@ -112,6 +113,7 @@ pub fn route<S: AsRef<str>>(
             "capture" => Surface::Capture,
             "add" => Surface::Add,
             "steps" => Surface::Steps,
+            "checks" => Surface::Checks,
             "list" => Surface::List,
             "status" => Surface::Status,
             "reply" => Surface::Reply,
@@ -246,6 +248,14 @@ mod tests {
         assert_eq!(
             route(["tsk", "steps", "id", "toggle", "abc"], None),
             Surface::Steps
+        );
+    }
+
+    #[test]
+    fn checks_positional_selects_checks_surface() {
+        assert_eq!(
+            route(["tsk", "checks", "T12", "set", "1", "passed"], None),
+            Surface::Checks
         );
     }
 

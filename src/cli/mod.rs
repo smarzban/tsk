@@ -10,6 +10,7 @@ use crate::dispatch::{CleanupError, HostKind};
 pub mod add;
 pub mod archive;
 pub mod backup;
+pub mod checks;
 pub mod clean;
 pub mod dispatch;
 pub mod edit;
@@ -107,6 +108,7 @@ fn run_verb<R: Read>(
         }
         Some("add") => run_add(args, &mut stdin, stdin_is_tty),
         Some("steps") => run_steps(args),
+        Some("checks") => run_checks(args),
         Some("list") => run_list(args, terminal_width),
         Some("status") => run_status(args),
         Some("reply") => run_reply(args),
@@ -126,7 +128,7 @@ fn run_verb<R: Read>(
             run_archive(args, verb, archive)
         }
         _ => presenter::usage(
-            "expected add, steps, list, status, reply, dispatch, clean, edit, trash, backup, restore, archive, unarchive, or project command",
+            "expected add, steps, checks, list, status, reply, dispatch, clean, edit, trash, backup, restore, archive, unarchive, or project command",
         ),
     }
 }
@@ -150,6 +152,7 @@ fn run_help(args: Vec<String>) -> CliOutput {
             "capture" => presenter::capture_help(),
             "add" => presenter::add_help(),
             "steps" => presenter::steps_help(),
+            "checks" => presenter::checks_help(),
             "list" => presenter::list_help(None),
             "status" => presenter::status_help(),
             "reply" => presenter::reply_help(),
@@ -185,6 +188,23 @@ fn run_steps(args: Vec<String>) -> CliOutput {
     match steps::run(task, action, input.state_dir) {
         Ok(result) => presenter::steps(result),
         Err(error) => presenter::steps_rejected(error, task),
+    }
+}
+
+fn run_checks(args: Vec<String>) -> CliOutput {
+    let input = match parser::parse_flag_checks(&args) {
+        Ok(input) => input,
+        Err(reason) => return presenter::checks_usage(&reason),
+    };
+    if input.help {
+        return presenter::checks_help();
+    }
+    let (Some(task), Some(action)) = (input.task, input.action) else {
+        return presenter::checks_usage("task id and action are required");
+    };
+    match checks::run(task, action, input.state_dir) {
+        Ok(result) => presenter::checks(result),
+        Err(error) => presenter::checks_rejected(error, task),
     }
 }
 

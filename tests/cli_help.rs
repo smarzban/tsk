@@ -116,6 +116,19 @@ verb_help_test!(
     ]
 );
 verb_help_test!(
+    checks_help_has_reference_sections,
+    ["checks", "--help"],
+    [
+        "usage:",
+        "Arguments",
+        "Actions",
+        "Options",
+        "Examples:",
+        "Refusals (exit 1):",
+        "Exit:"
+    ]
+);
+verb_help_test!(
     reply_help_has_reference_sections,
     ["reply", "--help"],
     [
@@ -286,6 +299,7 @@ fn command_help_lines_have_no_trailing_whitespace() {
         &["status", "--help"],
         &["edit", "--help"],
         &["steps", "--help"],
+        &["checks", "--help"],
         &["reply", "--help"],
         &["dispatch", "--help"],
         &["clean", "--help"],
@@ -321,6 +335,7 @@ fn help_fits_80_columns_and_examples_never_wrap() {
         "status",
         "edit",
         "steps",
+        "checks",
         "reply",
         "dispatch",
         "clean",
@@ -370,6 +385,7 @@ fn every_command_help_purpose_is_a_capitalized_sentence() {
         &["status", "--help"],
         &["edit", "--help"],
         &["steps", "--help"],
+        &["checks", "--help"],
         &["reply", "--help"],
         &["dispatch", "--help"],
         &["clean", "--help"],

@@ -29,6 +29,7 @@ fn main() -> ExitCode {
         // Verbs that open the store need a home for it; setup, guide and help do not.
         Surface::Add
         | Surface::Steps
+        | Surface::Checks
         | Surface::List
         | Surface::Status
         | Surface::Reply
