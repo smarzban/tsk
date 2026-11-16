@@ -1,6 +1,6 @@
 //! Undo stack for soft-delete, complete, status changes, steps, archive, assignment, base,
-//! block, who a block or review waits on, `after`, a start that dispatched, and a name removed
-//! from the assignee picker.
+//! due day, block, who a block or review waits on, `after`, a start that dispatched, and a
+//! name removed from the assignee picker.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -41,6 +41,12 @@ pub enum UndoEntry {
         expected_revision: Uuid,
     },
     SetBase {
+        id: Uuid,
+        previous: Option<String>,
+        expected_revision: Uuid,
+    },
+    /// A due day set, changed, or cleared on the task page; reversing puts `previous` back.
+    SetDue {
         id: Uuid,
         previous: Option<String>,
         expected_revision: Uuid,
@@ -128,6 +134,7 @@ impl UndoEntry {
                 | UndoEntry::Complete { .. }
                 | UndoEntry::Assign { .. }
                 | UndoEntry::SetBase { .. }
+                | UndoEntry::SetDue { .. }
                 | UndoEntry::Block { .. }
                 | UndoEntry::Start { .. }
                 | UndoEntry::Status { .. }
@@ -165,6 +172,11 @@ impl UndoEntry {
                     ..
                 }
                 | UndoEntry::SetBase {
+                    id,
+                    expected_revision,
+                    ..
+                }
+                | UndoEntry::SetDue {
                     id,
                     expected_revision,
                     ..
@@ -239,6 +251,11 @@ impl UndoEntry {
                 expected_revision,
                 ..
             }
+            | UndoEntry::SetDue {
+                id: target,
+                expected_revision,
+                ..
+            }
             | UndoEntry::Block {
                 id: target,
                 expected_revision,
@@ -295,6 +312,7 @@ impl UndoEntry {
                 ..
             } => state.restore_assignee(id, previous, previous_kind),
             UndoEntry::SetBase { id, previous, .. } => state.restore_base(id, previous),
+            UndoEntry::SetDue { id, previous, .. } => state.restore_due(id, previous),
             UndoEntry::Block { id, previous, .. } => state.restore_unblocked(id, previous),
             UndoEntry::Start { id, previous, .. } | UndoEntry::Status { id, previous, .. } => {
                 state.restore_status(id, previous)

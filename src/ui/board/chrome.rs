@@ -81,6 +81,11 @@ fn edit_chrome_legends(mode: BoardInputMode, review: bool) -> [&'static str; 3] 
             "enter edit · tab next · esc",
             "enter edit · esc",
         ],
+        BoardInputMode::SelectDue => [
+            "enter edit due · tab next · esc cancel",
+            "enter edit · tab next · esc",
+            "enter edit · esc",
+        ],
         BoardInputMode::SelectBase => [
             "enter choose base · tab next · esc cancel",
             "enter choose · tab next · esc",
@@ -98,6 +103,11 @@ fn edit_chrome_legends(mode: BoardInputMode, review: bool) -> [&'static str; 3] 
         ],
         BoardInputMode::EditThread => [
             "enter close · shift+enter save · esc cancel",
+            "enter close · shift+enter save · esc",
+            "enter close · esc",
+        ],
+        BoardInputMode::EditDue => [
+            "enter close · empty clears · shift+enter save · esc cancel",
             "enter close · shift+enter save · esc",
             "enter close · esc",
         ],
@@ -324,7 +334,9 @@ mod tests {
             BoardInputMode::SelectThread,
             BoardInputMode::SelectBase,
             BoardInputMode::SelectAfter,
+            BoardInputMode::SelectDue,
             BoardInputMode::EditThread,
+            BoardInputMode::EditDue,
             BoardInputMode::EditScope,
             BoardInputMode::EditAssignee,
             BoardInputMode::EditReply,

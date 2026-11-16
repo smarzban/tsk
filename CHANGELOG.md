@@ -25,7 +25,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - `[dispatch] worktrees` in `config.toml` sets where dispatch puts new worktrees ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
 - Project titles: `ctrl+e` on a project row or `tsk project title` names a project; `-p` accepts the title ([project titles](https://gettsk.sh/docs/board/#project-titles)). Thanks @s3rgiosan (#249).
 - `tsk checks T12 set 2 passed` marks a review check from the command line ([checks](https://gettsk.sh/docs/cli/#checks)). Thanks @Tobi4161 (#269).
-- Give a task a due day: `tsk add --due YYYY-MM-DD`, `tsk edit --due` or `--clear-due`, a plan item's `due`, and `tsk list --sort due`. The task page shows it. Thanks @bnivanov-true (#270).
+- Due days: `tsk add --due YYYY-MM-DD`, `tsk edit --due` or `--clear-due`, a plan item's `due`, `tsk list --sort due`, quick-add `!d`, and the task page's Due field. Thanks @bnivanov-true (#270).
 
 ### Changed
 

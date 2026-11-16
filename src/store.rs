@@ -209,8 +209,9 @@ fn migrate_v16_to_v17(document: serde_json::Value) -> Result<serde_json::Value, 
     Ok(document)
 }
 
-/// v17 -> v18: a task gains an optional `due` day. No existing wire value changes, so a v17
-/// document reads as v18 as it is, and a v17 binary refuses a v18 store.
+/// v17 -> v18: a task gains an optional `due` day, and the undo stack a `set_due` entry. No
+/// existing wire value changes, so a v17 document reads as v18 as it is, and a v17 binary
+/// refuses a v18 store.
 fn migrate_v17_to_v18(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
     Ok(document)
 }

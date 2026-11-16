@@ -80,7 +80,7 @@ pub fn capture_save(
     Ok(id)
 }
 
-/// Board capture variant carrying validated assignment and dispatch base fields.
+/// Board capture variant carrying validated assignment, dispatch base, and due day fields.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_save_configured(
     state: &mut DomainState,
@@ -92,8 +92,13 @@ pub fn capture_save_configured(
     thread: Option<String>,
     assignee: Option<Assignee>,
     base: Option<String>,
+    due: Option<String>,
 ) -> Result<TaskId, CaptureError> {
     let scope = scope_override.unwrap_or_else(|| snapshot.default_scope.clone());
+    // A bad day refuses before the create, so a refusal never leaves a half-made task behind.
+    if let Some(text) = due.as_deref() {
+        crate::domain::parse_due(text).map_err(DomainError::InvalidDue)?;
+    }
     // An expanded draft may change project after its !b token was lifted. Validate
     // again at save against the final destination, before any domain mutation.
     if let Some(branch) = base.as_deref() {
@@ -110,6 +115,7 @@ pub fn capture_save_configured(
         assignee,
         base,
     )?;
+    state.set_due_on_create(id, due)?;
     if let Some(store) = store {
         store.reload_merge_save(state)?;
     }
@@ -124,11 +130,13 @@ pub struct QuickAddTokens {
     pub thread: Option<String>,
     pub assignee: Option<Assignee>,
     pub base: Option<String>,
+    /// `!d 2026-11-30`: the new task's due day, already checked to be a real day.
+    pub due: Option<String>,
     /// `!w T202`, repeatable: the tasks the new task runs after.
     pub after: Vec<u64>,
 }
 
-/// Lift and validate whitespace-delimited `!p`, `!t`, `!a`, `!b`, and `!w` directives.
+/// Lift and validate whitespace-delimited `!p`, `!t`, `!a`, `!b`, `!d`, and `!w` directives.
 ///
 /// Base validation uses the effective task destination, never the process checkout.
 pub fn lift_quick_add_tokens(
@@ -144,6 +152,7 @@ pub fn lift_quick_add_tokens(
     let mut thread = None;
     let mut assignee = None;
     let mut base = None;
+    let mut due = None;
     let mut after = Vec::new();
     let mut index = 0;
 
@@ -196,6 +205,15 @@ pub fn lift_quick_add_tokens(
                 base = argument.map(str::to_owned);
                 index += usize::from(argument.is_some()) + 1;
             }
+            // `!d 2026-11-30`: the due day. A new task has no day to clear, so a bare `!d`
+            // refuses like a bare `!w`.
+            "!d" => {
+                let text = quick_add_token_argument(&words, index)
+                    .ok_or_else(|| QUICK_ADD_DUE_NEEDS_DAY.to_string())?;
+                crate::domain::parse_due(text).map_err(|error| format!("due {text}: {error}"))?;
+                due = Some(text.to_owned());
+                index += 2;
+            }
             // `!w T202`: run after T202 ("wait for"). Unknown or done tasks refuse.
             "!w" => {
                 let number = quick_add_token_argument(&words, index)
@@ -230,15 +248,18 @@ pub fn lift_quick_add_tokens(
         thread,
         assignee,
         base,
+        due,
         after,
     })
 }
 
+/// The refusal for a `!d` with no day after it.
+pub const QUICK_ADD_DUE_NEEDS_DAY: &str = "!d needs a day like 2026-11-30";
+
 fn quick_add_token_argument<'a>(words: &'a [&str], index: usize) -> Option<&'a str> {
-    words
-        .get(index + 1)
-        .copied()
-        .filter(|word| !matches!(*word, "!p" | "!t" | "!a" | "!b" | "!w") && !word.starts_with('#'))
+    words.get(index + 1).copied().filter(|word| {
+        !matches!(*word, "!p" | "!t" | "!a" | "!b" | "!d" | "!w") && !word.starts_with('#')
+    })
 }
 
 #[cfg(test)]
@@ -332,6 +353,74 @@ mod tests {
         );
     }
 
+    /// `!d`: a real `YYYY-MM-DD` day is lifted out of the title; a day that does not exist, a
+    /// malformed one, and a bare `!d` (or another token in its place) refuse.
+    #[test]
+    fn d_token_lifts_a_due_day_and_refuses_bad_or_missing_days() {
+        let state = DomainState::new();
+        let lift = |line: &str| lift_quick_add_tokens(line, &state, None, &TaskScope::Global, &[]);
+
+        let tokens = lift("Ship it !d 2026-11-30 soon").expect("lift");
+        assert_eq!(tokens.title, "Ship it soon");
+        assert_eq!(tokens.due.as_deref(), Some("2026-11-30"));
+        assert_eq!(lift("No day").expect("lift").due, None);
+        assert_eq!(
+            lift("Ship !d 2026-02-30").map(|_| ()),
+            Err("due 2026-02-30: that day does not exist in the calendar".to_string())
+        );
+        assert_eq!(
+            lift("Ship !d 30/11").map(|_| ()),
+            Err("due 30/11: a due date is a day written YYYY-MM-DD".to_string())
+        );
+        let needs = Err(QUICK_ADD_DUE_NEEDS_DAY.to_string());
+        assert_eq!(lift("Ship !d").map(|_| ()), needs);
+        assert_eq!(lift("Ship !d !w T1").map(|_| ()), needs);
+    }
+
+    /// The configured create carries the lifted day onto the new task, and a bad day refuses
+    /// before anything is created.
+    #[test]
+    fn configured_capture_sets_the_due_day_and_refuses_a_bad_one_before_creating() {
+        let mut state = DomainState::new();
+        let snapshot = project_snapshot("/unused/initial-repo");
+        let id = capture_save_configured(
+            &mut state,
+            None,
+            &snapshot,
+            "Dated",
+            None,
+            Some(TaskScope::Global),
+            None,
+            None,
+            None,
+            Some("2026-11-30".into()),
+        )
+        .expect("create");
+        assert_eq!(
+            state.get(id).expect("task").due.as_deref(),
+            Some("2026-11-30")
+        );
+
+        let before = serde_json::to_value(&state).unwrap();
+        let result = capture_save_configured(
+            &mut state,
+            None,
+            &snapshot,
+            "Bad day",
+            None,
+            Some(TaskScope::Global),
+            None,
+            None,
+            None,
+            Some("2026-02-30".into()),
+        );
+        assert!(matches!(
+            result,
+            Err(CaptureError::Domain(DomainError::InvalidDue(_)))
+        ));
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
+    }
+
     #[test]
     fn configured_capture_revalidates_base_against_final_scope_before_mutation() {
         let mut state = DomainState::new();
@@ -347,6 +436,7 @@ mod tests {
             None,
             None,
             Some("main".into()),
+            None,
         );
         assert!(matches!(result, Err(CaptureError::UnknownBase(_))));
         assert_eq!(

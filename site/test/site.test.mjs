@@ -67,6 +67,7 @@ test("demo capture keeps an absolute project path verbatim", () => {
     thread: "site-docs",
     assignee: undefined,
     base: undefined,
+    due: undefined,
     after: [],
     refuse: "",
   });

@@ -2464,7 +2464,10 @@ fn shift_tab_from_scope_resets_notes_stream_origin_and_aligns_caret() {
         .expect("Shift+Tab reaches After from Thread");
     assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
-        .expect("Shift+Tab reaches Base from After");
+        .expect("Shift+Tab reaches Due from After");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectDue);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Shift+Tab reaches Base from Due");
     assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
         .expect("Shift+Tab reaches Assignee from Base");

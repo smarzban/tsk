@@ -1159,6 +1159,11 @@ fn footer_assignee_then_base_then_thread_then_scope_each_routes_its_field() {
         .iter()
         .find(|hit| hit.target == QueueHitTarget::FormBase)
         .expect("base target");
+    let due_hit = hits
+        .regions
+        .iter()
+        .find(|hit| hit.target == QueueHitTarget::FormDue)
+        .expect("empty due target");
     let after_hit = hits
         .regions
         .iter()
@@ -1184,9 +1189,19 @@ fn footer_assignee_then_base_then_thread_then_scope_each_routes_its_field() {
         "base follows assignee and its separator"
     );
     assert_eq!(
-        after_hit.area.x,
+        due_hit.area.x,
         base_hit.area.x + base_hit.area.width + 3,
-        "after follows base and its separator"
+        "due follows base and its separator"
+    );
+    assert_eq!(
+        due_hit.area.width,
+        "due".chars().count() as u16,
+        "the empty due slot is its placeholder"
+    );
+    assert_eq!(
+        after_hit.area.x,
+        due_hit.area.x + due_hit.area.width + 3,
+        "after follows due and its separator"
     );
     assert_eq!(
         after_hit.area.width,
@@ -1250,6 +1265,23 @@ fn footer_assignee_then_base_then_thread_then_scope_each_routes_its_field() {
         Some(BoardIntent::OpenAfterPicker),
         "clicking the after footer slot opens the task picker"
     );
+    let due = click(due_hit, &model, &hits).expect("due click intent");
+    assert_eq!(due, BoardIntent::FocusFormField(CaptureField::Due));
+    apply_intent(&mut domain, &mut model, due, None).expect("focus due");
+    assert_eq!(model.form_focus(), Some(CaptureField::Due));
+    assert_eq!(model.input_mode(), BoardInputMode::SelectDue);
+    let due_hits = board_hit_map(STANDARD, &model);
+    let due_again = due_hits
+        .regions
+        .iter()
+        .find(|hit| hit.target == QueueHitTarget::FormDue)
+        .expect("selected due target");
+    assert_eq!(
+        click(due_again, &model, &due_hits),
+        Some(BoardIntent::ToggleDueEditing),
+        "a second click on the selected due slot opens its editor"
+    );
+
     let thread = click(thread_hit, &model, &hits).expect("thread click intent");
     assert_eq!(thread, BoardIntent::FocusFormField(CaptureField::Thread));
     apply_intent(&mut domain, &mut model, thread, None).expect("focus thread");

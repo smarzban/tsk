@@ -1031,17 +1031,25 @@ fn build_task_page_overlay<'a>(
             })
             .unwrap_or_default(),
     );
-    let bottom_input = (model.input_mode() == BoardInputMode::EditThread).then(|| {
+    // Thread and Due edit in the footer's one-line input, each with its own refusal.
+    let footer_text_field = match model.input_mode() {
+        BoardInputMode::EditThread => {
+            Some((&form.thread, "thread…", form.thread_refusal.as_deref()))
+        }
+        BoardInputMode::EditDue => Some((&form.due, "YYYY-MM-DD", form.due_refusal.as_deref())),
+        _ => None,
+    };
+    let bottom_input = footer_text_field.map(|(draft, placeholder, message)| {
         let avail = (geo.row_width as usize).saturating_sub(2);
-        let (text, cursor_col) = escaped_line_window(&form.thread, avail);
+        let (text, cursor_col) = escaped_line_window(draft, avail);
         crate::ui::render::BottomInputSlot {
             text,
             cursor_col,
-            placeholder: "thread…",
+            placeholder,
             refusal: None,
             above_rows: Vec::new(),
             cursor_row_offset: 0,
-            message: form.thread_refusal.as_deref(),
+            message,
         }
     });
     // A notes edit always keeps one row: the layout reserves it (the section caps
@@ -1192,11 +1200,20 @@ fn build_task_page_overlay<'a>(
                     .join(", ")
             )
         });
-    // The due day is read-only on the board for now: `tsk edit --due` changes it.
-    let due_segment = bound_task
-        .filter(|_| !capture_form)
-        .and_then(|task| task.due.as_deref())
-        .map(|due| format!("due {}", terminal_text(due)));
+    // `due 2026-11-30` after the base. Like `after`, an edit session shows the draft, and a
+    // bare `due` when it is empty so the field stays in reach.
+    let due_segment = if editing_links {
+        let draft = form.due.value().trim();
+        Some(if draft.is_empty() {
+            "due".to_string()
+        } else {
+            format!("due {}", terminal_text(draft))
+        })
+    } else {
+        bound_task
+            .and_then(|task| task.due.as_deref())
+            .map(|due| format!("due {}", terminal_text(due)))
+    };
     for segment in [due_segment, after_segment, before_segment]
         .into_iter()
         .flatten()
@@ -1223,6 +1240,8 @@ fn build_task_page_overlay<'a>(
                     | BoardInputMode::EditNotes
                     | BoardInputMode::SelectThread
                     | BoardInputMode::EditThread
+                    | BoardInputMode::SelectDue
+                    | BoardInputMode::EditDue
                     | BoardInputMode::EditScope
                     | BoardInputMode::EditAssignee
                     | BoardInputMode::FormDropdown
@@ -1477,6 +1496,7 @@ fn build_task_page_overlay<'a>(
         BoardInputMode::EditTitle => Some(CaptureField::Title),
         BoardInputMode::EditNotes => Some(CaptureField::Notes),
         BoardInputMode::SelectThread | BoardInputMode::EditThread => Some(CaptureField::Thread),
+        BoardInputMode::SelectDue | BoardInputMode::EditDue => Some(CaptureField::Due),
         BoardInputMode::SelectBase => Some(CaptureField::Base),
         BoardInputMode::SelectAfter => Some(CaptureField::After),
         BoardInputMode::EditScope => Some(CaptureField::Scope),
@@ -2429,7 +2449,7 @@ impl OverlayPayloads {
                 input: crate::ui::render::BottomInputSlot {
                     text: title,
                     cursor_col: u16::try_from(cursor_column).unwrap_or(u16::MAX),
-                    placeholder: "title…   !p project · !t thread · !a assignee · !b base",
+                    placeholder: "title…   !p project · !t thread · !a assignee · !b base · !d due",
                     refusal: None,
                     // Save recovery owns the verb row; ordinary quick-add refusals
                     // use the shared slot's reserved row above the cursor. A wrapped
@@ -2607,6 +2627,7 @@ fn editing_field(model: &BoardModel) -> Option<&'static str> {
         BoardInputMode::EditTitle => Some("title"),
         BoardInputMode::EditNotes => Some("notes"),
         BoardInputMode::SelectThread | BoardInputMode::EditThread => Some("thread"),
+        BoardInputMode::SelectDue | BoardInputMode::EditDue => Some("due"),
         BoardInputMode::EditScope => Some("project"),
         BoardInputMode::EditAssignee => Some("assignee"),
         BoardInputMode::FormDropdown => match model.form_focus() {
@@ -2839,7 +2860,11 @@ fn draw_wide_board(
     // The footer's owner decides its rows: a bottom input, the palette query, or the verbs
     // of the focused surface. Column heights follow the footer's (possibly shifted) rule.
     let footer_needs_input = modal.as_ref().is_some_and(render::has_bottom_input)
-        || (task_focus && model.input_mode() == BoardInputMode::EditThread);
+        || (task_focus
+            && matches!(
+                model.input_mode(),
+                BoardInputMode::EditThread | BoardInputMode::EditDue
+            ));
     let footer_geo = render::bottom_input_geometry(frame_geo, footer_needs_input);
     let column_height = footer_geo.rule_row.unwrap_or(area.height);
     let column_geo = |width: u16| tier::resolve_column(width, column_height, area.height, density);
@@ -3091,7 +3116,12 @@ fn draw_projects_wide_board(
     let right_focused = stage == tier::WideStage::Rail && right.is_some();
     let footer_needs_input = if right_focused {
         right_modal.as_ref().is_some_and(render::has_bottom_input)
-            || right.is_some_and(|right| right.input_mode() == BoardInputMode::EditThread)
+            || right.is_some_and(|right| {
+                matches!(
+                    right.input_mode(),
+                    BoardInputMode::EditThread | BoardInputMode::EditDue
+                )
+            })
     } else {
         outer_modal.as_ref().is_some_and(render::has_bottom_input)
     };

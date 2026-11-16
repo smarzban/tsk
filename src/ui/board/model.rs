@@ -136,8 +136,13 @@ pub enum BoardInputMode {
     SelectBase,
     /// The task page footer's `after` list is selected. Enter opens the task picker.
     SelectAfter,
+    /// The task page footer's optional due day is selected, ready for Enter or a second click
+    /// to enter its text editor without ending the enclosing task edit session.
+    SelectDue,
     /// The task page footer's optional thread name owns its text cursor.
     EditThread,
+    /// The task page footer's optional due day owns its text cursor.
+    EditDue,
     /// The scope row of an open task form owns focus.
     EditScope,
     /// The assignee field cycles defined agent profiles plus unassigned.
@@ -521,6 +526,7 @@ pub(super) struct TaskEditSave {
     pub(super) thread: Option<String>,
     pub(super) assignee: Option<Assignee>,
     pub(super) base: Option<String>,
+    pub(super) due: Option<String>,
     pub(super) after: Vec<u64>,
     /// Existing-step names staged alongside the ordinary task fields. They reach the
     /// domain only when the task session is confirmed with Shift+Enter.
@@ -545,6 +551,10 @@ pub(super) struct BoardForm {
     pub(super) assignee: Option<Assignee>,
     /// Optional explicit dispatch branch. `None` means the repository's remote default.
     pub(super) base: Option<String>,
+    /// Optional due day draft (`YYYY-MM-DD`), checked at save. Empty clears the day.
+    pub(super) due: EditBuffer,
+    /// Field-local due day refusal, painted by the footer input like the thread's.
+    pub(super) due_refusal: Option<String>,
     /// The tasks this one runs after, by number, as the task picker last set them.
     pub(super) after: Vec<u64>,
     pub(super) assignee_options: Vec<Option<Assignee>>,
@@ -607,6 +617,7 @@ impl BoardForm {
         form.thread = seeded_draft(task.thread.as_deref().unwrap_or_default());
         form.assignee = task.assigned();
         form.base = task.base.clone();
+        form.due = seeded_draft(task.due.as_deref().unwrap_or_default());
         form.after = task.after.clone();
         form.set_agent_names(agent_names);
         form.block.fold = super::block::CheckFold::fresh(task);
@@ -666,6 +677,8 @@ impl BoardForm {
             thread_refusal: None,
             assignee: None,
             base: None,
+            due: seeded_draft(""),
+            due_refusal: None,
             after: Vec::new(),
             assignee_options: vec![None],
             assignee_selected: 0,
@@ -714,6 +727,10 @@ impl BoardForm {
             CaptureField::Scope => BoardInputMode::EditScope,
             CaptureField::Assignee => BoardInputMode::EditAssignee,
             CaptureField::Base => BoardInputMode::SelectBase,
+            // Like Thread: a selected footer control on the task page, a direct editor in
+            // an expanded capture draft.
+            CaptureField::Due if self.is_task() => BoardInputMode::SelectDue,
+            CaptureField::Due => BoardInputMode::EditDue,
             CaptureField::After => BoardInputMode::SelectAfter,
         }
     }
@@ -738,6 +755,10 @@ impl BoardForm {
                 self.select_current_assignee();
             }
             CaptureField::Base => self.base = task.base.clone(),
+            CaptureField::Due => {
+                self.due = seeded_draft(task.due.as_deref().unwrap_or_default());
+                self.due_refusal = None;
+            }
             CaptureField::After => self.after = task.after.clone(),
         }
         if let Some(snapshot) = self.task_snapshot.as_mut() {
@@ -751,6 +772,7 @@ impl BoardForm {
                     snapshot.assignee_kind = task.assignee_kind;
                 }
                 CaptureField::Base => snapshot.base = task.base.clone(),
+                CaptureField::Due => snapshot.due = task.due.clone(),
                 CaptureField::After => snapshot.after = task.after.clone(),
             }
         }
@@ -761,7 +783,8 @@ impl BoardForm {
             CaptureField::Title => CaptureField::Notes,
             CaptureField::Notes => CaptureField::Assignee,
             CaptureField::Assignee => CaptureField::Base,
-            CaptureField::Base => CaptureField::After,
+            CaptureField::Base => CaptureField::Due,
+            CaptureField::Due => CaptureField::After,
             CaptureField::After => CaptureField::Thread,
             CaptureField::Thread => CaptureField::Scope,
             CaptureField::Scope => CaptureField::Title,
@@ -774,7 +797,8 @@ impl BoardForm {
             CaptureField::Notes => CaptureField::Title,
             CaptureField::Assignee => CaptureField::Notes,
             CaptureField::Base => CaptureField::Assignee,
-            CaptureField::After => CaptureField::Base,
+            CaptureField::Due => CaptureField::Base,
+            CaptureField::After => CaptureField::Due,
             CaptureField::Thread => CaptureField::After,
             CaptureField::Scope => CaptureField::Thread,
         };
@@ -3186,6 +3210,8 @@ impl BoardModel {
                     form.thread_refusal = None;
                     form.assignee = task.assigned();
                     form.base = task.base.clone();
+                    form.due = seeded_draft(task.due.as_deref().unwrap_or_default());
+                    form.due_refusal = None;
                     form.scope = task.scope.clone();
                     form.select_current_scope();
                     form.editing = false;
@@ -6796,6 +6822,7 @@ impl BoardModel {
             | CaptureField::After => form.title.value(),
             CaptureField::Notes => form.notes.value(),
             CaptureField::Thread => form.thread.value(),
+            CaptureField::Due => form.due.value(),
             CaptureField::Assignee => "",
         }
     }
@@ -6812,6 +6839,7 @@ impl BoardModel {
             | CaptureField::After => form.title.cursor(),
             CaptureField::Notes => form.notes.cursor(),
             CaptureField::Thread => form.thread.cursor(),
+            CaptureField::Due => form.due.cursor(),
             CaptureField::Assignee => 0,
         }
     }
@@ -6919,6 +6947,7 @@ impl BoardModel {
                 && task.thread == pending.thread
                 && task.assigned() == pending.assignee
                 && task.base == pending.base
+                && task.due == pending.due
                 && pending.step_renames.iter().all(|(step_id, text)| {
                     task.steps
                         .iter()
@@ -6958,6 +6987,8 @@ impl BoardModel {
             form.thread_refusal = None;
             form.assignee = pending.assignee;
             form.base = pending.base;
+            form.due = seeded_draft(pending.due.as_deref().unwrap_or_default());
+            form.due_refusal = None;
             form.after = pending.after;
             form.select_current_assignee();
             form.editing = false;
@@ -7257,6 +7288,22 @@ impl BoardModel {
         };
     }
 
+    /// Toggle the selected task-page Due control into or out of its text editor, the way
+    /// [`Self::toggle_thread_editing`] does for Thread.
+    pub(super) fn toggle_due_editing(&mut self) {
+        let Some(form) = self.form.as_ref().filter(|form| form.is_task()) else {
+            return;
+        };
+        if form.focus != CaptureField::Due {
+            return;
+        }
+        self.input_mode = match self.input_mode {
+            BoardInputMode::SelectDue => BoardInputMode::EditDue,
+            BoardInputMode::EditDue => BoardInputMode::SelectDue,
+            _ => return,
+        };
+    }
+
     /// Whether the task page's cursor rests on a stored (not removed, not the `+ step`
     /// row) step. Enter toggles that step instead of acting on the page.
     pub fn stored_step_selected(&self) -> bool {
@@ -7309,6 +7356,7 @@ impl BoardModel {
             || form.thread.value() != snapshot.thread.as_deref().unwrap_or_default()
             || form.assignee != snapshot.assigned()
             || form.base != snapshot.base
+            || form.due.value() != snapshot.due.as_deref().unwrap_or_default()
             || form.after != snapshot.after
             || form.scope != snapshot.scope
             || !form.steps.removals.is_empty()
@@ -7675,6 +7723,8 @@ impl BoardModel {
             | BoardInputMode::EditNotes
             | BoardInputMode::SelectThread
             | BoardInputMode::EditThread
+            | BoardInputMode::SelectDue
+            | BoardInputMode::EditDue
             | BoardInputMode::EditScope
             | BoardInputMode::EditStep) => Some(mode),
             _ => None,

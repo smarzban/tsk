@@ -23,7 +23,7 @@ The footer reads `@assignee · ⎇ <base> · due 2026-03-15 · after T202 · bef
 | --- | --- |
 | `@assignee` | The [assignee](/docs/dispatch/#assign): an agent profile, you, or a person. An unassigned task shows `+ assign` when at least one [agent profile](/docs/storage/#configuration) exists. Click to pick |
 | `⎇ <base>` | The base branch. Unset, it shows the repository default, such as `⎇ main (default)`, or `⎇ default` on the desk. Click to pick |
-| `due 2026-03-15` | The day the task is due. Shown only when set, and read-only here: `tsk edit --due` changes it |
+| `due 2026-03-15` | The day the task is due. Shown only when set, or during an edit |
 | `after T202` | The tasks this one [runs after](/docs/board/#after). Shown only when set, or during an edit. Click to pick |
 | `before T205` | The tasks that run after this one. Read-only: it changes when you edit theirs. Click a number to open that task |
 | `#thread · project` | The thread and the project, or desk |
@@ -34,7 +34,7 @@ Below it, the action bar lists the page's keys. In view mode it reads `ctrl+e ed
 
 The page opens in view mode. `ctrl+e` starts an edit at the title, or at the selected step. `Tab` then moves through the fields in this order, and `shift+Tab` goes back:
 
-Title → Notes → steps → **+ step** → Assignee → Base → After → Thread → Scope → Title
+Title → Notes → steps → **+ step** → Assignee → Base → Due → After → Thread → Scope → Title
 
 The footer shows the same fields in the same order. Clicking a field during an edit moves there and keeps what you changed. A click does not start an edit.
 
@@ -45,13 +45,14 @@ The footer shows the same fields in the same order. Clicking a field during an e
 | Steps | The checklist. [Steps](/docs/steps/) |
 | Assignee | An agent profile, you, or none. The task's current person stays on the list |
 | Base | An existing local or remote branch that dispatch starts from, not a tag or commit. Unset uses the repository default. [Base branch](/docs/dispatch/#base-branch) |
+| Due | A day written `YYYY-MM-DD`, optional. Empty clears it |
 | After | The tasks this one waits for |
 | Thread | A [thread name](/docs/capture/#thread-names), optional |
 | Scope | The project, or desk. Archived projects are not offered |
 
 - `Enter` on Assignee, Base, After, or Scope opens its picker. `Space` or `←` / `→` cycles Assignee and Scope in place.
 - To assign a new person, use `@` outside an edit and type their name.
-- `Enter` or a second click on Thread opens its editor.
+- `Enter` or a second click on Thread or Due opens its editor. `Enter` again closes it and keeps the draft.
 - The Base picker lists the repository default first, such as **default (main)**, then local and `origin/*` branches. It refreshes after a background fetch. **default** clears the base.
 - The After picker is a search box over the other tasks. [Task picker](/docs/board/#task-picker).
 
@@ -65,7 +66,9 @@ In view mode, three fields save at once:
 
 ## Save and cancel
 
-- `shift+Enter` saves the whole edit: title, notes, scope, thread, assignee, base, after, and staged step renames and removals.
+- `shift+Enter` saves the whole edit: title, notes, scope, thread, assignee, base, due, after, and staged step renames and removals.
+- A day that does not exist, such as `2026-02-30`, refuses the save. The Due editor opens with the reason, and the rest of the edit stays.
+- `ctrl+u` after the save puts back the previous due day, along with any step changes the save made.
 - `Esc` cancels the field you are in. A second `Esc` cancels the rest of the edit and restores staged step removals.
 - New steps and step moves save at once, so cancelling does not undo them.
 - The base is checked only when you change it or the project, so a deleted branch never blocks other edits.

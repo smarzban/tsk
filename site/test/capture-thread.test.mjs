@@ -26,6 +26,7 @@ test("demo capture lifts assignee, base, and after tokens", () => {
       thread: undefined,
       assignee: "reviewer",
       base: "main",
+      due: undefined,
       after: [12],
       refuse: "",
     },
@@ -39,6 +40,7 @@ test("demo capture leaves a hash word in the title after a bare token", () => {
     thread: undefined,
     assignee: undefined,
     base: undefined,
+    due: undefined,
     after: [],
     refuse: "",
   });
@@ -65,4 +67,23 @@ test("demo capture refuses a base on a desk task, like the board", () => {
     "base requires a project task",
   );
   assert.equal(parseCapture("Buy coffee !b main !p atlas", null).refuse, "");
+});
+
+test("demo capture lifts a due day and refuses a bad or missing one", () => {
+  const parsed = parseCapture("Ship it !d 2026-11-30 soon", null);
+  assert.equal(parsed.title, "Ship it soon");
+  assert.equal(parsed.due, "2026-11-30");
+  assert.equal(parsed.refuse, "");
+  assert.equal(
+    parseCapture("Ship !d 2026-02-30", null).refuse,
+    "due 2026-02-30: that day does not exist in the calendar",
+  );
+  assert.equal(
+    parseCapture("Ship !d tomorrow", null).refuse,
+    "due tomorrow: a due date is a day written YYYY-MM-DD",
+  );
+  assert.equal(
+    parseCapture("Ship !d", null).refuse,
+    "!d needs a day like 2026-11-30",
+  );
 });

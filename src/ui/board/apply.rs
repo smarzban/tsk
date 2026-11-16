@@ -136,6 +136,7 @@ fn undo_action_word(domain: &DomainState, leaf: &UndoEntry) -> &'static str {
         }
         UndoEntry::Assign { .. } => "assignee",
         UndoEntry::SetBase { .. } => "base",
+        UndoEntry::SetDue { .. } => "due",
         UndoEntry::SetAfter { .. } => "after",
         UndoEntry::SetOn { .. } => "waiting on",
         UndoEntry::Steps { .. } => "steps",
@@ -338,6 +339,7 @@ fn stale_undo_message(domain: &DomainState, id: Uuid) -> String {
         Some(UndoEntry::Block { .. }) => "since its block or review",
         Some(UndoEntry::Assign { .. }) => "since it was assigned",
         Some(UndoEntry::SetBase { .. }) => "since its base change",
+        Some(UndoEntry::SetDue { .. }) => "since its due change",
         Some(UndoEntry::SetAfter { .. }) => "since its after change",
         Some(UndoEntry::SetOn { .. }) => "since its waiting-on change",
         Some(UndoEntry::Steps { .. }) => "since its step change",
@@ -566,6 +568,7 @@ fn read_only_focus_refuses(model: &BoardModel, intent: &BoardIntent) -> bool {
             | BoardIntent::BeginAddStep
             | BoardIntent::BeginAppendStep
             | BoardIntent::ToggleThreadEditing
+            | BoardIntent::ToggleDueEditing
             | BoardIntent::FormCycleScope
             // AC-44: Tab, shift+Tab, a field click, and the step cursor are edit
             // entries on the task page, so the read-only page refuses them too.
@@ -1018,6 +1021,7 @@ fn apply_board_intent(
                 crate::ui::edit::seeded_draft(lifted.thread.as_deref().unwrap_or_default());
             form.assignee = lifted.assignee;
             form.base = lifted.base;
+            form.due = crate::ui::edit::seeded_draft(lifted.due.as_deref().unwrap_or_default());
             form.after = lifted.after;
             form.set_agent_names(&model.agent_names);
             form.focus = CaptureField::Notes;
@@ -1126,6 +1130,12 @@ fn apply_board_intent(
             } else if model.input_mode == BoardInputMode::EditAssignee && model.form.is_some() {
                 model.focus_form_field(CaptureField::Base);
             } else if model.input_mode == BoardInputMode::SelectBase && model.form.is_some() {
+                model.focus_form_field(CaptureField::Due);
+            } else if matches!(
+                model.input_mode,
+                BoardInputMode::SelectDue | BoardInputMode::EditDue
+            ) && model.form.is_some()
+            {
                 model.focus_form_field(CaptureField::After);
             } else if model.input_mode == BoardInputMode::SelectAfter && model.form.is_some() {
                 model.focus_form_field(CaptureField::Thread);
@@ -1228,6 +1238,12 @@ fn apply_board_intent(
             {
                 model.focus_form_field(CaptureField::After);
             } else if model.input_mode == BoardInputMode::SelectAfter && model.form.is_some() {
+                model.focus_form_field(CaptureField::Due);
+            } else if matches!(
+                model.input_mode,
+                BoardInputMode::SelectDue | BoardInputMode::EditDue
+            ) && model.form.is_some()
+            {
                 model.focus_form_field(CaptureField::Base);
             } else if model.input_mode == BoardInputMode::SelectBase && model.form.is_some() {
                 model.focus_form_field(CaptureField::Assignee);
@@ -1270,6 +1286,10 @@ fn apply_board_intent(
         }
         BoardIntent::ToggleThreadEditing => {
             model.toggle_thread_editing();
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::ToggleDueEditing => {
+            model.toggle_due_editing();
             return Ok(IntentOutcome::None);
         }
         BoardIntent::FormAssigneeNext | BoardIntent::FormAssigneePrev => {
@@ -1694,14 +1714,17 @@ fn apply_board_intent(
             return Ok(IntentOutcome::None);
         }
         BoardIntent::EditInsertText(text) => {
-            // Title and Thread stay one line in either form; Notes preserves pasted line
+            // Title, Thread, and Due stay one line in either form; Notes preserves pasted line
             // breaks. The step editor is one line by construction, so it flattens like Title.
             let single_line = model.project_title_edit.is_some()
                 || model.input_mode == BoardInputMode::EditStep
                 || model.input_mode() == BoardInputMode::BlockCard
                 || (model.input_mode != BoardInputMode::EditReply
                     && model.form.as_ref().is_some_and(|form| {
-                        matches!(form.focus, CaptureField::Title | CaptureField::Thread)
+                        matches!(
+                            form.focus,
+                            CaptureField::Title | CaptureField::Thread | CaptureField::Due
+                        )
                     }));
             edit_draft(model, |draft| {
                 if single_line {
@@ -1850,6 +1873,8 @@ fn apply_board_intent(
                     | BoardInputMode::EditNotes
                     | BoardInputMode::SelectThread
                     | BoardInputMode::EditThread
+                    | BoardInputMode::SelectDue
+                    | BoardInputMode::EditDue
                     | BoardInputMode::EditScope
                     | BoardInputMode::EditAssignee
                     | BoardInputMode::SelectBase
@@ -1941,6 +1966,13 @@ fn apply_board_intent(
                 };
                 let assignee = form.assignee.clone();
                 let base = form.base.clone();
+                let due = match form_due(form.due.value()) {
+                    Ok(due) => due,
+                    Err(message) => {
+                        refuse_form_due(model, message);
+                        return Ok(IntentOutcome::None);
+                    }
+                };
                 let after = form.after.clone();
                 if let Err(error) = domain.check_new_after(&after) {
                     model.set_message(error.to_string());
@@ -1957,6 +1989,7 @@ fn apply_board_intent(
                     thread,
                     assignee,
                     base,
+                    due,
                 ) {
                     Ok(id) => {
                         domain.set_after_on_create(id, &after)?;
@@ -3300,6 +3333,8 @@ fn apply_board_intent(
                         | BoardInputMode::EditScope
                         | BoardInputMode::EditThread
                         | BoardInputMode::SelectThread
+                        | BoardInputMode::EditDue
+                        | BoardInputMode::SelectDue
                 ) {
                     form.manual_page_scroll = true;
                     let horizon = form.notes_max_scroll.get();
@@ -3322,6 +3357,8 @@ fn apply_board_intent(
                         | BoardInputMode::EditScope
                         | BoardInputMode::EditThread
                         | BoardInputMode::SelectThread
+                        | BoardInputMode::EditDue
+                        | BoardInputMode::SelectDue
                 ) {
                     form.manual_page_scroll = true;
                     let horizon = form.notes_max_scroll.get();
@@ -4139,6 +4176,10 @@ fn edit_draft(model: &mut BoardModel, operation: impl FnOnce(&mut EditBuffer)) {
             form.thread_refusal = None;
             operation(&mut form.thread);
         }
+        CaptureField::Due => {
+            form.due_refusal = None;
+            operation(&mut form.due);
+        }
         CaptureField::Scope | CaptureField::Assignee | CaptureField::Base | CaptureField::After => {
         }
     }
@@ -4438,6 +4479,7 @@ fn quick_add_save(
         lifted.thread,
         lifted.assignee,
         lifted.base,
+        lifted.due,
     ) {
         Ok(id) => {
             domain.set_after_on_create(id, &lifted.after)?;
@@ -4677,6 +4719,35 @@ fn normalize_optional_thread(value: &str) -> Result<Option<String>, ThreadError>
     }
 }
 
+/// The form's due draft as a stored day: empty clears it, and a day that is not a real
+/// `YYYY-MM-DD` refuses with the wording the quick-add `!d` token uses.
+fn form_due(value: &str) -> Result<Option<String>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    crate::domain::parse_due(value)
+        .map(|day| Some(day.to_string()))
+        .map_err(|error| format!("due {value}: {error}"))
+}
+
+/// Refuse a save on its bad due day: the Due editor opens with the refusal under it, and the
+/// form and its edit session stay as they were.
+fn refuse_form_due(model: &mut BoardModel, message: String) {
+    model.focus_form_field(CaptureField::Due);
+    if model.input_mode == BoardInputMode::SelectDue {
+        model.toggle_due_editing();
+    }
+    if model.input_mode == BoardInputMode::EditDue {
+        if let Some(form) = model.form.as_mut() {
+            form.due_refusal = Some(message);
+        }
+    } else {
+        // A typed step draft that cannot be parked keeps its row: say it on the status row.
+        model.set_message(message);
+    }
+}
+
 fn confirm_edit(
     domain: &mut DomainState,
     model: &mut BoardModel,
@@ -4700,6 +4771,13 @@ fn confirm_edit(
             if let Some(form) = model.form.as_mut() {
                 form.thread_refusal = Some(thread_refusal_message(error));
             }
+            return Ok(IntentOutcome::None);
+        }
+    };
+    let due = match form_due(form.due.value()) {
+        Ok(due) => due,
+        Err(message) => {
+            refuse_form_due(model, message);
             return Ok(IntentOutcome::None);
         }
     };
@@ -4762,8 +4840,8 @@ fn confirm_edit(
         .map(|(text, _)| vec![text.trim().to_string()])
         .unwrap_or_default();
     let extra_after = extra_step.and_then(|(_, insert_after)| insert_after);
-    // Only the steps part of the save is undoable.
-    domain.with_steps_undo(id, |domain| {
+    // Only the steps and due day parts of the save are undoable, as one entry.
+    domain.with_steps_and_due_undo(id, |domain| {
         domain.edit_with_step_changes_and_base(
             id,
             &title,
@@ -4777,7 +4855,8 @@ fn confirm_edit(
             &extra_steps,
             extra_after,
         )?;
-        domain.stage_after_in_edit(id, &after)
+        domain.stage_after_in_edit(id, &after)?;
+        domain.stage_due_in_edit(id, due.clone())
     })?;
 
     // Retain the complete form and mode until the persistence boundary confirms this exact
@@ -4790,6 +4869,7 @@ fn confirm_edit(
         thread,
         assignee,
         base,
+        due,
         after,
         step_renames,
         step_removals,
