@@ -83,6 +83,9 @@ pub(crate) struct ListRow {
     pub(crate) after: Vec<AfterLink>,
     /// The live tasks that run after this one (read-only, derived from their `after`).
     pub(crate) before: Vec<u64>,
+    /// Checked steps and all steps, for every task; zero when it has none.
+    pub(crate) steps_done: usize,
+    pub(crate) steps_total: usize,
     /// `archived` / `project archived` mark, set only in the archived view.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) archived: Option<&'static str>,
@@ -667,6 +670,8 @@ fn row_for(task: &crate::domain::Task, domain: &DomainState) -> ListRow {
         before: task
             .number
             .map_or_else(Vec::new, |number| domain.before(number)),
+        steps_done: task.steps.iter().filter(|step| step.done).count(),
+        steps_total: task.steps.len(),
         archived: None,
         blocked_why: task
             .block

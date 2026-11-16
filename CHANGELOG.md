@@ -23,6 +23,7 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - Dispatch in Rex: each task gets its own tab in the Rex session you dispatch from; relaunch, reply delivery, cleanup, and `--merge` work as in Herdr ([dispatch](https://gettsk.sh/docs/dispatch/)).
 - A task dispatched in Herdr or Rex starts plainly in the other; relaunch, reply delivery, and cleanup there refuse with `other-host`.
 - `[dispatch] worktrees` in `config.toml` sets where dispatch puts new worktrees ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
+- Step progress: started, blocked, and review tasks show `steps 2/5` in their board row and in `tsk list`; `--json` rows carry `steps_done` and `steps_total` ([rows](https://gettsk.sh/docs/board/#rows)). Thanks @joops (#273).
 - Project titles: `ctrl+e` on a project row or `tsk project title` names a project; `-p` accepts the title ([project titles](https://gettsk.sh/docs/board/#project-titles)). Thanks @s3rgiosan (#249).
 - `tsk checks T12 set 2 passed` marks a review check from the command line ([checks](https://gettsk.sh/docs/cli/#checks)). Thanks @Tobi4161 (#269).
 

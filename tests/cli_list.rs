@@ -718,6 +718,8 @@ fn list_all_groups_each_status_by_concise_scope_for_every_filter() {
                 "number",
                 "project",
                 "status",
+                "steps_done",
+                "steps_total",
                 "thread",
                 "title"
             ]
@@ -1595,6 +1597,8 @@ fn list_equals_project_form_accepts_dash_leading_scope() {
             "thread": null,
             "after": [],
             "before": [],
+            "steps_done": 0,
+            "steps_total": 0,
         })]
     );
 
@@ -1780,7 +1784,7 @@ fn list_task_prints_step_lines_with_state_and_short_id() {
     ]);
     assert_eq!(json.code, 0);
     let expected_json = format!(
-        "[{{\"id\":\"{}\",\"number\":1,\"project\":null,\"status\":\"open\",\"title\":\"steps target\",\"notes\":\"First note\\nSecond note\",\"steps\":[{{\"id\":\"{}\",\"done\":true,\"short_id\":\"aaa1\",\"text\":\"First step\"}},{{\"id\":\"aaa22222-0000-4000-8000-000000000002\",\"done\":false,\"short_id\":\"aaa2\",\"text\":\"Second step\"}}],\"assignee\":null,\"assignee_kind\":null,\"base\":null,\"thread\":\"release\",\"after\":[],\"before\":[],\"activity\":",
+        "[{{\"id\":\"{}\",\"number\":1,\"project\":null,\"status\":\"open\",\"title\":\"steps target\",\"notes\":\"First note\\nSecond note\",\"steps\":[{{\"id\":\"{}\",\"done\":true,\"short_id\":\"aaa1\",\"text\":\"First step\"}},{{\"id\":\"aaa22222-0000-4000-8000-000000000002\",\"done\":false,\"short_id\":\"aaa2\",\"text\":\"Second step\"}}],\"steps_done\":1,\"steps_total\":2,\"assignee\":null,\"assignee_kind\":null,\"base\":null,\"thread\":\"release\",\"after\":[],\"before\":[],\"activity\":",
         task, first_step.id
     );
     assert_eq!(
@@ -1928,7 +1932,7 @@ fn list_task_without_steps_keeps_task_rows_and_rejects_conflicting_flags() {
     assert_eq!(rows[0]["thread"], serde_json::Value::Null);
     let raw = plain_json.stdout.as_str();
     assert!(
-        raw.contains("\"status\":\"ready\",\"title\":\"plain target\",\"notes\":null,\"steps\":[],\"assignee\":null,\"assignee_kind\":null,\"base\":null,\"thread\":null"),
+        raw.contains("\"status\":\"ready\",\"title\":\"plain target\",\"notes\":null,\"steps\":[],\"steps_done\":0,\"steps_total\":0,\"assignee\":null,\"assignee_kind\":null,\"base\":null,\"thread\":null"),
         "direct JSON keeps empty detail fields and their contract order: {raw}"
     );
 
@@ -3977,6 +3981,128 @@ fn list_group_project_keeps_equivalent_spellings_in_one_labelled_group() {
         .filter(|line| line.starts_with("  ") && !line.starts_with("    "))
         .collect::<Vec<_>>();
     assert_eq!(headings.len(), 2, "{}", human.stdout);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A started, blocked or review task with steps says `steps done/total` in the human listing;
+/// every JSON row, the task in full included, carries the two counts.
+#[test]
+fn list_shows_step_progress_on_live_rows_and_counts_in_every_json_row() {
+    let _env = env_lock();
+    let dir = temp_state_dir("step-progress");
+    let mut state = DomainState::new();
+    let stepped = |state: &mut DomainState, title: &str, status: HumanStatus, done: usize| {
+        let id = state
+            .create(
+                title,
+                None,
+                TaskScope::Global,
+                ProvenanceOrigin::Manual,
+                Some("auth".into()),
+            )
+            .expect("create");
+        for index in 0..3 {
+            let step = state.add_step(id, format!("step {index}")).expect("step");
+            if index < done {
+                state.toggle_step(id, step).expect("toggle");
+            }
+        }
+        state.set_status(id, status).expect("status");
+        id
+    };
+    stepped(&mut state, "live one", HumanStatus::Started, 2);
+    stepped(&mut state, "ready one", HumanStatus::Ready, 1);
+    stepped(&mut state, "blocked one", HumanStatus::Blocked, 0);
+    stepped(&mut state, "review one", HumanStatus::Review, 3);
+    stepped(&mut state, "done one", HumanStatus::Done, 3);
+    let shelved = stepped(&mut state, "shelved one", HumanStatus::Started, 1);
+    state.archive_task(shelved).expect("archive");
+    create_task(
+        &mut state,
+        "bare one",
+        TaskScope::Global,
+        HumanStatus::Started,
+    );
+    TaskStore::new(&dir).save(&state).expect("save");
+    let args = |extra: &[&str]| {
+        let mut args: Vec<String> = vec![
+            "tsk".into(),
+            "list".into(),
+            "--state-dir".into(),
+            state_dir_arg(&dir),
+        ];
+        args.extend(extra.iter().map(|arg| arg.to_string()));
+        args
+    };
+
+    let human = list(&args(&["--all"]));
+    assert_eq!(human.code, 0, "{human:?}");
+    let line = |title: &str| {
+        human
+            .stdout
+            .lines()
+            .find(|line| line.contains(title))
+            .unwrap_or_else(|| panic!("{title}: {}", human.stdout))
+            .trim_end()
+            .to_string()
+    };
+    // The count follows the thread; every live status carries it, ready does not.
+    for (title, count) in [
+        ("live one", "2/3"),
+        ("blocked one", "0/3"),
+        ("review one", "3/3"),
+    ] {
+        assert!(
+            line(title).ends_with(&format!("{title} #auth · steps {count}")),
+            "{human:?}"
+        );
+    }
+    assert!(line("ready one").ends_with("ready one #auth"), "{human:?}");
+    assert!(line("bare one").ends_with("bare one"), "{human:?}");
+
+    // A flat listing puts the scope after the count.
+    let flat = list(&args(&["--all", "--sort", "title"]));
+    assert!(
+        flat.stdout.lines().any(|line| line
+            .trim_end()
+            .ends_with("live one #auth · steps 2/3 · desk")),
+        "{flat:?}"
+    );
+    let done = list(&args(&["--all", "--done"]));
+    assert!(
+        done.stdout
+            .lines()
+            .any(|line| line.trim_end().ends_with("done one #auth")),
+        "{done:?}"
+    );
+    // The archived view marks the row and says no count, even for a started task.
+    let archived = list(&args(&["--all", "--archived"]));
+    assert!(
+        archived
+            .stdout
+            .lines()
+            .any(|line| line.trim_end().ends_with("shelved one #auth · archived")),
+        "{archived:?}"
+    );
+
+    let json = list(&args(&["--all", "--json"]));
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&json.stdout).expect("json rows");
+    let counts = |title: &str| {
+        let row = rows
+            .iter()
+            .find(|row| row["title"] == title)
+            .unwrap_or_else(|| panic!("{title}: {}", json.stdout));
+        (row["steps_done"].clone(), row["steps_total"].clone())
+    };
+    assert_eq!(counts("live one"), (2.into(), 3.into()));
+    assert_eq!(counts("ready one"), (1.into(), 3.into()));
+    assert_eq!(counts("bare one"), (0.into(), 0.into()));
+
+    let direct = list(&args(&["1", "--json"]));
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&direct.stdout).expect("json row");
+    assert_eq!(rows[0]["steps_done"], 2, "{direct:?}");
+    assert_eq!(rows[0]["steps_total"], 3, "{direct:?}");
 
     let _ = std::fs::remove_dir_all(dir);
 }

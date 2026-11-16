@@ -163,6 +163,8 @@ A row that waits leads its label with why:
 | `after T202, T205` | Ready or open, waiting on unfinished [prerequisites](#after) |
 | `before T205` | Unfinished tasks wait on this one |
 
+A started, blocked, or review task with [steps](/docs/steps/) shows how many are done next in its label: `waiting on @pi · steps 2/5 · #auth`. Tasks without steps, and tasks in other statuses, show no count.
+
 A row addressed to you carries a dim **live line** under it, starting `└─`, with the asker's own words:
 
 | Row | Live line |

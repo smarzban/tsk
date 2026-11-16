@@ -525,6 +525,8 @@ fn list_json(result: &ListResult) -> String {
             title: &'a str,
             notes: &'a Option<String>,
             steps: &'a [StepLine],
+            steps_done: usize,
+            steps_total: usize,
             assignee: &'a Option<String>,
             assignee_kind: Option<&'static str>,
             base: &'a Option<String>,
@@ -554,6 +556,8 @@ fn list_json(result: &ListResult) -> String {
             title: &row.title,
             notes: &direct.notes,
             steps: &direct.steps,
+            steps_done: row.steps_done,
+            steps_total: row.steps_total,
             assignee: &row.assignee,
             assignee_kind: row.assignee_kind,
             base: &row.base,
@@ -972,6 +976,14 @@ fn append_row(
         if let Some(thread) = row.thread.as_deref() {
             content.push_str(" #");
             content.push_str(&terminal_text(thread));
+        }
+    }
+    if row.archived.is_none() {
+        if let Some(progress) =
+            crate::ui::render::step_progress_label(row.status, row.steps_done, row.steps_total)
+        {
+            content.push_str(" · ");
+            content.push_str(&progress);
         }
     }
     if let Some(scope) = scope {

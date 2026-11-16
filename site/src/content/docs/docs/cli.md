@@ -184,6 +184,7 @@ tsk list --all --thread release --json
 
 - Tasks group by status in the order `STARTED`, `READY`, `OPEN`, `BLOCKED`, `REVIEW`, and keep the board's order inside each status.
 - A row reads `- 12 Fix login timeout @claude ⎇ main #auth`. A blocked row adds `blocked: <why>` beneath.
+- A started, blocked, or review task with steps adds its count: `- 12 Fix login timeout #auth · steps 2/5`.
 - With `--all`, each status groups its rows by project and desk. A sort other than `recent` lists the rows flat instead, each ending with its scope.
 - With `--group`, sub-headings name each group as the board paints it. A titled project reads as its title. Projects that share a name read as their shortest distinct path, such as `site-a/wordpress/wp-content`.
 - One task in full adds its notes, steps, `@assignee`, `⎇ base`, `after` and `before` tasks, `#thread`, and its latest five [paper trail](/docs/task-page/#paper-trail) entries.
@@ -204,6 +205,7 @@ tsk list --all --thread release --json
 | `assignee_kind` | `agent` for an agent profile, `person` for you or a named person, `null` when unassigned |
 | `after` | Tasks this one runs after, in order, each `{"task": 202, "done": false}`. A task gone from the board reads as done |
 | `before` | Numbers of the tasks that run after this one |
+| `steps_done`, `steps_total` | Checked steps and all steps, `0` for a task without steps |
 | `block` | The open block, below. Absent when there is none |
 | `review` | The open review round, below. Absent when there is none |
 | `archived` | With `--archived`: `archived` or `project archived` |
