@@ -49,13 +49,16 @@ task with nothing open refuses with `not-blocked`. When the user asks you to sen
 task's running agent, in Herdr or Rex, add `--send`: it sends only that reply and prints
 `sent to @<agent>` or `not sent: <reason>`.
 
+Checks are the reviewer's. Mark one with `tsk checks T12 set <n> passed|failed|open` only when the
+review is on you (`review.on` names your profile), never on a review you asked for.
+
 ## Rules
 
 1. **Human status is the user's.** Set `review` when your work is finished. Set `done` only when the
    user says the task is done, and never unblock or approve your own task unless told.
 2. **Read JSON, not presentation.** Always add `--json` to `tsk list`. Write commands may answer in
    text only: trust the exit and refusal codes, then verify with `tsk list … --json`.
-3. **Never blind-retry.** `add`, `status`, `edit`, and `archive` are safe to repeat. `reply`,
+3. **Never blind-retry.** `add`, `status`, `edit`, `checks`, and `archive` are safe to repeat. `reply`,
    `dispatch`, `edit --append-notes`, `steps add`, `steps toggle`, and `steps remove` are not:
    read the task first.
 4. **Use a known project name or a full path.** A name is a project's title or folder name.

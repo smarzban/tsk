@@ -21,6 +21,7 @@ tsk list
 | [`tsk status`](#status) | Set a task's status, block it, or put it up for review |
 | [`tsk edit`](#edit) | Change a task's title, notes, assignee, base, after list, or who its block or review waits on |
 | [`tsk steps`](#steps) | Add, toggle, rename, move, or remove a step |
+| [`tsk checks`](#checks) | Mark a review check open, passed, or failed |
 | [`tsk reply`](#reply) | Answer a block, or give feedback on a review |
 | [`tsk dispatch`](#dispatch) | Launch a task's assigned agent in its own worktree |
 | [`tsk clean`](#clean) | Remove a dispatched task's worktree and merged branch |
@@ -369,6 +370,7 @@ tsk status T12 blocked --why "Which database?" --option postgres --option sqlite
 
 - Each text is at most 4 KB (`text-too-long`).
 - Running the command again during the round edits it, replacing only the fields given. A check with unchanged text keeps its state.
+- Mark a check with [`tsk checks`](#checks).
 - Leaving `review` closes the round into `past_reviews`. The next review opens the next round.
 - A review on you shows under NEEDS YOU. One on an agent or on anything else stays IN MOTION.
 
@@ -438,6 +440,29 @@ A moved step keeps its id and its checked state. Read the task before retrying a
 
 ```sh
 tsk steps T12 add "Write the failing test" --first
+```
+
+## checks
+
+Marks one check of a task's open review round. [Reviewing on the board](/docs/task-page/#review).
+
+```text
+tsk checks <task> set <n> open|passed|failed [--state-dir <dir>]
+```
+
+`<n>` is the check's position in the round, from 1, in the order `tsk list T12 --json` prints `checks`.
+
+| Action | Output | Safe to repeat |
+| --- | --- | --- |
+| `set` | `check <n> <state>: <text>` | Yes: a check already in that state stays as it is |
+
+- The output names the check's text. Running `tsk status T12 review --check …` again replaces the list, so a position read earlier may point at another check.
+- The task's status never changes. Approve or send back on the board, or with [`tsk status`](#status).
+
+**Refusals:** codes and exits in the [exit contract](#exit-contract).
+
+```sh
+tsk checks T12 set 2 passed
 ```
 
 ## reply
@@ -803,6 +828,7 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 | `status … done --merge` | Every `clean` code, with `--merge` |
 | `edit` | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title`, `unknown-base`, `invalid-after`, `after-loop`; with `--on` also `not-blocked`, `invalid-blocker`, `text-too-long` |
 | `steps` | `unknown-task`, `soft-deleted-task`, `empty-step-text`, `invalid-step-text`, `unknown-step`, `ambiguous-step`, `same-step` |
+| `checks` | `unknown-task`, `soft-deleted-task`, `not-in-review`, `unknown-check` |
 | `reply` | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
 | `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `other-host`, `no-host`, `needs-git-project`, `unknown-base`, `no-default-base`, `host-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
 | `clean` | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `other-host`, `host-failed`; on Windows `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |

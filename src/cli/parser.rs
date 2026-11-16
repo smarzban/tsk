@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 use uuid::Uuid;
 
+use super::checks::ChecksAction;
 use super::steps::{StepPlacement, StepsAction};
-use crate::domain::{normalize_thread, thread_refusal_message, HumanStatus};
+use crate::domain::{normalize_thread, thread_refusal_message, CheckState, HumanStatus};
 
 /// A direct task operand, either the internal UUID or its human task number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -904,11 +905,13 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_flag_add, parse_flag_dispatch, parse_flag_edit, parse_flag_status, parse_flag_steps,
-        parse_flag_trash, parse_task_address, FlagEdit, FlagStatus, TaskAddress, TrashAction,
+        parse_flag_add, parse_flag_checks, parse_flag_dispatch, parse_flag_edit, parse_flag_status,
+        parse_flag_steps, parse_flag_trash, parse_task_address, FlagEdit, FlagStatus, TaskAddress,
+        TrashAction,
     };
+    use crate::cli::checks::ChecksAction;
     use crate::cli::steps::{StepPlacement, StepsAction};
-    use crate::domain::HumanStatus;
+    use crate::domain::{CheckState, HumanStatus};
 
     #[test]
     fn task_addresses_accept_the_displayed_identifier_case_insensitively() {
@@ -1452,6 +1455,79 @@ mod tests {
             "unknown steps argument -5 degrees"
         );
     }
+
+    #[test]
+    fn checks_parse_set_takes_a_position_from_one_and_a_state_word() {
+        let args = |rest: &[&str]| {
+            ["tsk", "checks"]
+                .iter()
+                .chain(rest)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        for (word, state) in [
+            ("open", CheckState::Open),
+            ("passed", CheckState::Passed),
+            ("failed", CheckState::Failed),
+        ] {
+            let parsed = parse_flag_checks(&args(&["T12", "set", "2", word])).expect(word);
+            assert_eq!(parsed.task, Some(TaskAddress::Number(12)));
+            assert_eq!(
+                parsed.action,
+                Some(ChecksAction::Set { position: 2, state })
+            );
+        }
+        let parsed =
+            parse_flag_checks(&args(&["--state-dir", "/tmp/x", "T12", "set", "1", "open"]))
+                .expect("state dir first");
+        assert_eq!(
+            parsed.state_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/x"))
+        );
+        assert!(parse_flag_checks(&args(&["--help"])).expect("help").help);
+
+        for (rest, reason) in [
+            (&[][..], "task id is required"),
+            (&["T12"][..], "checks action is required"),
+            (&["T12", "toggle", "1"][..], "unknown checks action toggle"),
+            (&["T12", "set"][..], "check position is required"),
+            (&["T12", "set", "1"][..], "check state is required"),
+            (
+                &["T12", "set", "0", "passed"][..],
+                "check position must be 1 or more",
+            ),
+            (
+                &["T12", "set", "two", "passed"][..],
+                "check position must be 1 or more",
+            ),
+            (
+                &["T12", "set", "1", "done"][..],
+                "check state must be open, passed, or failed",
+            ),
+            (
+                &["T12", "set", "1", "Passed"][..],
+                "check state must be open, passed, or failed",
+            ),
+            (
+                &["T12", "set", "1", "passed", "x"][..],
+                "unexpected checks argument x",
+            ),
+            (
+                &["T12", "set", "-1", "passed"][..],
+                "unknown checks argument -1",
+            ),
+            (
+                &["T12", "set", "1", "passed", "--bogus"][..],
+                "unknown checks argument --bogus",
+            ),
+        ] {
+            assert_eq!(
+                parse_flag_checks(&args(rest)).unwrap_err(),
+                reason,
+                "{rest:?}"
+            );
+        }
+    }
 }
 
 /// Parsed add input. A plan source is selected by `file` or piped stdin.
@@ -1830,5 +1906,91 @@ pub fn parse_flag_steps(args: &[String]) -> Result<FlagSteps, String> {
         });
         parsed.task = Some(task);
     }
+    Ok(parsed)
+}
+
+/// Parsed `checks` input. The positionals are task id, action, position, and state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagChecks {
+    pub task: Option<TaskAddress>,
+    pub action: Option<ChecksAction>,
+    pub state_dir: Option<PathBuf>,
+    pub help: bool,
+}
+
+/// Parse `tsk checks` arguments, including argv0 and the `checks` subcommand. Flags may appear
+/// anywhere; the positionals in order are task id, action, check position, and state.
+pub fn parse_flag_checks(args: &[String]) -> Result<FlagChecks, String> {
+    if args.get(1).map(String::as_str) != Some("checks") {
+        return Err("expected checks command".into());
+    }
+
+    let mut parsed = FlagChecks {
+        task: None,
+        action: None,
+        state_dir: None,
+        help: false,
+    };
+    let mut positionals: Vec<&str> = Vec::new();
+    let mut index = 2;
+    while let Some(arg) = args.get(index).map(String::as_str) {
+        match arg {
+            positional if !positional.starts_with('-') => {
+                if positionals.len() == 4 {
+                    return Err(format!("unexpected checks argument {positional}"));
+                }
+                positionals.push(positional);
+                index += 1;
+            }
+            "--help" => {
+                parsed.help = true;
+                index += 1;
+            }
+            flag if flag.starts_with("--state-dir=") => {
+                parsed.state_dir = Some(PathBuf::from(flag["--state-dir=".len()..].to_owned()));
+                index += 1;
+            }
+            "--state-dir" => match args.get(index + 1) {
+                Some(value) if !value.starts_with('-') => {
+                    parsed.state_dir = Some(PathBuf::from(value));
+                    index += 2;
+                }
+                _ => return Err("missing value for --state-dir".into()),
+            },
+            flag => return Err(format!("unknown checks argument {flag}")),
+        }
+    }
+
+    if parsed.help {
+        return Ok(parsed);
+    }
+    let task = positionals
+        .first()
+        .ok_or_else(|| "task id is required".to_owned())?;
+    let action = positionals
+        .get(1)
+        .ok_or_else(|| "checks action is required".to_owned())?;
+    if *action != "set" {
+        return Err(format!("unknown checks action {action}"));
+    }
+    let position = positionals
+        .get(2)
+        .ok_or_else(|| "check position is required".to_owned())?;
+    let state = positionals
+        .get(3)
+        .ok_or_else(|| "check state is required".to_owned())?;
+    let position = position
+        .parse::<usize>()
+        .ok()
+        .filter(|position| *position >= 1)
+        .ok_or_else(|| "check position must be 1 or more".to_owned())?;
+    let state = match *state {
+        "open" => CheckState::Open,
+        "passed" => CheckState::Passed,
+        "failed" => CheckState::Failed,
+        _ => return Err("check state must be open, passed, or failed".into()),
+    };
+    parsed.task = Some(parse_task_address(task)?);
+    parsed.action = Some(ChecksAction::Set { position, state });
     Ok(parsed)
 }
