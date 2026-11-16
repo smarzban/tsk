@@ -127,7 +127,8 @@ fn set_marks_one_check_by_position_and_echoes_its_text() {
     assert_eq!(output.stdout, "check 2 open: B works\n");
     assert_eq!(states(&dir, 1), [Open, Open, Failed]);
 
-    // Like Enter on the board, a check set leaves no undo entry and records `check_set`.
+    // Like Enter on the board, a check set leaves no undo entry and records `check_set`. Who
+    // made it is checked out of process below: in-process runs read the shared `TSK_AGENT`.
     assert_eq!(undo_len(&dir), undo_before);
     let state = TaskStore::new(&dir).load().expect("load");
     let task = state
@@ -135,9 +136,10 @@ fn set_marks_one_check_by_position_and_echoes_its_text() {
         .iter()
         .find(|task| task.number == Some(1))
         .expect("task");
-    let last = task.history.last().expect("event");
-    assert_eq!(last.kind, TaskEventKind::CheckSet);
-    assert_eq!(last.by.as_deref(), Some("you"));
+    assert_eq!(
+        task.history.last().expect("event").kind,
+        TaskEventKind::CheckSet
+    );
     assert_eq!(task.status, HumanStatus::Review, "status never moves");
 }
 
@@ -228,29 +230,46 @@ fn usage_errors_exit_2_and_save_nothing() {
     }
 }
 
-/// The binary records the change as the agent named by `TSK_AGENT`, like every other verb.
+/// The binary, in its own process with `TSK_AGENT` set or removed, records the change as that
+/// agent or as `you`, like every other verb.
 #[test]
-fn an_agent_check_set_is_recorded_as_that_agent() {
-    let dir = temp_state_dir("agent");
+fn a_check_set_is_recorded_as_the_agent_or_you() {
+    let dir = temp_state_dir("actor");
     seed(&dir);
-    let output = Command::new(env!("CARGO_BIN_EXE_tsk"))
-        .args(["checks", "T1", "set", "1", "failed", "--state-dir"])
-        .arg(&dir)
-        .env("TSK_AGENT", "claude")
-        .output()
-        .expect("run tsk");
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    for (agent, position, by) in [(Some("claude"), "1", "claude"), (None, "2", "you")] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tsk"));
+        command
+            .args(["checks", "T1", "set", position, "failed", "--state-dir"])
+            .arg(&dir);
+        match agent {
+            Some(agent) => command.env("TSK_AGENT", agent),
+            None => command.env_remove("TSK_AGENT"),
+        };
+        let output = command.output().expect("run tsk");
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let state = TaskStore::new(&dir).load().expect("load");
+        let task = state
+            .tasks()
+            .iter()
+            .find(|task| task.number == Some(1))
+            .expect("task");
+        let last = task.history.last().expect("event");
+        assert_eq!(last.kind, TaskEventKind::CheckSet);
+        assert_eq!(last.by.as_deref(), Some(by));
+    }
+}
+
+/// A store that cannot be read is exit 3 (`store-error`), not a refusal or a success.
+#[test]
+fn an_unreadable_store_exits_3() {
+    let dir = temp_state_dir("store-error");
+    std::fs::write(dir.join("tsk.json"), b"{ not json").expect("write broken store");
+    let output = checks(&dir, &["T1", "set", "1", "passed"]);
+    assert_eq!(output.code, 3, "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.starts_with("tsk checks: "), "{output:?}");
     assert_eq!(
-        String::from_utf8(output.stdout).expect("UTF-8"),
-        "check 1 failed: A works\n"
+        std::fs::read(dir.join("tsk.json")).expect("read"),
+        b"{ not json"
     );
-    let state = TaskStore::new(&dir).load().expect("load");
-    let task = state
-        .tasks()
-        .iter()
-        .find(|task| task.number == Some(1))
-        .expect("task");
-    let last = task.history.last().expect("event");
-    assert_eq!(last.kind, TaskEventKind::CheckSet);
-    assert_eq!(last.by.as_deref(), Some("claude"));
 }
