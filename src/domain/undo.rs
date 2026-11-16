@@ -334,8 +334,23 @@ impl UndoEntry {
                 Ok(())
             }
             UndoEntry::Batch { entries } => {
+                // One save carries the whole batch. A task it reverses twice (a page save's
+                // steps and due day) must still merge from the revision it had before the
+                // batch, not from the one its first reversal left.
+                let mut before = std::collections::BTreeMap::new();
+                for (id, _) in entries.iter().flat_map(UndoEntry::targets) {
+                    if let Some(task) = state.get(id) {
+                        before.entry(id).or_insert(task.revision);
+                    }
+                }
                 for entry in entries.into_iter().rev() {
                     entry.reverse(state)?;
+                }
+                for (id, revision) in before {
+                    let task = state.task_mut(id)?;
+                    if task.revision != revision {
+                        task.merge_base_revision = Some(revision);
+                    }
                 }
                 Ok(())
             }

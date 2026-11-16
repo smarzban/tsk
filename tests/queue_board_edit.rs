@@ -2479,3 +2479,44 @@ fn undo_restores_the_due_day_of_a_page_save() {
         "the save was one entry"
     );
 }
+
+/// Saving from a typed new step row keeps the row, so the bad day's refusal is said on the
+/// status row instead, where it is painted.
+#[test]
+fn a_bad_due_day_saved_from_a_typed_new_step_row_is_still_painted() {
+    let mut domain = DomainState::new();
+    let id = due_task(&mut domain);
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    open_due_editor(&mut domain, &mut model);
+    type_text(&mut domain, &mut model, "2026-02-30");
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginAddStep, None).expect("add step");
+    assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+    type_text(&mut domain, &mut model, "new step");
+    let save = map_key(
+        BoardInputMode::EditStep,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+    )
+    .expect("shift+enter");
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, save, None).expect("refusal"),
+        IntentOutcome::None
+    );
+    assert!(
+        domain.get(id).expect("task").steps.is_empty(),
+        "nothing saved"
+    );
+    assert_eq!(
+        model.input_mode(),
+        BoardInputMode::EditStep,
+        "the row stays"
+    );
+    let painted = rendered_board(&model, 80, 24);
+    assert!(
+        painted.contains("due 2026-02-30: that day does not exist in the calendar"),
+        "the refusal is painted: {painted}"
+    );
+    assert!(
+        painted.contains("new step"),
+        "the typed row survives: {painted}"
+    );
+}
