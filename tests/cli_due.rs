@@ -387,5 +387,5 @@ fn the_store_has_no_due_key_for_an_undated_or_cleared_task() {
         let has_key = task.get("due").is_some();
         assert_eq!(has_key, task["title"] == "dated", "{task}");
     }
-    assert_eq!(document["format_version"], 16);
+    assert_eq!(document["format_version"], 18);
 }

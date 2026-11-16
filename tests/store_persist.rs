@@ -2188,7 +2188,7 @@ fn a_populated_dev_v15_store_migrates_and_keeps_tsk_json_v15() {
 /// Every dev version migrates like v6 and keeps its own copy; the first version past the
 /// current one is refused without a write.
 #[test]
-fn dev_v7_and_v11_migrate_like_v6_and_v18_is_refused() {
+fn dev_v7_and_v11_migrate_like_v6_and_v19_is_refused() {
     for version in [7, 11] {
         let dir = temp_state_dir();
         let _guard = TempDirGuard(dir.clone());
@@ -2212,7 +2212,7 @@ fn dev_v7_and_v11_migrate_like_v6_and_v18_is_refused() {
     }
     let mut document: serde_json::Value =
         serde_json::from_slice(&platform_current_fixture()).expect("json");
-    document["format_version"] = 18.into();
+    document["format_version"] = 19.into();
     assert_store_document_refused_without_rewrite(document);
 }
 
