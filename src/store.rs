@@ -68,25 +68,34 @@ const _: () = assert!(
 
 /// Development formats that never shipped. Dispatch dev builds wrote v7..=v15 with the v6
 /// layout, and main builds wrote v16..=v18 as the v7 layout grew. Every one of them is a
-/// subset of v7, and a dispatch record reads its pre-host shape by itself, so such a
-/// document opens as the current format with no transform. Its next save writes v7 and the
-/// `tsk.json.v<N>` copy keeps the original. A dispatch dev v7 document carries the current
-/// number already and opens the same way.
+/// subset of [`DEV_LAYOUT_VERSION`], and a dispatch record reads its pre-host shape by
+/// itself, so such a document opens as a v7 document with no transform, then takes any later
+/// migration steps like one. Its next save writes the current format and the
+/// `tsk.json.v<N>` copy keeps the original. A dispatch dev v7 document already carries the
+/// v7 number and opens the same way.
 ///
-/// Delete this once no dev store remains. Until then the next format bump must go past
-/// v18.
+/// Delete this once no dev store remains. Until then a format bump must go past v18.
 const DEV_FORMAT_VERSIONS: RangeInclusive<u32> = 8..=18;
 
+/// The format a [`DEV_FORMAT_VERSIONS`] document holds.
+const DEV_LAYOUT_VERSION: u32 = 7;
+
 const _: () = assert!(
-    STORE_FORMAT_VERSION < *DEV_FORMAT_VERSIONS.start(),
+    STORE_FORMAT_VERSION < *DEV_FORMAT_VERSIONS.start()
+        || STORE_FORMAT_VERSION > *DEV_FORMAT_VERSIONS.end(),
     "STORE_FORMAT_VERSION entered DEV_FORMAT_VERSIONS: a dev store would open as the new \
      format. Delete DEV_FORMAT_VERSIONS once no dev store remains, or bump past its end."
 );
 
-/// The version a document at `found` opens as: a dev version reads as the current format.
+const _: () = assert!(
+    DEV_LAYOUT_VERSION <= STORE_FORMAT_VERSION,
+    "dev stores hold the v7 layout"
+);
+
+/// The version a document at `found` opens as: a dev version reads as the v7 it holds.
 fn reads_as(found: u32) -> u32 {
     if DEV_FORMAT_VERSIONS.contains(&found) {
-        STORE_FORMAT_VERSION
+        DEV_LAYOUT_VERSION
     } else {
         found
     }
@@ -796,8 +805,9 @@ impl TaskStore {
             return Err(StoreError::UnsupportedFormat { found, supported });
         }
         if opens_as < supported {
-            let document: serde_json::Value = serde_json::from_str(&data)?;
-            let migrated = migrations(document, found)?;
+            let mut document: serde_json::Value = serde_json::from_str(&data)?;
+            document["format_version"] = serde_json::json!(opens_as);
+            let migrated = migrations(document, opens_as)?;
             return Ok(serde_json::from_value(migrated)?);
         }
         if found != opens_as {
@@ -1247,10 +1257,14 @@ pub fn check_document(document: &[u8]) -> Result<(), RestoreError> {
             supported: STORE_FORMAT_VERSION,
         });
     }
-    let parsed: Result<DomainState, StoreError> = if reads_as(found) < STORE_FORMAT_VERSION {
-        serde_json::from_str(text)
+    let opens_as = reads_as(found);
+    let parsed: Result<DomainState, StoreError> = if opens_as < STORE_FORMAT_VERSION {
+        serde_json::from_str::<serde_json::Value>(text)
             .map_err(StoreError::from)
-            .and_then(|document| migrate(document, found))
+            .and_then(|mut document| {
+                document["format_version"] = serde_json::json!(opens_as);
+                migrate(document, opens_as)
+            })
             .and_then(|migrated| serde_json::from_value(migrated).map_err(StoreError::from))
     } else {
         serde_json::from_str(text).map_err(StoreError::from)
@@ -3638,6 +3652,37 @@ mod tests {
                 "no file in the state dir may change on a refused load"
             );
         }
+    }
+
+    /// A dev document holds the v7 layout, so a later format migrates it from v7, never from
+    /// the number it carries.
+    #[test]
+    fn a_dev_store_migrates_from_v7_under_a_later_format() {
+        let dir = temp_dir("dev-from-v7");
+        let _guard = TempDirGuard(dir.clone());
+        let mut document =
+            serde_json::to_value(round_tripped_current_state("dev")).expect("encode state");
+        document["format_version"] = serde_json::json!(*DEV_FORMAT_VERSIONS.end());
+        fs::create_dir_all(&dir).expect("mkdir");
+        fs::write(
+            dir.join(STATE_FILE),
+            serde_json::to_vec_pretty(&document).expect("encode"),
+        )
+        .expect("write");
+        let error = TaskStore::new(&dir)
+            .load_unlocked_supported(STORE_FORMAT_VERSION + 1, |document, from| {
+                Err(StoreError::Io(io::Error::other(format!(
+                    "from {from} as {}",
+                    document["format_version"]
+                ))))
+            })
+            .expect_err("the stand-in chain reports where it starts");
+        assert!(
+            error.to_string().contains(&format!(
+                "from {DEV_LAYOUT_VERSION} as {DEV_LAYOUT_VERSION}"
+            )),
+            "{error}"
+        );
     }
 
     #[test]
