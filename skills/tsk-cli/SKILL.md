@@ -90,7 +90,8 @@ review is on you (`review.on` names your profile), never on a review you asked f
 
 `tsk list --json` reads this repo's project, or the desk outside Git. Present it in board language:
 what needs the user first, then in motion, then on deck. Rows come grouped by status, and within a
-status they are already in the board's order; keep it.
+status they are already in the board's order; keep it. Each row's `steps_done` and `steps_total`
+say how far its steps have come.
 
 | The user says | Read |
 | --- | --- |

@@ -8144,3 +8144,107 @@ fn task_page_rail_rows_carry_their_labels() {
         "the rail row keeps its label, led by what waits on it: {text}"
     );
 }
+
+/// A live row with steps says how far they have come in its label, after what it waits on;
+/// rows nobody works on, and rows without steps, say nothing. Nothing is cut at 40 columns.
+#[test]
+fn live_rows_with_steps_carry_their_progress_in_the_label() {
+    use tsk_tui::domain::{Block, BlockDraft, BlockOn, Step};
+    let with_steps = |number: u64, title: &str, status: HumanStatus, done: &[bool]| {
+        let mut task = task(
+            u128::from(number),
+            title,
+            status,
+            project("/repos/tsk"),
+            number * 60,
+        );
+        task.number = Some(number);
+        task.steps = done
+            .iter()
+            .enumerate()
+            .map(|(index, done)| Step {
+                id: Uuid::from_u128(1000 * u128::from(number) + index as u128),
+                text: format!("step {index}"),
+                done: *done,
+            })
+            .collect();
+        task
+    };
+    let mut blocked = with_steps(2, "Blocked elsewhere", HumanStatus::Blocked, &[true, true]);
+    blocked.block = Some(Block::open(
+        BlockDraft {
+            on: BlockOn::Agent("pi".into()),
+            ..Default::default()
+        },
+        "claude",
+        at_secs_ago(60),
+    ));
+    let first = with_steps(
+        1,
+        "Started with a long title that wraps at forty columns",
+        HumanStatus::Started,
+        &[true, false, false],
+    );
+    let mut notice = with_steps(7, "Notice with steps", HumanStatus::Started, &[true]);
+    notice.notice = Some(Notice {
+        catalog_id: "welcome".into(),
+        number: Some(7),
+    });
+    // Archived and done tasks say nothing, whatever their steps.
+    let mut shelved = with_steps(8, "Shelved", HumanStatus::Started, &[true]);
+    shelved.archived = true;
+    assert_eq!(tsk_tui::ui::render::row_step_label(&shelved), None);
+    let finished = with_steps(9, "Finished", HumanStatus::Done, &[true]);
+    assert_eq!(tsk_tui::ui::render::row_step_label(&finished), None);
+    assert_eq!(tsk_tui::ui::render::row_step_label(&notice), None);
+    let tasks = vec![
+        first,
+        blocked,
+        with_steps(3, "In review", HumanStatus::Review, &[false]),
+        with_steps(4, "Ready with steps", HumanStatus::Ready, &[true, false]),
+        with_steps(5, "Open with steps", HumanStatus::Open, &[false]),
+        with_steps(6, "Started without steps", HumanStatus::Started, &[]),
+        notice,
+    ];
+    let view = fixture_view_projects(&tasks, false);
+    let model = fixture_model_on_tab(&tasks, &view, NavTab::ProjectBoard);
+    for width in [40u16, 78, 120] {
+        let (rows, _) = paint(width, 60, &model);
+        let text = rows
+            .iter()
+            .map(|row| list_body(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains("Started with a long title that wraps at forty columns steps 1/3 · tsk"),
+            "{width}:\n{text}"
+        );
+        assert!(
+            flat.contains("Blocked elsewhere waiting on @pi · steps 2/2 · tsk"),
+            "{width}:\n{text}"
+        );
+        assert!(
+            flat.contains("In review steps 0/1 · tsk"),
+            "{width}:\n{text}"
+        );
+        for quiet in [
+            "Ready with steps",
+            "Open with steps",
+            "Started without steps",
+            "Notice with steps",
+        ] {
+            let row = text
+                .lines()
+                .find(|row| row.contains(quiet))
+                .unwrap_or_else(|| panic!("{width}: {quiet} missing:\n{text}"));
+            let label = row.split_once(quiet).map_or("", |(_, label)| label);
+            assert!(!label.contains("steps"), "{width}: {row:?}");
+        }
+        let counts = flat
+            .match_indices("steps ")
+            .filter(|(at, _)| flat[at + 6..].starts_with(|c: char| c.is_ascii_digit()))
+            .count();
+        assert_eq!(counts, 3, "{width}:\n{text}");
+    }
+}
