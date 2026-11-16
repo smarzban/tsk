@@ -364,7 +364,7 @@ pub fn step_progress_label(status: HumanStatus, done: usize, total: usize) -> Op
 }
 
 /// [`step_progress_label`] for a board row; archived tasks and notices say nothing.
-fn row_step_label(task: &Task) -> Option<String> {
+pub fn row_step_label(task: &Task) -> Option<String> {
     if task.archived || task.is_notice() {
         return None;
     }

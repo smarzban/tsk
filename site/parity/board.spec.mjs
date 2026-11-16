@@ -327,6 +327,20 @@ for (const width of [40, 78, 109, 110]) {
     await expect(row(page, 13).locator(".tsk-row-glyph")).toHaveText("●");
     await expect(row(page, 13)).toHaveClass(/is-sel/);
     await capture(page, info, "started");
+    // Started with one of two steps done, its label leads with the count, as the app's does.
+    const startedLabel = await row(page, 13)
+      .locator(".tsk-row-label")
+      .allTextContents();
+    expect(startedLabel.join(" ").split(/\s+/).join(" ").trim()).toBe(
+      "steps 1/2 · desk",
+    );
+    // The peek's attribution keeps the plain label, without the count.
+    if (width < 110) {
+      await page.keyboard.press("ArrowRight");
+      await expect(page.locator(".tsk-attribution")).toHaveText("    └─ desk");
+      await page.keyboard.press("ArrowLeft");
+      await expect(row(page, 13)).toHaveClass(/is-sel/);
+    }
     await page.keyboard.press("Enter");
     await expect(page.locator(".tsk-task-column")).toHaveAttribute(
       "data-status",

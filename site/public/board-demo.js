@@ -958,7 +958,6 @@ import { parseCapture } from "./capture.js";
   function rowLabel(task, dims) {
     if (!dims) return "";
     return [
-      stepProgress(task),
       dims.thread && task.thread ? `#${task.thread}` : "",
       dims.project ? projectName(task) : "",
     ]
@@ -2677,6 +2676,7 @@ import { parseCapture } from "./capture.js";
   const fullRowLabel = (task, label) =>
     [
       rowWaitLabel(task),
+      stepProgress(task),
       label,
       state.messagesHidden && rowLiveLine(task) ? "✉" : "",
     ]

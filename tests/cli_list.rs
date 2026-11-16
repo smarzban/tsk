@@ -3999,7 +3999,7 @@ fn list_shows_step_progress_on_live_rows_and_counts_in_every_json_row() {
                 None,
                 TaskScope::Global,
                 ProvenanceOrigin::Manual,
-                None,
+                Some("auth".into()),
             )
             .expect("create");
         for index in 0..3 {
@@ -4009,9 +4009,15 @@ fn list_shows_step_progress_on_live_rows_and_counts_in_every_json_row() {
             }
         }
         state.set_status(id, status).expect("status");
+        id
     };
     stepped(&mut state, "live one", HumanStatus::Started, 2);
     stepped(&mut state, "ready one", HumanStatus::Ready, 1);
+    stepped(&mut state, "blocked one", HumanStatus::Blocked, 0);
+    stepped(&mut state, "review one", HumanStatus::Review, 3);
+    stepped(&mut state, "done one", HumanStatus::Done, 3);
+    let shelved = stepped(&mut state, "shelved one", HumanStatus::Started, 1);
+    state.archive_task(shelved).expect("archive");
     create_task(
         &mut state,
         "bare one",
@@ -4041,12 +4047,44 @@ fn list_shows_step_progress_on_live_rows_and_counts_in_every_json_row() {
             .trim_end()
             .to_string()
     };
-    assert!(
-        line("live one").ends_with("live one · steps 2/3"),
-        "{human:?}"
-    );
-    assert!(line("ready one").ends_with("ready one"), "{human:?}");
+    // The count follows the thread; every live status carries it, ready does not.
+    for (title, count) in [
+        ("live one", "2/3"),
+        ("blocked one", "0/3"),
+        ("review one", "3/3"),
+    ] {
+        assert!(
+            line(title).ends_with(&format!("{title} #auth · steps {count}")),
+            "{human:?}"
+        );
+    }
+    assert!(line("ready one").ends_with("ready one #auth"), "{human:?}");
     assert!(line("bare one").ends_with("bare one"), "{human:?}");
+
+    // A flat listing puts the scope after the count.
+    let flat = list(&args(&["--all", "--sort", "title"]));
+    assert!(
+        flat.stdout.lines().any(|line| line
+            .trim_end()
+            .ends_with("live one #auth · steps 2/3 · desk")),
+        "{flat:?}"
+    );
+    let done = list(&args(&["--all", "--done"]));
+    assert!(
+        done.stdout
+            .lines()
+            .any(|line| line.trim_end().ends_with("done one #auth")),
+        "{done:?}"
+    );
+    // The archived view marks the row and says no count, even for a started task.
+    let archived = list(&args(&["--all", "--archived"]));
+    assert!(
+        archived
+            .stdout
+            .lines()
+            .any(|line| line.trim_end().ends_with("shelved one #auth · archived")),
+        "{archived:?}"
+    );
 
     let json = list(&args(&["--all", "--json"]));
     let rows: Vec<serde_json::Value> = serde_json::from_str(&json.stdout).expect("json rows");
