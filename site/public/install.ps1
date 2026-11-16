@@ -838,7 +838,9 @@ function Main {
             $zip.Dispose()
         }
         $expanded = Join-Path $work 'expanded'
-        Expand-Archive -LiteralPath $archive -DestinationPath $expanded
+        # Not Expand-Archive: its module comes from PSModulePath, and on some hosts that copy
+        # fails under Windows PowerShell 5.1 (no 3-argument ExtractToDirectory overload).
+        [IO.Compression.ZipFile]::ExtractToDirectory($archive, $expanded)
         $executable = Join-Path $expanded 'tsk.exe'
         if (-not (Test-Path -LiteralPath $executable -PathType Leaf) -or (Get-Item -LiteralPath $executable).Length -eq 0) {
             Fail 'release executable is missing or empty'
