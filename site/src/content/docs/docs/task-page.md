@@ -23,7 +23,7 @@ The footer reads `@assignee · ⎇ <base> · due 2026-03-15 · after T202 · bef
 | --- | --- |
 | `@assignee` | The [assignee](/docs/dispatch/#assign): an agent profile, you, or a person. An unassigned task shows `+ assign` when at least one [agent profile](/docs/storage/#configuration) exists. Click to pick |
 | `⎇ <base>` | The base branch. Unset, it shows the repository default, such as `⎇ main (default)`, or `⎇ default` on the desk. Click to pick |
-| `due 2026-03-15` | The day the task is due. Shown only when set, or during an edit |
+| `due 2026-03-15` | The day the task is due. Shown only when set, or during an edit. During an edit, click to select it |
 | `after T202` | The tasks this one [runs after](/docs/board/#after). Shown only when set, or during an edit. Click to pick |
 | `before T205` | The tasks that run after this one. Read-only: it changes when you edit theirs. Click a number to open that task |
 | `#thread · project` | The thread and the project, or desk |
@@ -68,7 +68,6 @@ In view mode, three fields save at once:
 
 - `shift+Enter` saves the whole edit: title, notes, scope, thread, assignee, base, due, after, and staged step renames and removals.
 - A day that does not exist, such as `2026-02-30`, refuses the save. The Due editor opens with the reason, and the rest of the edit stays.
-- `ctrl+u` after the save puts back the previous due day, along with any step changes the save made.
 - `Esc` cancels the field you are in. A second `Esc` cancels the rest of the edit and restores staged step removals.
 - New steps and step moves save at once, so cancelling does not undo them.
 - The base is checked only when you change it or the project, so a deleted branch never blocks other edits.

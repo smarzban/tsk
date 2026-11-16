@@ -2435,51 +2435,6 @@ fn a_bad_due_day_refuses_the_save_and_keeps_the_form_with_the_refusal_painted() 
     assert_eq!(task.title, "Dated renamed");
 }
 
-#[test]
-fn undo_restores_the_due_day_of_a_page_save() {
-    let mut domain = DomainState::new();
-    let id = due_task(&mut domain);
-    domain
-        .edit_due(id, Some("2026-11-01".into()))
-        .expect("seed due day, not undoable");
-    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
-    open_due_editor(&mut domain, &mut model);
-    for _ in 0..2 {
-        apply_intent(&mut domain, &mut model, BoardIntent::EditBackspace, None).expect("edit");
-    }
-    type_text(&mut domain, &mut model, "30");
-    assert_eq!(
-        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save"),
-        IntentOutcome::Persist
-    );
-    model.sync_from_domain(&domain);
-    assert_eq!(
-        domain.get(id).expect("task").due.as_deref(),
-        Some("2026-11-30")
-    );
-
-    apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("undo");
-    assert_eq!(
-        domain.get(id).expect("task").due.as_deref(),
-        Some("2026-11-01"),
-        "ctrl+u puts the previous day back"
-    );
-    assert!(
-        model
-            .message()
-            .is_some_and(|message| message.starts_with("due undone")),
-        "{:?}",
-        model.message()
-    );
-    model.sync_from_domain(&domain);
-    apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("undo again");
-    assert_eq!(
-        model.message(),
-        Some("nothing to undo"),
-        "the save was one entry"
-    );
-}
-
 /// Saving from a typed new step row keeps the row, so the bad day's refusal is said on the
 /// status row instead, where it is painted.
 #[test]
@@ -2518,5 +2473,35 @@ fn a_bad_due_day_saved_from_a_typed_new_step_row_is_still_painted() {
     assert!(
         painted.contains("new step"),
         "the typed row survives: {painted}"
+    );
+}
+
+/// Due is a page field like title or base: a save that changes only the day pushes no undo
+/// entry, so `ctrl+u` afterwards leaves the new day in place.
+#[test]
+fn a_due_only_page_save_is_not_undoable() {
+    let mut domain = DomainState::new();
+    let id = due_task(&mut domain);
+    domain
+        .edit_due(id, Some("2026-11-01".into()))
+        .expect("seed due day, not undoable");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    open_due_editor(&mut domain, &mut model);
+    for _ in 0..2 {
+        apply_intent(&mut domain, &mut model, BoardIntent::EditBackspace, None).expect("edit");
+    }
+    type_text(&mut domain, &mut model, "30");
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save"),
+        IntentOutcome::Persist
+    );
+    model.sync_from_domain(&domain);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("ctrl+u");
+    assert_eq!(model.message(), Some("nothing to undo"));
+    assert_eq!(
+        domain.get(id).expect("task").due.as_deref(),
+        Some("2026-11-30"),
+        "the saved day stays"
     );
 }

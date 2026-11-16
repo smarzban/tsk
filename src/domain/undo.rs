@@ -1,6 +1,6 @@
 //! Undo stack for soft-delete, complete, status changes, steps, archive, assignment, base,
-//! due day, block, who a block or review waits on, `after`, a start that dispatched, and a
-//! name removed from the assignee picker.
+//! block, who a block or review waits on, `after`, a start that dispatched, and a name removed
+//! from the assignee picker.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -41,12 +41,6 @@ pub enum UndoEntry {
         expected_revision: Uuid,
     },
     SetBase {
-        id: Uuid,
-        previous: Option<String>,
-        expected_revision: Uuid,
-    },
-    /// A due day set, changed, or cleared on the task page; reversing puts `previous` back.
-    SetDue {
         id: Uuid,
         previous: Option<String>,
         expected_revision: Uuid,
@@ -134,7 +128,6 @@ impl UndoEntry {
                 | UndoEntry::Complete { .. }
                 | UndoEntry::Assign { .. }
                 | UndoEntry::SetBase { .. }
-                | UndoEntry::SetDue { .. }
                 | UndoEntry::Block { .. }
                 | UndoEntry::Start { .. }
                 | UndoEntry::Status { .. }
@@ -172,11 +165,6 @@ impl UndoEntry {
                     ..
                 }
                 | UndoEntry::SetBase {
-                    id,
-                    expected_revision,
-                    ..
-                }
-                | UndoEntry::SetDue {
                     id,
                     expected_revision,
                     ..
@@ -251,11 +239,6 @@ impl UndoEntry {
                 expected_revision,
                 ..
             }
-            | UndoEntry::SetDue {
-                id: target,
-                expected_revision,
-                ..
-            }
             | UndoEntry::Block {
                 id: target,
                 expected_revision,
@@ -312,7 +295,6 @@ impl UndoEntry {
                 ..
             } => state.restore_assignee(id, previous, previous_kind),
             UndoEntry::SetBase { id, previous, .. } => state.restore_base(id, previous),
-            UndoEntry::SetDue { id, previous, .. } => state.restore_due(id, previous),
             UndoEntry::Block { id, previous, .. } => state.restore_unblocked(id, previous),
             UndoEntry::Start { id, previous, .. } | UndoEntry::Status { id, previous, .. } => {
                 state.restore_status(id, previous)
@@ -334,23 +316,8 @@ impl UndoEntry {
                 Ok(())
             }
             UndoEntry::Batch { entries } => {
-                // One save carries the whole batch. A task it reverses twice (a page save's
-                // steps and due day) must still merge from the revision it had before the
-                // batch, not from the one its first reversal left.
-                let mut before = std::collections::BTreeMap::new();
-                for (id, _) in entries.iter().flat_map(UndoEntry::targets) {
-                    if let Some(task) = state.get(id) {
-                        before.entry(id).or_insert(task.revision);
-                    }
-                }
                 for entry in entries.into_iter().rev() {
                     entry.reverse(state)?;
-                }
-                for (id, revision) in before {
-                    let task = state.task_mut(id)?;
-                    if task.revision != revision {
-                        task.merge_base_revision = Some(revision);
-                    }
                 }
                 Ok(())
             }

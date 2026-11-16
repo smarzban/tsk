@@ -136,7 +136,6 @@ fn undo_action_word(domain: &DomainState, leaf: &UndoEntry) -> &'static str {
         }
         UndoEntry::Assign { .. } => "assignee",
         UndoEntry::SetBase { .. } => "base",
-        UndoEntry::SetDue { .. } => "due",
         UndoEntry::SetAfter { .. } => "after",
         UndoEntry::SetOn { .. } => "waiting on",
         UndoEntry::Steps { .. } => "steps",
@@ -339,7 +338,6 @@ fn stale_undo_message(domain: &DomainState, id: Uuid) -> String {
         Some(UndoEntry::Block { .. }) => "since its block or review",
         Some(UndoEntry::Assign { .. }) => "since it was assigned",
         Some(UndoEntry::SetBase { .. }) => "since its base change",
-        Some(UndoEntry::SetDue { .. }) => "since its due change",
         Some(UndoEntry::SetAfter { .. }) => "since its after change",
         Some(UndoEntry::SetOn { .. }) => "since its waiting-on change",
         Some(UndoEntry::Steps { .. }) => "since its step change",
@@ -4840,8 +4838,8 @@ fn confirm_edit(
         .map(|(text, _)| vec![text.trim().to_string()])
         .unwrap_or_default();
     let extra_after = extra_step.and_then(|(_, insert_after)| insert_after);
-    // Only the steps and due day parts of the save are undoable, as one entry.
-    domain.with_steps_and_due_undo(id, |domain| {
+    // Only the steps part of the save is undoable.
+    domain.with_steps_undo(id, |domain| {
         domain.edit_with_step_changes_and_base(
             id,
             &title,

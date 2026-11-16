@@ -17,7 +17,7 @@ Add a task without leaving your work: quick-add on the board, the Herdr or Rex p
 
 ## Details
 
-Press `Tab` on the line to open the full draft in Notes. It holds the task page's fields in the same [order](/docs/task-page/#edit): notes, steps, assignee, base, after, thread, and scope.
+Press `Tab` on the line to open the full draft in Notes. It holds the task page's fields in the same [order](/docs/task-page/#edit): notes, steps, assignee, base, due, after, thread, and scope.
 
 - `shift+Enter` saves.
 - `Esc` returns to the line. `Tab` brings your details back while the line is unchanged.

@@ -2983,9 +2983,7 @@ impl DomainState {
                             UndoEntry::Start { .. } => {
                                 task.last_event_at(TaskEventKind::Dispatched)
                             }
-                            UndoEntry::SetAfter { .. } | UndoEntry::SetDue { .. } => {
-                                task.last_event_at(TaskEventKind::Edited)
-                            }
+                            UndoEntry::SetAfter { .. } => task.last_event_at(TaskEventKind::Edited),
                             UndoEntry::SetOn { .. } => task.last_event_at(TaskEventKind::OnSet),
                             UndoEntry::HideAssignee { .. }
                             | UndoEntry::ShowAssignee { .. }
