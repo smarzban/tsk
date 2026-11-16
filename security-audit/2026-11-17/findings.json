@@ -1,0 +1,239 @@
+[
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "ui.paint.project-basename.c0",
+    "title": "Untitled project folder names can carry C0/C1 into board spans",
+    "description": "On Unix a directory name may contain a C0 or C1 character. If the operator opens that directory as a Git project and the project has no title, ProjectNames::name returns the raw folder name. The wide task-column header state places that name in a Span. A project group header does the same. When the line fits, bound_line returns the spans unchanged, so terminal_text never runs, and put_line renders them on the next draw_board, including after ctrl+l. Whether ratatui then writes the scalar to the tty as a control is outside this crate and was not observed.",
+    "claimed_root_cause": "An untitled project's folder name is copied into the task-header state and the project group header, and bound_line keeps a fitting line, so those spans skip terminal_text.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/context.rs",
+        "line": 99,
+        "scope": "build_snapshot",
+        "description": "A Git root becomes the project scope path through to_string_lossy, which keeps valid C0 and C1 scalars from the directory name."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/capture.rs",
+        "line": 74,
+        "scope": "capture_save",
+        "description": "A capture with no scope override stores snapshot.default_scope on the new task, so the directory path becomes task.scope."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/scope.rs",
+        "line": 123,
+        "scope": "ProjectNames::name",
+        "description": "With no project title, name returns project_basename of that path, the last component, with no control-character filter."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/ui/board/model.rs",
+        "line": 3780,
+        "scope": "BoardModel::project_name",
+        "description": "project_name returns ProjectNames::name of the path string and does not call terminal_text."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/ui/board/draw.rs",
+        "line": 2640,
+        "scope": "task_header_state",
+        "description": "For a project task, the header state is the status word plus project_name, so the raw folder name is part of header.state."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/ui/render.rs",
+        "line": 1647,
+        "scope": "draw_task_column",
+        "description": "The state string is placed in Span::styled. The title beside it goes through present_line; the state span does not."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/ui/render.rs",
+        "line": 7777,
+        "scope": "bound_line",
+        "description": "When line.width() is within max_width, bound_line returns the original line. present_line runs only after that check fails."
+      },
+      {
+        "kind": "sink",
+        "file": "src/ui/render.rs",
+        "line": 7768,
+        "scope": "put_line_at",
+        "description": "A fitting line is padded and frame.render_widget paints the Paragraph. The original spans, including the folder name, are still in that line."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/scope.rs",
+        "line": 70,
+        "description": "project_basename is the last non-empty path component and does not inspect control characters."
+      },
+      {
+        "file": "src/ui/queue.rs",
+        "line": 1555,
+        "description": "group_key's project label is names.name(path), the same untitled folder name."
+      },
+      {
+        "file": "src/ui/render.rs",
+        "line": 6858,
+        "description": "paint_group_header puts that label in Span::styled(word) and then calls bound_line, with no terminal_text on the word."
+      },
+      {
+        "file": "src/ui/render.rs",
+        "line": 5716,
+        "description": "A group-header row is drawn with put_line, so a fitting group label reaches the same renderer as the task-header state."
+      },
+      {
+        "file": "src/ui/mod.rs",
+        "line": 22,
+        "description": "terminal_text rewrites every char::is_control scalar, which covers C0 and C1, but the header-state and group-word spans do not call it."
+      },
+      {
+        "file": "src/ui/board/model.rs",
+        "line": 7928,
+        "description": "project_option_label does wrap the folder name in terminal_text. task_header_state and group_key use ProjectNames::name instead."
+      },
+      {
+        "file": "src/domain/task.rs",
+        "line": 678,
+        "description": "project_title_refusal rejects a control character only for a title passed through the setter. An untitled project never takes that path."
+      },
+      {
+        "file": "src/fsperm.rs",
+        "line": 179,
+        "description": "Unix mode 0600 is applied to store files created here. It does not constrain directory names on disk."
+      },
+      {
+        "file": "src/setup_agent.rs",
+        "line": 1606,
+        "description": "A comment on the Unix-only setup listing test says Win32 rejects control characters such as ESC in directory names. The test at line 1615 creates a directory whose name contains U+001B."
+      },
+      {
+        "file": "src/app.rs",
+        "line": 483,
+        "description": "ctrl+l is consumed by redraw_on_request, and the loop continues into the next draw_board paint."
+      }
+    ],
+    "blockers": [
+      "Cargo and the tsk binary were not run, and the cargo registry is absent, so ratatui was not executed and no TestBackend or tty capture shows the bytes written for a Span that contains a C0 or C1 scalar.",
+      "Ratatui's buffer and backend sources are not in this workspace, so whether a zero-width control stored in a cell symbol is emitted to the tty or dropped cannot be read here."
+    ],
+    "validation_plan": {
+      "local": "With a local toolchain, render draw_board into a ratatui TestBackend for an untitled project whose folder name contains U+001B, with one task in that project and a frame wide enough that the header state fits. Assert the state cell symbol still contains U+001B. Repeat with grouping set to project and assert the group-header word cell. A second local backend that records its write can show whether that symbol is emitted as the ESC byte. Keep the check on a local TestBackend."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "windows-state-dir-acl",
+    "title": "Windows state files inherit the parent directory DACL",
+    "description": "Windows state files and directories are created with no security descriptor. default_state_dir selects LOCALAPPDATA\\tsk, or USERPROFILE\\.tsk when LOCALAPPDATA is empty. ensure_private_dir creates that directory with create_dir_all and tightens it to 0700 only on Unix. Saves write tsk.json through create_private_file, which sets mode 0600 only on Unix and otherwise uses OpenOptions with no SECURITY_ATTRIBUTES. tighten_file, which save runs over existing state names, is a no-op off Unix. Lock files use the same Unix-only mode. On non-Unix, write_launcher creates launchers with create_dir_all and fs::write. config.toml temps from create_private_temp do the same. install.ps1 creates the binary directory LOCALAPPDATA\\Programs\\tsk\\bin, or TSK_INSTALL_DIR, with New-Item. It does not Set-Acl and does not create the state directory. No source file assigns a Windows DACL, so each new object inherits its parent directory DACL. That DACL is not in the repository.",
+    "claimed_root_cause": "State directories and files are created with std::fs::create_dir_all, OpenOptions::open, and std::fs::write and no Windows security descriptor. Owner-only mode and tighten_file are compiled only for Unix, so each new Windows object inherits its parent directory DACL. This repository neither writes nor reads that DACL.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/store.rs",
+        "line": 1435,
+        "scope": "default_state_dir",
+        "description": "On Windows the state directory is LOCALAPPDATA\\tsk when LOCALAPPDATA is non-empty, otherwise USERPROFILE\\.tsk, otherwise a relative .tsk-state. The function returns a path and does not create it or attach a security descriptor."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/fsperm.rs",
+        "line": 45,
+        "scope": "ensure_private_dir",
+        "description": "A missing directory is created with fs::create_dir_all. The only permission change, tighten_private_dir, is cfg(unix) at line 55. The Windows path passes no SECURITY_ATTRIBUTES."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/store.rs",
+        "line": 862,
+        "scope": "save_unlocked_supported",
+        "description": "After ensure_private_dir at line 829, the save creates the temp document that is replaced onto tsk.json through AtomicFilesystem::create_file. StdFilesystem::create_file at line 325 delegates to create_private_file."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/fsperm.rs",
+        "line": 173,
+        "scope": "create_private_file",
+        "description": "The file is opened write/create/truncate. mode 0600 is applied only inside cfg(unix) at lines 176-179. The Windows open supplies no security descriptor, so a new file inherits the parent directory DACL."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/dispatch.rs",
+        "line": 1834,
+        "scope": "write_launcher",
+        "description": "The non-Unix branch creates the launchers directory with create_dir_all and writes the PowerShell script with fs::write. launcher_file at line 1143 places that script under the state directory. Neither call sets a DACL. powershell_script only builds the script text."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/agents.rs",
+        "line": 283,
+        "scope": "create_private_temp",
+        "description": "config.toml temps are create_new OpenOptions. mode 0600 is cfg(unix) only at lines 284-288, and options.open at line 289 sets no Windows security descriptor."
+      },
+      {
+        "kind": "sink",
+        "file": "src/fsperm.rs",
+        "line": 300,
+        "scope": "tighten_file",
+        "description": "Off Unix the helper ignores the path. Save, lock open, and restore call it for existing state files, and it never assigns a Windows security descriptor. The directory, tsk.json, lock, config temp, and launcher keep the inherited parent DACL."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/fsperm.rs",
+        "line": 10,
+        "description": "The module states that no permission is claimed on non-Unix platforms and that the helpers compile down to plain create or copy."
+      },
+      {
+        "file": "src/fsperm.rs",
+        "line": 181,
+        "description": "create_private_file ends in options.open with no Windows security attributes."
+      },
+      {
+        "file": "src/fsperm.rs",
+        "line": 244,
+        "description": "open_lock_file sets mode 0600 only inside cfg(unix) in lock_open_options. The Windows lock create has no security descriptor."
+      },
+      {
+        "file": "src/store.rs",
+        "line": 1439,
+        "description": "The primary Windows state path is LOCALAPPDATA joined with tsk."
+      },
+      {
+        "file": "src/store.rs",
+        "line": 831,
+        "description": "tighten_state_files runs before the new document is written, and on Windows tighten_file does not change a DACL."
+      },
+      {
+        "file": "src/dispatch.rs",
+        "line": 4600,
+        "description": "A Windows launch writes launcher bytes from powershell_script through write_launcher. The script text does not set an ACL."
+      },
+      {
+        "file": "site/public/install.ps1",
+        "line": 767,
+        "description": "The default install directory is LOCALAPPDATA\\Programs\\tsk\\bin, or TSK_INSTALL_DIR. That is the binary directory, not the state directory."
+      },
+      {
+        "file": "site/public/install.ps1",
+        "line": 849,
+        "description": "The installer creates the install directory with New-Item. The script contains no Set-Acl, Get-Acl, or icacls call."
+      },
+      {
+        "file": "Cargo.toml",
+        "line": 76,
+        "description": "windows-sys enables the Win32_Security feature, but no Rust source imports Win32::Security or calls a DACL or security-descriptor API."
+      }
+    ],
+    "blockers": [
+      "The inherited DACL is an operating-system fact. This repository never sets a Windows security descriptor, so source cannot show whether a second non-admin account has an allow ACE on the state directory, tsk.json, or a launcher script.",
+      "This host is Linux, so the DACL was not observed and target code was not executed."
+    ],
+    "validation_plan": {
+      "local": "On a fresh non-admin Windows profile, run tsk add with a dummy title and record icacls of the new state directory and tsk.json without changing the ACL.",
+      "deployment": "On an existing store, record icacls of the state directory, tsk.json, and any launcher script without changing the ACL or opening the files."
+    }
+  }
+]

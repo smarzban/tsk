@@ -1,0 +1,116 @@
+{
+  "run_id": "run-3",
+  "repo": "smarzban/tsk",
+  "target": "/agent/repos/tsk",
+  "source_ref": {
+    "commit": "d6016c00a673c76e6a0dd30de9cb6ad498c50be3",
+    "branch": "main",
+    "delta_from": "d1430bff16823bf3647bace6016dac30bfa8981f",
+    "delta_to": "d6016c00a673c76e6a0dd30de9cb6ad498c50be3",
+    "worktree_dirty": false,
+    "commits": [
+      "58a9599 Nightly audit 2026-11-14: misplaced rustdocs, dead resolve_name (#298)",
+      "5484dc1 Windows installer: extract with ZipFile instead of Expand-Archive (#301)",
+      "73ea66e Add tsk checks to mark a review check from the CLI (T514) (#302)",
+      "d6016c0 Show step progress on live board rows and in tsk list (issue 273) (#303)"
+    ]
+  },
+  "profile": "standard",
+  "scope": "scoped delta of d1430bff16823bf3647bace6016dac30bfa8981f..d6016c00a673c76e6a0dd30de9cb6ad498c50be3 and the checks CLI, list and board step-progress output, Windows zip extraction, and untrusted-terminal-text paths those commits touch, plus carried ui.paint.project-basename.c0 and windows-state-dir-acl",
+  "scope_paths": [
+    "src/cli/checks.rs",
+    "src/cli/parser.rs",
+    "src/cli/presenter.rs",
+    "src/cli/router.rs",
+    "src/cli/mod.rs",
+    "src/cli/list.rs",
+    "src/ui/render.rs",
+    "src/ui/board/chrome.rs",
+    "src/ui/mod.rs",
+    "src/domain/task.rs",
+    "src/agents.rs",
+    "src/app.rs",
+    "site/public/install.ps1",
+    "site/public/board-demo.js",
+    "src/fsperm.rs",
+    "src/store.rs",
+    "src/ui/board/draw.rs",
+    "src/ui/board/model.rs",
+    "src/scope.rs"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md",
+    "SUPPLY-CHAIN-AND-RELEASE.md"
+  ],
+  "prior_run_paths": [
+    "/home/ubuntu/security-audit-skill/tsk/run-3/prior/coverage-ledger.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-3/prior/findings.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-3/prior/architecture.md",
+    "origin/security-audit/2026-11-15@6b5743070220fc033f8acc33db3b3ffd3146a0bb:security-audit/2026-11-15/"
+  ],
+  "prior_source_ref": "d1430bff16823bf3647bace6016dac30bfa8981f",
+  "prior_audit_commit": "6b5743070220fc033f8acc33db3b3ffd3146a0bb",
+  "shared_file_owners": {
+    "run-metadata.json": "parent",
+    "architecture.md": "parent",
+    "coverage-ledger.json": "parent",
+    "findings.json": "parent",
+    "REPORT.md": "parent",
+    "FINDINGS-DETAIL.md": "parent",
+    "NEEDS-VALIDATION.md": "parent"
+  },
+  "run_status": "complete",
+  "sandbox": {
+    "target_code_executed": false,
+    "reason": "unshare user/mount/net succeeded. bubblewrap and firejail are absent. The cargo registry source cache and vendor/ are absent. Fetching crates is prohibited, so the crate was not compiled or executed. No scratch promoter was built."
+  },
+  "agent_spend": {
+    "budget": null,
+    "judgment_invocations": {
+      "reconnaissance": 4,
+      "hunters_wave_1": 4,
+      "post_wave_critic": 1,
+      "final_clean_critic": 1,
+      "phase3_verifier": 3,
+      "phase5_verifier": 2,
+      "total": 15
+    },
+    "notes": "One Phase 3 Windows reply was discarded because its trace used kind call. A fresh verifier returned a valid needs_validation record. Phase 5 verified both carried records. No new confirmed finding."
+  },
+  "validators": {
+    "validate-findings.cjs": "PASS",
+    "validate-coverage-ledger.cjs": "PASS"
+  },
+  "coverage": {
+    "covered": 8,
+    "candidate": 3,
+    "out_of_scope": 33,
+    "blocked": 0,
+    "deferred": 0,
+    "planned": 0
+  },
+  "new_confirmed_findings": [],
+  "carried_needs_validation": [
+    "ui.paint.project-basename.c0",
+    "windows-state-dir-acl"
+  ],
+  "new_needs_validation": [],
+  "critics": {
+    "post_wave": {
+      "missing_units": 0,
+      "reassign_ids": 0,
+      "stop": true
+    },
+    "final_clean": {
+      "missing_units": 0,
+      "reassign_ids": 0,
+      "stop": true
+    }
+  },
+  "phase5": {
+    "ui.paint.project-basename.c0": "verified",
+    "windows-state-dir-acl": "verified"
+  }
+}
