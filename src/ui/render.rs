@@ -1241,8 +1241,8 @@ pub enum QueueHitTarget {
     /// The `ctrl+u undo` control inside the delete-recovery notice on the status line,
     /// positioned wherever [`paint_status_line`] actually put it -- which shifts with the
     /// deleted title's length and with whether a later message is composed after it --
-    /// rather than a fixed column. Dispatches the same [`BoardIntent::Undo`] the `u` key
-    /// does; only painted (and so only ever pushed) while `model.input_mode()` is
+    /// rather than a fixed column. Dispatches the same [`BoardIntent::Undo`] the `ctrl+u`
+    /// key does; only painted (and so only ever pushed) while `model.input_mode()` is
     /// `Normal`, the one mode `map_board_mouse` reads this target in.
     ///
     /// [`BoardIntent::Undo`]: crate::ui::input::BoardIntent::Undo
