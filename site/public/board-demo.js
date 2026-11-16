@@ -948,9 +948,17 @@ import { parseCapture } from "./capture.js";
       assignee: dims.assignee && layout.group !== "assignee",
     };
   }
+  // `steps 3/5` on a started, blocked or review task with steps, as on the board.
+  function stepProgress(task) {
+    const steps = task.steps || [];
+    if (task.archived || !steps.length) return "";
+    if (!["started", "blocked", "review"].includes(task.status)) return "";
+    return `steps ${steps.filter((step) => step.done).length}/${steps.length}`;
+  }
   function rowLabel(task, dims) {
     if (!dims) return "";
     return [
+      stepProgress(task),
       dims.thread && task.thread ? `#${task.thread}` : "",
       dims.project ? projectName(task) : "",
     ]

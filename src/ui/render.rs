@@ -352,6 +352,26 @@ pub fn row_wait_label(task: &Task, tasks: &[Task]) -> Option<String> {
     (!lead.is_empty()).then_some(lead)
 }
 
+/// How far a live task's steps have come, `steps 3/5`, for its row label and its `tsk list`
+/// row. Only started, blocked and review tasks with at least one step say it: a count on a
+/// task nobody is working on reads as noise.
+pub fn step_progress_label(status: HumanStatus, done: usize, total: usize) -> Option<String> {
+    let live = matches!(
+        status,
+        HumanStatus::Started | HumanStatus::Blocked | HumanStatus::Review
+    );
+    (live && total > 0).then(|| format!("steps {done}/{total}"))
+}
+
+/// [`step_progress_label`] for a board row; archived tasks and notices say nothing.
+fn row_step_label(task: &Task) -> Option<String> {
+    if task.archived || task.is_notice() {
+        return None;
+    }
+    let done = task.steps.iter().filter(|step| step.done).count();
+    step_progress_label(task.status, done, task.steps.len())
+}
+
 /// The task's open block or review record, when it matches the status.
 fn open_block(task: &Task) -> Option<&crate::domain::Block> {
     let review = task.status == HumanStatus::Review;
@@ -6095,12 +6115,12 @@ fn build_list_rows_inner(
                 || (rail && row_live_line(task, model.tasks, model.now).is_some()));
         let live_text = live_text.filter(|_| !model.messages_hidden);
         // Where the row stands in a chain (`waiting on @pi`, `after T202`, `before T5`) leads
-        // its label; the peek says it in its own lines, so the peek's footer keeps the plain
-        // label.
+        // its label, then step progress; the peek says it in its own lines, so the peek's
+        // footer keeps the plain label.
         let row_meta = fit_row_meta(
             None,
-            None,
             row_wait_label(task, model.tasks),
+            row_step_label(task),
             Some(meta.clone()),
         );
         let row_meta = if hidden_message {

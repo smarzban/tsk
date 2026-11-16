@@ -26,7 +26,7 @@ Select a step with `Tab`, the arrows, or a click, then press `Enter` to check or
 | `✓` | Done |
 | `✗` | Marked for removal |
 
-The steps heading shows done and total.
+The steps heading shows done and total. A started, blocked, or review task also shows the count in its [board row](/docs/board/#rows) and in `tsk list`.
 
 ## Rename
 
