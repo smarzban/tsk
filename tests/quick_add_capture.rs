@@ -1067,6 +1067,41 @@ fn expanded_quick_add_carries_the_d_token_into_its_due_field_and_saves_it() {
 }
 
 #[test]
+fn a_bad_day_in_the_expanded_drafts_due_field_refuses_the_save_and_keeps_the_draft() {
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, None);
+    open(&mut domain, &mut model, &snapshot());
+    type_title(&mut domain, &mut model, "dated draft");
+    apply(&mut domain, &mut model, BoardIntent::ExpandQuickAdd, None);
+    apply(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(tsk_tui::ui::capture::CaptureField::Due),
+        None,
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::EditDue);
+    for character in "2026-2-30".chars() {
+        apply(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsert(character),
+            None,
+        );
+    }
+    assert_eq!(
+        apply(&mut domain, &mut model, BoardIntent::ConfirmEdit, None),
+        IntentOutcome::None
+    );
+    assert!(domain.tasks().is_empty(), "nothing is created");
+    assert_eq!(model.input_mode(), BoardInputMode::EditDue);
+    assert_eq!(model.edit_buffer(), "2026-2-30", "the typed day stays");
+    assert!(
+        render_text(&model, 80, 24).contains("that day does not exist in the calendar"),
+        "the refusal is painted"
+    );
+}
+
+#[test]
 fn quick_add_assignee_token_requires_an_exact_profile_and_saves_the_assignee() {
     let mut domain = DomainState::new();
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from("/repos/invocation")));

@@ -2388,6 +2388,18 @@ fn page_edit_sets_the_due_day_with_a_paper_trail_entry_and_empty_clears_it() {
 }
 
 #[test]
+fn a_due_only_draft_is_unsaved_work() {
+    let mut domain = DomainState::new();
+    due_task(&mut domain);
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    open_due_editor(&mut domain, &mut model);
+    assert!(!model.task_session_dirty(), "an untouched form is clean");
+    type_text(&mut domain, &mut model, "2026-11-30");
+    assert!(model.task_session_dirty(), "a typed day is a change");
+    assert!(model.has_unsaved_work());
+}
+
+#[test]
 fn page_edit_takes_a_one_digit_month_and_day_and_saves_them_padded() {
     let mut domain = DomainState::new();
     let id = due_task(&mut domain);

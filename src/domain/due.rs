@@ -160,18 +160,23 @@ mod tests {
             )
             .expect("create");
         let depth = state.undo_len();
-        state.edit_due(id, Some("2026-11-01".into())).expect("due");
+        // The save's own edit names only the title; staging the day adds Due to it.
+        state
+            .edit(id, "Renamed", None, TaskScope::Global, None)
+            .expect("edit title");
+        let events = state.get(id).expect("task").history.len();
         state
             .stage_due_in_edit(id, Some("2026-11-30".into()))
             .expect("stage");
         let task = state.get(id).expect("task");
         assert_eq!(task.due.as_deref(), Some("2026-11-30"));
+        assert_eq!(task.history.len(), events, "no event of its own");
         assert_eq!(
             task.history
                 .last()
                 .and_then(|event| event.detail.as_ref())
                 .map(|d| d.fields.clone()),
-            Some(vec![EditedField::Due])
+            Some(vec![EditedField::Title, EditedField::Due])
         );
         assert_eq!(state.undo_len(), depth);
         assert!(matches!(
