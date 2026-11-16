@@ -1,4 +1,4 @@
-const TOKEN = new Set(["!p", "!t", "!a", "!b", "!w"]);
+const TOKEN = new Set(["!p", "!t", "!a", "!b", "!d", "!w"]);
 
 function normalizeName(raw, kind) {
   const input = String(raw);
@@ -32,6 +32,21 @@ function tokenArgument(parts, index) {
   return next;
 }
 
+// A real day, `YYYY-MM-DD` or with a one-digit month or day, year 0001 to 9999, worded
+// like the board's refusals.
+function dueRefusal(value) {
+  const shaped = /^\d{4}-\d{1,2}-\d{1,2}$/.test(value);
+  if (!shaped) return `due ${value}: a due date is a day written YYYY-MM-DD`;
+  const [year, month, day] = value.split("-").map(Number);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const real = year > 0 && month >= 1 && month <= 12 && day >= 1;
+  if (!real || day > days[month - 1]) {
+    return `due ${value}: that day does not exist in the calendar`;
+  }
+  return "";
+}
+
 function parseAfterNumber(value) {
   const digits = value.replace(/^[Tt]/, "");
   if (!digits || !/^\d+$/.test(digits)) return null;
@@ -45,6 +60,7 @@ export function parseCapture(raw, fallbackProject) {
   let thread;
   let assignee;
   let base;
+  let due;
   const after = [];
   const title = [];
   let refuse = "";
@@ -103,6 +119,21 @@ export function parseCapture(raw, fallbackProject) {
       }
       continue;
     }
+    if (part === "!d") {
+      const argument = tokenArgument(parts, i);
+      if (argument === undefined) {
+        refuse = "!d needs a day like 2026-11-30";
+        break;
+      }
+      i += 1;
+      refuse = dueRefusal(argument);
+      if (refuse) break;
+      due = argument
+        .split("-")
+        .map((part, index) => part.padStart(index === 0 ? 4 : 2, "0"))
+        .join("-");
+      continue;
+    }
     if (part === "!w") {
       const argument = tokenArgument(parts, i);
       const number = argument ? parseAfterNumber(argument) : null;
@@ -127,6 +158,7 @@ export function parseCapture(raw, fallbackProject) {
     thread,
     assignee,
     base,
+    due,
     after,
     refuse,
   };

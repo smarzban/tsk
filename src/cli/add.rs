@@ -23,6 +23,8 @@ pub enum AddError {
     /// The resolved scope is an archived project (cwd default or explicit `-p`).
     ProjectArchived(String),
     UnknownBase(String),
+    /// `--due` is not a real `YYYY-MM-DD` day.
+    InvalidDue(String),
     AgentConfig(String),
     Store(String),
 }
@@ -35,6 +37,7 @@ impl AddError {
             Self::UnknownProject(_) => "unknown-project",
             Self::ProjectArchived(_) => "project-archived",
             Self::UnknownBase(_) => "unknown-base",
+            Self::InvalidDue(_) => "invalid-due",
             Self::AgentConfig(_) => "agent-config",
             Self::Store(_) => "store-error",
         }
@@ -92,6 +95,8 @@ struct PlanItem {
     assignee: Option<String>,
     /// Missing and JSON null both use dispatch's default base resolution.
     base: Option<String>,
+    /// Missing and JSON null both leave the item undated.
+    due: Option<String>,
     /// Task numbers the new task runs after.
     after: Vec<u64>,
 }
@@ -104,6 +109,7 @@ struct ResolvedPlanItem {
     thread: Option<String>,
     assignee: Option<Assignee>,
     base: Option<String>,
+    due: Option<String>,
     after: Vec<u64>,
 }
 
@@ -139,6 +145,13 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
     if title.is_empty() {
         return Err(AddError::EmptyTitle);
     }
+    let due = match input.due.as_deref() {
+        Some(text) => Some(
+            crate::domain::parse_due(text)
+                .map_err(|error| AddError::InvalidDue(format!("{text:?}: {error}")))?,
+        ),
+        None => None,
+    };
 
     let state_dir = input.state_dir.unwrap_or_else(default_state_dir);
     // The name rule: you, an agent profile, or any other name for a person. Broken profiles
@@ -195,6 +208,7 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                 thread.as_deref(),
                 assignee.as_ref(),
                 base.as_deref(),
+                due.as_deref(),
             ) {
                 Ok(FlagAddResult::Existing {
                     id: task.id,
@@ -223,6 +237,9 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
                         return Ok((Err(AddError::Store(error.to_string())), false));
                     }
                 };
+                if let Err(error) = domain.set_due_on_create(id, due) {
+                    return Ok((Err(AddError::Store(error.to_string())), false));
+                }
                 domain.assign_numbers_for_persistence();
                 let number = domain
                     .get(id)
@@ -318,6 +335,7 @@ pub fn run_plan(
                     item.thread.as_deref(),
                     item.assignee.as_ref(),
                     item.base.as_deref(),
+                    item.due.as_deref(),
                 ) {
                     existing.push(Existing {
                         i: item.i,
@@ -340,6 +358,9 @@ pub fn run_plan(
                         item.base,
                     )
                     .expect("plan item titles and threads are validated before domain creation");
+                domain
+                    .set_due_on_create(id, item.due)
+                    .expect("plan item due dates are validated before domain creation");
                 domain.assign_numbers_for_persistence();
                 domain
                     .set_after_on_create(id, &item.after)
@@ -419,6 +440,7 @@ fn resolve_plan_items(
             thread: item.thread,
             assignee,
             base: item.base,
+            due: item.due,
             after: item.after,
         });
     }
@@ -446,6 +468,7 @@ fn existing_task<'a>(
     thread: Option<&str>,
     assignee: Option<&Assignee>,
     base: Option<&str>,
+    due: Option<&str>,
 ) -> Option<&'a crate::domain::Task> {
     // Notice rows are board-only (no CLI address reaches them, not even their UUID) and
     // deliberately carry no T number, so a title collision with a seeded guide or the
@@ -458,6 +481,7 @@ fn existing_task<'a>(
             && task.thread.as_deref() == thread
             && task.assigned().as_ref() == assignee
             && task.base.as_deref() == base
+            && task.due.as_deref() == due
     })
 }
 
@@ -568,6 +592,28 @@ fn parse_plan_item(i: usize, value: Value) -> Result<PlanItem, Failed> {
             ));
         }
     };
+    let due = match object.get("due") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) => match crate::domain::parse_due(text) {
+            Ok(day) => Some(day),
+            Err(error) => {
+                return Err(fail_item(
+                    i,
+                    Some(trimmed_title),
+                    "invalid-due",
+                    format!("{text:?}: {error}"),
+                ));
+            }
+        },
+        Some(_) => {
+            return Err(fail_item(
+                i,
+                Some(trimmed_title),
+                "invalid-item",
+                "due must be a string or null",
+            ));
+        }
+    };
 
     let after = match object.get("after") {
         None | Some(Value::Null) => Vec::new(),
@@ -611,6 +657,7 @@ fn parse_plan_item(i: usize, value: Value) -> Result<PlanItem, Failed> {
         thread,
         assignee,
         base,
+        due,
         after,
     })
 }
@@ -649,6 +696,7 @@ mod tests {
             unassign: false,
             base: None,
             clear_base: false,
+            due: None,
             global: false,
             json: false,
             state_dir: None,

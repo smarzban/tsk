@@ -219,6 +219,9 @@ pub struct Task {
     /// Optional explicit branch from which this task should be dispatched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// Optional due date: a calendar day written `YYYY-MM-DD`, checked by [`parse_due`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due: Option<String>,
     /// Last successful dispatch. Status changes never alter this record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<Dispatch>,
@@ -423,6 +426,8 @@ pub enum DomainError {
     ProjectTitleInvalid(&'static str),
     /// The project's title changed since the undoable title change.
     StaleProjectUndo(String),
+    /// A due date that is not a real `YYYY-MM-DD` day.
+    InvalidDue(super::DueError),
 }
 
 impl std::fmt::Display for DomainError {
@@ -463,6 +468,7 @@ impl std::fmt::Display for DomainError {
             DomainError::StaleProjectUndo(path) => {
                 write!(f, "project {path} changed since the title change")
             }
+            DomainError::InvalidDue(error) => write!(f, "{error}"),
         }
     }
 }
@@ -636,7 +642,7 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 17;
+pub const STORE_FORMAT_VERSION: u32 = 18;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -1175,6 +1181,7 @@ impl DomainState {
             assignee: None,
             assignee_kind: AssigneeKind::Agent,
             base: None,
+            due: None,
             dispatch: None,
             after: Vec::new(),
             status: HumanStatus::Open,

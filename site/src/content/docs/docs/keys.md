@@ -29,7 +29,7 @@ Status, edit, delete, and archive keys take `ctrl`. Bare letters move, open, and
 | Reply to a blocked row, or give feedback on a review row | `r` |
 | Open / close the done drawer | `d` |
 | Group by none, project, thread, or assignee | `g` |
-| Sort by recent, project, thread, title, or assignee; on the Projects view, sort the projects | `s` |
+| Sort by recent, project, thread, title, assignee, or due; on the Projects view, sort the projects | `s` |
 | Fold / unfold the cursor's group | `f` |
 | Fold / unfold every group in view | `shift+F` |
 | Hide / show agent messages, the [live lines](/docs/board/#rows) under rows | `z` |
@@ -161,11 +161,11 @@ On a blocked page or a review:
 | Notes: move through wrapped lines | `↑` / `↓` |
 | New step: save it and open the next row | `Enter` |
 | Existing step: keep the rename in this edit | `Enter` |
-| Add a step from a selected step, **+ step**, the Scope row, or a selected Thread | `ctrl+a` |
+| Add a step from a selected step, **+ step**, the Scope row, or a selected Thread or Due | `ctrl+a` |
 | Stage removal of the selected step | `ctrl+x` |
 | Open the Scope, Assignee, Base, or After picker; confirm the choice. In the After picker, `Enter` pins and `shift+Enter` saves | `Enter` |
 | Cycle Scope or Assignee without opening it | `Space` or `←` / `→` |
-| Open / close the Thread editor | `Enter` |
+| Open / close the Thread or Due editor | `Enter` |
 | Line start / end | `Home` / `End` or `ctrl+a` / `ctrl+e` |
 | Word left / right | `alt+←` / `alt+→`, `ctrl+←` / `ctrl+→`, or `alt+b` / `alt+f` |
 | Delete a character backward / forward | `Backspace` / `Delete` |
@@ -176,7 +176,7 @@ On a blocked page or a review:
 In the step editor, `ctrl+d` and `ctrl+o` still act on the task, and `ctrl+x` stages the step's removal until the task edit is saved. In a new step's row, `ctrl+x` discards that row, as `Esc` does.
 
 - Field order: [Edit](/docs/task-page/#edit).
-- The word and line keys work in every text field: Title, Notes, steps, Thread, and quick-add.
+- The word and line keys work in every text field: Title, Notes, steps, Thread, Due, and quick-add.
 - A word is a run of non-space characters, as with Option+arrow in macOS. In Notes, word moves cross line breaks and a word delete stops at one.
 - In Notes, `ctrl+u` at a line start joins the line above, and `ctrl+k` at a line end joins the next line.
 - Search, the palette, Help, and the pickers you type into have no cursor. There, `alt+Backspace` and `ctrl+w` delete the query's last word, and `ctrl+u` and `ctrl+k` do nothing. The assignee picker's `ctrl+u` is the exception: it puts back a removed name.

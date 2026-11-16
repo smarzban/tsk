@@ -156,6 +156,8 @@ pub enum BoardIntent {
     /// Enter or a second click opens or closes the selected task-page Thread text editor.
     /// It never commits or leaves the enclosing task edit session.
     ToggleThreadEditing,
+    /// The same for the selected task-page Due text editor.
+    ToggleDueEditing,
     /// Cycle the shared form's chosen task scope directly from its Scope field.
     FormCycleScope,
     /// Cycle the shared form's assignee choices, or confirm the current choice.
@@ -1629,6 +1631,7 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
                 | BoardInputMode::CapturePage
                 | BoardInputMode::SelectThread
                 | BoardInputMode::SelectBase
+                | BoardInputMode::SelectDue
                 | BoardInputMode::SelectAfter
                 | BoardInputMode::EditScope
                 | BoardInputMode::EditAssignee
@@ -1672,7 +1675,9 @@ pub fn map_key(mode: BoardInputMode, key: KeyEvent) -> Option<BoardIntent> {
         BoardInputMode::SelectThread => map_selected_thread_key(key),
         BoardInputMode::SelectBase => map_selected_base_key(key),
         BoardInputMode::SelectAfter => map_selected_after_key(key),
+        BoardInputMode::SelectDue => map_selected_due_key(key),
         BoardInputMode::EditThread => map_thread_edit_key(key),
+        BoardInputMode::EditDue => map_due_edit_key(key),
         BoardInputMode::EditTitle | BoardInputMode::EditNotes => map_edit(mode, key),
         BoardInputMode::BlockCard => map_block_card(key),
         BoardInputMode::EditReply => map_reply_edit(key),
@@ -1853,6 +1858,43 @@ fn map_thread_edit_key(key: KeyEvent) -> Option<BoardIntent> {
         return Some(BoardIntent::ToggleThreadEditing);
     }
     map_form_edit_key(CaptureField::Thread, FormEditNavigation::Form, true, key)
+}
+
+/// Map the selected task-page Due footer: navigation until Enter or a second click opens its
+/// text cursor, like the selected Thread.
+fn map_selected_due_key(key: KeyEvent) -> Option<BoardIntent> {
+    if key.code == KeyCode::Char('?')
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+    {
+        return Some(BoardIntent::OpenHelp);
+    }
+    if key.code == KeyCode::Enter && key.modifiers.is_empty() {
+        return Some(BoardIntent::ToggleDueEditing);
+    }
+    // No text cursor is open on a selected Due, so ctrl+a still adds a step here.
+    if key.code == KeyCode::Char('a') && key.modifiers == KeyModifiers::CONTROL {
+        return Some(BoardIntent::BeginAddStep);
+    }
+    match map_form_edit_key(CaptureField::Due, FormEditNavigation::Form, true, key) {
+        intent @ Some(
+            BoardIntent::ConfirmEdit
+            | BoardIntent::CancelEdit
+            | BoardIntent::FormFocusNext
+            | BoardIntent::FormFocusPrev,
+        ) => intent,
+        _ => None,
+    }
+}
+
+/// Map an active task-page Due editor. Plain Enter returns to the selected footer, keeping its
+/// draft; Shift+Enter saves the task session.
+fn map_due_edit_key(key: KeyEvent) -> Option<BoardIntent> {
+    if key.code == KeyCode::Enter && key.modifiers.is_empty() {
+        return Some(BoardIntent::ToggleDueEditing);
+    }
+    map_form_edit_key(CaptureField::Due, FormEditNavigation::Form, true, key)
 }
 
 /// Focus-navigation intents layered over the shared field editor map.
@@ -2154,35 +2196,38 @@ fn map_form_edit_key(
             KeyCode::Enter => Some(BoardIntent::OpenAfterPicker),
             _ => None,
         },
-        CaptureField::Title | CaptureField::Notes | CaptureField::Thread => match key.code {
-            KeyCode::Enter if focused == CaptureField::Notes => {
-                Some(BoardIntent::EditInsertLineBreak)
+        CaptureField::Title | CaptureField::Notes | CaptureField::Thread | CaptureField::Due => {
+            match key.code {
+                KeyCode::Enter if focused == CaptureField::Notes => {
+                    Some(BoardIntent::EditInsertLineBreak)
+                }
+                // A one-line Title is finished by Enter: focus moves on to Notes. Saving stays
+                // Shift+Enter (matched above).
+                KeyCode::Enter
+                    if focused == CaptureField::Title && navigation == FormEditNavigation::Form =>
+                {
+                    Some(BoardIntent::FormFocusNext)
+                }
+                // A plain Enter must neither save a thread or due day nor close an inline step
+                // editor.
+                KeyCode::Enter => None,
+                KeyCode::Esc => Some(BoardIntent::CancelEdit),
+                KeyCode::Backspace => Some(BoardIntent::EditBackspace),
+                KeyCode::Delete => Some(BoardIntent::EditDeleteForward),
+                KeyCode::Left => Some(BoardIntent::EditMoveLeft),
+                KeyCode::Right => Some(BoardIntent::EditMoveRight),
+                // Vertical arrows navigate WRAPPED rows in the multiline Notes draft;
+                // Title, Thread, and Due are one line, so they stay inert there.
+                KeyCode::Up if focused == CaptureField::Notes => Some(BoardIntent::EditMoveUp),
+                KeyCode::Down if focused == CaptureField::Notes => Some(BoardIntent::EditMoveDown),
+                KeyCode::Home => Some(BoardIntent::EditMoveLineStart),
+                KeyCode::End => Some(BoardIntent::EditMoveLineEnd),
+                KeyCode::Char(character) if !character.is_control() => {
+                    Some(BoardIntent::EditInsert(character))
+                }
+                _ => None,
             }
-            // A one-line Title is finished by Enter: focus moves on to Notes. Saving stays
-            // Shift+Enter (matched above).
-            KeyCode::Enter
-                if focused == CaptureField::Title && navigation == FormEditNavigation::Form =>
-            {
-                Some(BoardIntent::FormFocusNext)
-            }
-            // A plain Enter must neither save a thread nor close an inline step editor.
-            KeyCode::Enter => None,
-            KeyCode::Esc => Some(BoardIntent::CancelEdit),
-            KeyCode::Backspace => Some(BoardIntent::EditBackspace),
-            KeyCode::Delete => Some(BoardIntent::EditDeleteForward),
-            KeyCode::Left => Some(BoardIntent::EditMoveLeft),
-            KeyCode::Right => Some(BoardIntent::EditMoveRight),
-            // Vertical arrows navigate WRAPPED rows in the multiline Notes draft;
-            // Title and Thread are one line, so they stay inert there.
-            KeyCode::Up if focused == CaptureField::Notes => Some(BoardIntent::EditMoveUp),
-            KeyCode::Down if focused == CaptureField::Notes => Some(BoardIntent::EditMoveDown),
-            KeyCode::Home => Some(BoardIntent::EditMoveLineStart),
-            KeyCode::End => Some(BoardIntent::EditMoveLineEnd),
-            KeyCode::Char(character) if !character.is_control() => {
-                Some(BoardIntent::EditInsert(character))
-            }
-            _ => None,
-        },
+        }
     }
 }
 
@@ -2220,12 +2265,14 @@ pub fn map_edit_paste(mode: BoardInputMode, text: &str) -> Option<BoardIntent> {
         BoardInputMode::EditTitle
         | BoardInputMode::EditNotes
         | BoardInputMode::EditThread
+        | BoardInputMode::EditDue
         | BoardInputMode::EditStep
         | BoardInputMode::BlockCard
         | BoardInputMode::EditReply
         | BoardInputMode::EditProjectTitle => Some(BoardIntent::EditInsertText(text.to_string())),
         BoardInputMode::SelectThread
         | BoardInputMode::SelectBase
+        | BoardInputMode::SelectDue
         | BoardInputMode::SelectAfter
         | BoardInputMode::EditScope
         | BoardInputMode::EditAssignee
@@ -2759,7 +2806,9 @@ pub fn map_capture_key_state(
             KeyCode::Char('p') | KeyCode::Char('e') => Some(CaptureIntent::BeginScopePathEdit),
             _ => None,
         },
-        CaptureField::Assignee | CaptureField::Base | CaptureField::After => None,
+        CaptureField::Assignee | CaptureField::Base | CaptureField::Due | CaptureField::After => {
+            None
+        }
     }
 }
 
@@ -2802,9 +2851,11 @@ pub fn map_capture_paste_state(
             Some(CaptureIntent::InsertText(text.to_string()))
         }
         CaptureField::Scope if path_editing => Some(CaptureIntent::InsertText(text.to_string())),
-        CaptureField::Scope | CaptureField::Assignee | CaptureField::Base | CaptureField::After => {
-            None
-        }
+        CaptureField::Scope
+        | CaptureField::Assignee
+        | CaptureField::Base
+        | CaptureField::Due
+        | CaptureField::After => None,
     }
 }
 
@@ -2835,7 +2886,11 @@ pub fn intent_primary_capture_action(intent: &CaptureIntent) -> Option<PrimaryCa
         ) => Some(PrimaryCaptureAction::EditField),
         // Scope row click cycles; path edit and focusing scope are scope interaction.
         CaptureIntent::FocusField(
-            CaptureField::Scope | CaptureField::Assignee | CaptureField::Base | CaptureField::After,
+            CaptureField::Scope
+            | CaptureField::Assignee
+            | CaptureField::Base
+            | CaptureField::Due
+            | CaptureField::After,
         )
         | CaptureIntent::CycleScope
         | CaptureIntent::SelectScope(_)

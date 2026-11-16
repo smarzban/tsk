@@ -1159,6 +1159,7 @@ fn board_keyboard_intent(
             BoardInputMode::EditTitle
                 | BoardInputMode::EditNotes
                 | BoardInputMode::EditThread
+                | BoardInputMode::EditDue
                 | BoardInputMode::EditStep
                 | BoardInputMode::Palette
                 | BoardInputMode::Help
@@ -1219,6 +1220,7 @@ fn board_keyboard_intent(
         BoardInputMode::EditTitle
             | BoardInputMode::EditNotes
             | BoardInputMode::EditThread
+            | BoardInputMode::EditDue
             | BoardInputMode::SelectBase
             | BoardInputMode::EditScope
             | BoardInputMode::EditAssignee
@@ -1316,11 +1318,14 @@ fn board_keyboard_intent(
     {
         return Some(BoardIntent::ToggleStep);
     }
-    // Task-page Thread has a selected state before its text cursor opens. It owns Enter and
-    // Tab itself, while capture's direct Thread editor keeps the shared form mapper.
+    // Task-page Thread and Due have a selected state before their text cursor opens. They own
+    // Enter and Tab themselves, while capture's direct editors keep the shared form mapper.
     if matches!(
         mode,
-        BoardInputMode::SelectThread | BoardInputMode::EditThread
+        BoardInputMode::SelectThread
+            | BoardInputMode::EditThread
+            | BoardInputMode::SelectDue
+            | BoardInputMode::EditDue
     ) && model.task_editing()
     {
         return map_key(mode, key);
@@ -11344,6 +11349,7 @@ mod tests {
             BoardInputMode::TaskPage,
             BoardInputMode::EditAssignee,
             BoardInputMode::SelectBase,
+            BoardInputMode::SelectDue,
             BoardInputMode::SelectAfter,
             BoardInputMode::SelectThread,
             BoardInputMode::EditScope,
@@ -11356,6 +11362,7 @@ mod tests {
             BoardInputMode::EditScope,
             BoardInputMode::SelectThread,
             BoardInputMode::SelectAfter,
+            BoardInputMode::SelectDue,
             BoardInputMode::SelectBase,
             BoardInputMode::EditAssignee,
             BoardInputMode::TaskPage,
@@ -11388,6 +11395,7 @@ mod tests {
             BoardInputMode::CapturePage,
             BoardInputMode::EditAssignee,
             BoardInputMode::SelectBase,
+            BoardInputMode::EditDue,
             BoardInputMode::SelectAfter,
             BoardInputMode::EditThread,
             BoardInputMode::EditScope,

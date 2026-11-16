@@ -82,6 +82,7 @@ pub enum EditedField {
     Thread,
     Project,
     After,
+    Due,
 }
 
 /// What a cleanup did with the dispatch's worktree and branch.

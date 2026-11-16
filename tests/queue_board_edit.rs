@@ -463,6 +463,8 @@ fn task_form_unifies_palette_field_routes_scope_dropdown_and_atomic_save() {
     assert_eq!(model.form_focus(), Some(CaptureField::Assignee));
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus Base");
     assert_eq!(model.form_focus(), Some(CaptureField::Base));
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus Due");
+    assert_eq!(model.form_focus(), Some(CaptureField::Due));
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus After");
     assert_eq!(model.form_focus(), Some(CaptureField::After));
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus Thread");
@@ -777,7 +779,9 @@ fn task_page_form_tab_cycle_wraps_through_title() {
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("Assignee to Base");
     assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
-    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Base to After");
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Base to Due");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectDue);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Due to After");
     assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
         .expect("After to Thread");
@@ -799,7 +803,10 @@ fn task_page_form_tab_cycle_wraps_through_title() {
         .expect("Thread reverses to After");
     assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
-        .expect("After reverses to Base");
+        .expect("After reverses to Due");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectDue);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
+        .expect("Due reverses to Base");
     assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusPrev, None)
         .expect("Base reverses to Assignee");
@@ -840,6 +847,8 @@ fn scope_and_thread_are_selected_controls_with_enter_activation() {
     assert_eq!(model.input_mode(), BoardInputMode::EditAssignee);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Base");
     assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Due");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectDue);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("After");
     assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("Thread");
@@ -1060,7 +1069,7 @@ fn page_edit_sets_thread_and_clearing_unthreads() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open form");
-    for _ in 0..6 {
+    for _ in 0..7 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
             .expect("focus next");
     }
@@ -1091,7 +1100,7 @@ fn page_edit_sets_thread_and_clearing_unthreads() {
     );
 
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("reopen form");
-    for _ in 0..6 {
+    for _ in 0..7 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None)
             .expect("focus thread");
     }
@@ -1124,7 +1133,7 @@ fn page_thread_field_refuses_invalid_name_without_persisting() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open");
-    for _ in 0..6 {
+    for _ in 0..7 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus");
     }
     apply_intent(
@@ -1165,7 +1174,7 @@ fn page_thread_field_accepts_version_dots() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open");
-    for _ in 0..6 {
+    for _ in 0..7 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus");
     }
     apply_intent(
@@ -1299,7 +1308,7 @@ fn editing_an_unthreaded_task_paints_a_labeled_thread_footer_slot() {
         .map(|cell| cell.symbol())
         .collect();
     assert!(
-        painted.contains("assignee · ⎇ default · after · thread · app "),
+        painted.contains("assignee · ⎇ default · due · after · thread · app "),
         "the unthreaded edit footer must label the leading Thread target: {painted}"
     );
     assert!(
@@ -1375,7 +1384,7 @@ fn thread_refusal_paints_inline_and_clears_without_status_leak() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open");
-    for _ in 0..6 {
+    for _ in 0..7 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus");
     }
     apply_intent(
@@ -1599,7 +1608,7 @@ fn page_footer_thread_edit_operable_at_40x10() {
         .expect("create");
     let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
     apply_intent(&mut domain, &mut model, BoardIntent::BeginEditTitle, None).expect("open");
-    for _ in 0..6 {
+    for _ in 0..7 {
         apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("focus");
     }
     apply_intent(
@@ -1655,6 +1664,8 @@ fn thread_paste_flattens_line_breaks_like_title() {
         .expect("select Assignee");
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("select Base");
     assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("select Due");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectDue);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("select After");
     assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
     apply_intent(&mut domain, &mut model, BoardIntent::FormFocusNext, None).expect("select Thread");
@@ -2295,4 +2306,231 @@ fn ctrl_u_and_ctrl_k_delete_to_the_line_edge_and_join_lines_in_notes() {
     let task = domain.get(id).expect("task");
     assert_eq!(task.title, "L");
     assert_eq!(task.notes.as_deref(), Some("oz"));
+}
+
+/// Open the task page edit session with the Due editor active on the only task.
+fn open_due_editor(domain: &mut DomainState, model: &mut BoardModel) {
+    apply_intent(domain, model, BoardIntent::BeginEditTitle, None).expect("open form");
+    for _ in 0..4 {
+        apply_intent(domain, model, BoardIntent::FormFocusNext, None).expect("tab");
+    }
+    assert_eq!(model.input_mode(), BoardInputMode::SelectBase);
+    apply_intent(domain, model, BoardIntent::FormFocusNext, None).expect("Base to Due");
+    assert_eq!(model.input_mode(), BoardInputMode::SelectDue);
+    let enter = map_key(
+        BoardInputMode::SelectDue,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    )
+    .expect("Enter on the selected Due");
+    assert_eq!(enter, BoardIntent::ToggleDueEditing);
+    apply_intent(domain, model, enter, None).expect("open due editor");
+    assert_eq!(model.input_mode(), BoardInputMode::EditDue);
+}
+
+fn type_text(domain: &mut DomainState, model: &mut BoardModel, text: &str) {
+    for character in text.chars() {
+        apply_intent(domain, model, BoardIntent::EditInsert(character), None).expect("type");
+    }
+}
+
+fn due_task(domain: &mut DomainState) -> uuid::Uuid {
+    domain
+        .create(
+            "Dated",
+            None,
+            project(THIS_REPO),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("create")
+}
+
+#[test]
+fn page_edit_sets_the_due_day_with_a_paper_trail_entry_and_empty_clears_it() {
+    let mut domain = DomainState::new();
+    let id = due_task(&mut domain);
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    open_due_editor(&mut domain, &mut model);
+    type_text(&mut domain, &mut model, "2026-11-30");
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save"),
+        IntentOutcome::Persist
+    );
+    let task = domain.get(id).expect("task");
+    assert_eq!(task.due.as_deref(), Some("2026-11-30"));
+    let edited = task.history.last().expect("edited event");
+    assert_eq!(edited.kind, tsk_tui::domain::TaskEventKind::Edited);
+    assert_eq!(
+        edited.detail.as_ref().map(|detail| detail.fields.clone()),
+        Some(vec![tsk_tui::domain::EditedField::Due]),
+        "one save, one edited event naming the due day"
+    );
+    model.sync_from_domain(&domain);
+    assert!(
+        rendered_board(&model, 80, 24).contains("due 2026-11-30"),
+        "the view footer shows the saved day"
+    );
+
+    open_due_editor(&mut domain, &mut model);
+    assert_eq!(
+        model.edit_buffer(),
+        "2026-11-30",
+        "the editor opens on the day"
+    );
+    for _ in 0.."2026-11-30".len() {
+        apply_intent(&mut domain, &mut model, BoardIntent::EditBackspace, None).expect("clear");
+    }
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save"),
+        IntentOutcome::Persist
+    );
+    assert_eq!(domain.get(id).expect("task").due, None);
+}
+
+#[test]
+fn a_due_only_draft_is_unsaved_work() {
+    let mut domain = DomainState::new();
+    due_task(&mut domain);
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    open_due_editor(&mut domain, &mut model);
+    assert!(!model.task_session_dirty(), "an untouched form is clean");
+    type_text(&mut domain, &mut model, "2026-11-30");
+    assert!(model.task_session_dirty(), "a typed day is a change");
+    assert!(model.has_unsaved_work());
+}
+
+#[test]
+fn page_edit_takes_a_one_digit_month_and_day_and_saves_them_padded() {
+    let mut domain = DomainState::new();
+    let id = due_task(&mut domain);
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    open_due_editor(&mut domain, &mut model);
+    type_text(&mut domain, &mut model, "2020-8-8");
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save"),
+        IntentOutcome::Persist
+    );
+    assert_eq!(
+        domain.get(id).expect("task").due.as_deref(),
+        Some("2020-08-08")
+    );
+}
+
+#[test]
+fn a_bad_due_day_refuses_the_save_and_keeps_the_form_with_the_refusal_painted() {
+    let mut domain = DomainState::new();
+    let id = due_task(&mut domain);
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    open_due_editor(&mut domain, &mut model);
+    type_text(&mut domain, &mut model, "2026-02-30");
+    // Save from another field: the refusal must still show where the bad day is.
+    apply_intent(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(CaptureField::Title),
+        None,
+    )
+    .expect("focus title");
+    type_text(&mut domain, &mut model, " renamed");
+    let before = domain.get(id).expect("task").clone();
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("refusal"),
+        IntentOutcome::None
+    );
+    assert_eq!(domain.get(id).expect("task"), &before, "nothing is saved");
+    assert!(model.board_form_open(), "the form outlives the refusal");
+    assert!(model.task_editing(), "the edit session stays open");
+    assert_eq!(model.input_mode(), BoardInputMode::EditDue);
+    assert_eq!(model.edit_buffer(), "2026-02-30", "the draft is kept");
+    let painted = rendered_board(&model, 80, 24);
+    assert!(
+        painted.contains("due 2026-02-30: that day does not exist in the calendar"),
+        "the refusal is painted: {painted}"
+    );
+    assert!(painted.contains("Dated renamed"), "other drafts survive");
+
+    // Typing clears the refusal; a good day then saves the whole session.
+    for _ in 0..2 {
+        apply_intent(&mut domain, &mut model, BoardIntent::EditBackspace, None).expect("fix");
+    }
+    type_text(&mut domain, &mut model, "28");
+    assert!(!rendered_board(&model, 80, 24).contains("does not exist"));
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save"),
+        IntentOutcome::Persist
+    );
+    let task = domain.get(id).expect("task");
+    assert_eq!(task.due.as_deref(), Some("2026-02-28"));
+    assert_eq!(task.title, "Dated renamed");
+}
+
+/// Saving from a typed new step row keeps the row, so the bad day's refusal is said on the
+/// status row instead, where it is painted.
+#[test]
+fn a_bad_due_day_saved_from_a_typed_new_step_row_is_still_painted() {
+    let mut domain = DomainState::new();
+    let id = due_task(&mut domain);
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    open_due_editor(&mut domain, &mut model);
+    type_text(&mut domain, &mut model, "2026-02-30");
+    apply_intent(&mut domain, &mut model, BoardIntent::BeginAddStep, None).expect("add step");
+    assert_eq!(model.input_mode(), BoardInputMode::EditStep);
+    type_text(&mut domain, &mut model, "new step");
+    let save = map_key(
+        BoardInputMode::EditStep,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+    )
+    .expect("shift+enter");
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, save, None).expect("refusal"),
+        IntentOutcome::None
+    );
+    assert!(
+        domain.get(id).expect("task").steps.is_empty(),
+        "nothing saved"
+    );
+    assert_eq!(
+        model.input_mode(),
+        BoardInputMode::EditStep,
+        "the row stays"
+    );
+    let painted = rendered_board(&model, 80, 24);
+    assert!(
+        painted.contains("due 2026-02-30: that day does not exist in the calendar"),
+        "the refusal is painted: {painted}"
+    );
+    assert!(
+        painted.contains("new step"),
+        "the typed row survives: {painted}"
+    );
+}
+
+/// Due is a page field like title or base: a save that changes only the day pushes no undo
+/// entry, so `ctrl+u` afterwards leaves the new day in place.
+#[test]
+fn a_due_only_page_save_is_not_undoable() {
+    let mut domain = DomainState::new();
+    let id = due_task(&mut domain);
+    domain
+        .edit_due(id, Some("2026-11-01".into()))
+        .expect("seed due day, not undoable");
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    open_due_editor(&mut domain, &mut model);
+    for _ in 0..2 {
+        apply_intent(&mut domain, &mut model, BoardIntent::EditBackspace, None).expect("edit");
+    }
+    type_text(&mut domain, &mut model, "30");
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save"),
+        IntentOutcome::Persist
+    );
+    model.sync_from_domain(&domain);
+
+    apply_intent(&mut domain, &mut model, BoardIntent::Undo, None).expect("ctrl+u");
+    assert_eq!(model.message(), Some("nothing to undo"));
+    assert_eq!(
+        domain.get(id).expect("task").due.as_deref(),
+        Some("2026-11-30"),
+        "the saved day stays"
+    );
 }

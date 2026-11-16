@@ -753,7 +753,7 @@ import { parseCapture } from "./capture.js";
   function sortChoices(owner = "outer") {
     if (owner === "projects") return PROJECT_SORTS;
     const slot = layoutSlot(owner);
-    return ["recent", "project", "thread", "title", "assignee"].filter(
+    return ["recent", "project", "thread", "title", "assignee", "due"].filter(
       (sort) => sort !== slot,
     );
   }
@@ -815,6 +815,7 @@ import { parseCapture } from "./capture.js";
     thread: (t) => (t.thread ? [0, t.thread.toLowerCase()] : [1, ""]),
     title: (t) => [0, t.title.toLowerCase()],
     assignee: (t) => (t.assignee ? [0, t.assignee.toLowerCase()] : [1, ""]),
+    due: (t) => (t.due ? [0, t.due] : [1, ""]),
   };
   function sortRows(tasks, sort) {
     const key = SORT_KEYS[sort];
@@ -3034,7 +3035,7 @@ import { parseCapture } from "./capture.js";
 
   function captureDirectives(raw) {
     const parts = String(raw).trim().split(/\s+/).filter(Boolean);
-    const tokens = new Set(["!p", "!t", "!a", "!b", "!w"]);
+    const tokens = new Set(["!p", "!t", "!a", "!b", "!d", "!w"]);
     const directives = [];
     for (let i = 0; i < parts.length; i += 1) {
       if (!tokens.has(parts[i])) continue;
@@ -3079,6 +3080,7 @@ import { parseCapture } from "./capture.js";
       project: parsed.project,
       assignee: parsed.assignee === undefined ? null : parsed.assignee,
       base: parsed.base === undefined ? null : parsed.base,
+      due: parsed.due ?? null,
       after: [...(parsed.after || [])],
       status: "open",
       createdAt: now,
@@ -3248,6 +3250,7 @@ import { parseCapture } from "./capture.js";
       thread: parsed.thread === undefined ? null : parsed.thread,
       assignee: parsed.assignee === undefined ? null : parsed.assignee,
       base: parsed.base === undefined ? null : parsed.base,
+      due: parsed.due ?? null,
       after: [...(parsed.after || [])],
       createdAt: now,
       updatedAt: now,
@@ -4400,7 +4403,7 @@ import { parseCapture } from "./capture.js";
           );
     const footer =
       state.overlay === "quick" && !state.quickExpanded
-        ? `<div class="tsk-input-row"><span class="tsk-prompt">+</span><input class="tsk-field" id="tsk-add" value="${esc(state.draft)}" placeholder="title…   !p project · !t thread · !a assignee · !b base" autocomplete="off" /><span class="cursor">█</span></div>
+        ? `<div class="tsk-input-row"><span class="tsk-prompt">+</span><input class="tsk-field" id="tsk-add" value="${esc(state.draft)}" placeholder="title…   !p project · !t thread · !a assignee · !b base · !d due" autocomplete="off" /><span class="cursor">█</span></div>
            <div class="foot dim tsk-verbs">${
              state.refuse
                ? esc(state.refuse)

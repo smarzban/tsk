@@ -1230,6 +1230,8 @@ pub enum QueueHitTarget {
     FormBase,
     /// Shared-form `after` portion of the task-page footer.
     FormAfter,
+    /// Shared-form `due` portion of the task-page footer.
+    FormDue,
     /// One number of the task-page footer's read-only `before T6, T7`: a click opens it.
     FooterBefore(u64),
     /// Shared-form thread portion of the task-page footer.
@@ -2423,7 +2425,7 @@ pub(crate) fn form_verb_items(
     match focus {
         CaptureField::Title => FORM_TITLE_VERBS,
         CaptureField::Notes => FORM_NOTES_VERBS,
-        CaptureField::Thread => FORM_THREAD_VERBS,
+        CaptureField::Thread | CaptureField::Due => FORM_THREAD_VERBS,
         CaptureField::Scope => FORM_SCOPE_VERBS,
         CaptureField::Assignee => FORM_ASSIGNEE_VERBS,
         CaptureField::Base | CaptureField::After => FORM_BASE_VERBS,
@@ -4103,6 +4105,7 @@ fn paint_task_page(
         let mut component_x = 0u16;
         let mut thread_slot = None;
         let mut after_slot = None;
+        let mut due_slot = None;
         let mut before_slots: Vec<(u64, u16, u16)> = Vec::new();
         for component in meta.split(" · ") {
             if component_x >= meta_scope_x {
@@ -4125,6 +4128,9 @@ fn paint_task_page(
             if component == "after" || component.starts_with("after T") {
                 after_slot = Some((component_x, component_width));
             }
+            if component == "due" || component.starts_with("due ") {
+                due_slot = Some((component_x, component_width));
+            }
             component_x = component_x
                 .saturating_add(component_width)
                 .saturating_add(3);
@@ -4144,6 +4150,7 @@ fn paint_task_page(
                 QueueHitTarget::FormBase,
                 meta_base_x.map(|x| (x, meta_base_width)),
             ),
+            (CaptureField::Due, QueueHitTarget::FormDue, due_slot),
             (CaptureField::After, QueueHitTarget::FormAfter, after_slot),
             (
                 CaptureField::Thread,
@@ -7964,8 +7971,13 @@ mod tests {
 
     #[test]
     fn a_placeholder_drops_trailing_hints_whole() {
-        let hints = "title…   !p project · !t thread · !a assignee · !b base";
-        assert_eq!(fit_placeholder(hints, 60), hints);
+        let hints = "title…   !p project · !t thread · !a assignee · !b base · !d due";
+        assert_eq!(fit_placeholder(hints, 64), hints);
+        // The last hint goes first, whole.
+        assert_eq!(
+            fit_placeholder(hints, 63),
+            "title…   !p project · !t thread · !a assignee · !b base"
+        );
         // The 41-column quick-add line leaves 39 cells after its prompt glyph.
         assert_eq!(
             fit_placeholder(hints, 39),

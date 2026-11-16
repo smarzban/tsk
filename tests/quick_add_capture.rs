@@ -829,6 +829,12 @@ fn expanded_page_stashes_notes_and_scope_across_esc_and_saves_like_quick_add() {
         Some(tsk_tui::ui::capture::CaptureField::Base)
     );
     apply(&mut domain, &mut model, BoardIntent::FormFocusNext, None);
+    assert_eq!(model.input_mode(), BoardInputMode::EditDue);
+    assert_eq!(
+        model.form_focus(),
+        Some(tsk_tui::ui::capture::CaptureField::Due)
+    );
+    apply(&mut domain, &mut model, BoardIntent::FormFocusNext, None);
     assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);
     assert_eq!(
         model.form_focus(),
@@ -975,6 +981,124 @@ fn malformed_t_token_refuses_on_open_line_and_clears_on_close() {
     apply(&mut domain, &mut model, BoardIntent::CancelQuickAdd, None);
     assert_eq!(model.input_mode(), BoardInputMode::Normal);
     assert_eq!(model.message(), None);
+}
+
+#[test]
+fn d_token_gives_the_new_task_its_due_day() {
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, None);
+
+    save_quick_add(&mut domain, &mut model, "ship !d 2026-11-30 soon");
+
+    let task = domain.tasks().last().expect("saved task");
+    assert_eq!(task.title, "ship soon");
+    assert_eq!(task.due.as_deref(), Some("2026-11-30"));
+}
+
+#[test]
+fn bad_or_bare_d_token_refuses_and_keeps_the_draft_open() {
+    for (line, words) in [
+        (
+            "ship !d 2026-02-30",
+            "due 2026-02-30: that day does not exist in the calendar",
+        ),
+        (
+            "ship !d tomorrow",
+            "due tomorrow: a due date is a day written YYYY-MM-DD",
+        ),
+        ("ship !d", "!d needs a day like 2026-11-30"),
+    ] {
+        let mut domain = DomainState::new();
+        let mut model = BoardModel::from_domain(&domain, None);
+        open(&mut domain, &mut model, &snapshot());
+        type_title(&mut domain, &mut model, line);
+        assert_eq!(
+            apply(&mut domain, &mut model, BoardIntent::QuickAddSave, None),
+            IntentOutcome::None,
+            "{line}"
+        );
+        assert_eq!(model.input_mode(), BoardInputMode::QuickAdd, "{line}");
+        assert_eq!(
+            model.quick_add_title_value(),
+            line,
+            "the draft stays as typed"
+        );
+        assert_eq!(model.message(), Some(words), "{line}");
+        assert!(domain.tasks().is_empty(), "{line}: nothing is created");
+        assert_eq!(
+            apply(&mut domain, &mut model, BoardIntent::ExpandQuickAdd, None),
+            IntentOutcome::None
+        );
+        assert_eq!(
+            model.input_mode(),
+            BoardInputMode::QuickAdd,
+            "{line}: Tab refuses to expand it too"
+        );
+    }
+}
+
+#[test]
+fn expanded_quick_add_carries_the_d_token_into_its_due_field_and_saves_it() {
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, None);
+    open(&mut domain, &mut model, &snapshot());
+    type_title(&mut domain, &mut model, "dated draft !d 2026-11-30");
+    apply(&mut domain, &mut model, BoardIntent::ExpandQuickAdd, None);
+    assert_eq!(model.input_mode(), BoardInputMode::EditNotes);
+    assert!(
+        render_text(&model, 80, 24).contains("due 2026-11-30"),
+        "the expanded draft's footer shows the lifted day"
+    );
+    apply(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(tsk_tui::ui::capture::CaptureField::Due),
+        None,
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::EditDue);
+    assert_eq!(model.edit_buffer(), "2026-11-30");
+    assert_eq!(
+        apply(&mut domain, &mut model, BoardIntent::ConfirmEdit, None),
+        IntentOutcome::Persist
+    );
+    let task = domain.tasks().last().expect("saved task");
+    assert_eq!(task.title, "dated draft");
+    assert_eq!(task.due.as_deref(), Some("2026-11-30"));
+}
+
+#[test]
+fn a_bad_day_in_the_expanded_drafts_due_field_refuses_the_save_and_keeps_the_draft() {
+    let mut domain = DomainState::new();
+    let mut model = BoardModel::from_domain(&domain, None);
+    open(&mut domain, &mut model, &snapshot());
+    type_title(&mut domain, &mut model, "dated draft");
+    apply(&mut domain, &mut model, BoardIntent::ExpandQuickAdd, None);
+    apply(
+        &mut domain,
+        &mut model,
+        BoardIntent::FocusFormField(tsk_tui::ui::capture::CaptureField::Due),
+        None,
+    );
+    assert_eq!(model.input_mode(), BoardInputMode::EditDue);
+    for character in "2026-2-30".chars() {
+        apply(
+            &mut domain,
+            &mut model,
+            BoardIntent::EditInsert(character),
+            None,
+        );
+    }
+    assert_eq!(
+        apply(&mut domain, &mut model, BoardIntent::ConfirmEdit, None),
+        IntentOutcome::None
+    );
+    assert!(domain.tasks().is_empty(), "nothing is created");
+    assert_eq!(model.input_mode(), BoardInputMode::EditDue);
+    assert_eq!(model.edit_buffer(), "2026-2-30", "the typed day stays");
+    assert!(
+        render_text(&model, 80, 24).contains("that day does not exist in the calendar"),
+        "the refusal is painted"
+    );
 }
 
 #[test]
@@ -1559,6 +1683,12 @@ fn expanded_quick_add_sets_thread_and_steps() {
     assert_eq!(
         model.form_focus(),
         Some(tsk_tui::ui::capture::CaptureField::Base)
+    );
+    apply(&mut domain, &mut model, BoardIntent::FormFocusNext, None);
+    assert_eq!(model.input_mode(), BoardInputMode::EditDue);
+    assert_eq!(
+        model.form_focus(),
+        Some(tsk_tui::ui::capture::CaptureField::Due)
     );
     apply(&mut domain, &mut model, BoardIntent::FormFocusNext, None);
     assert_eq!(model.input_mode(), BoardInputMode::SelectAfter);

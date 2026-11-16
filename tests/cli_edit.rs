@@ -445,7 +445,7 @@ fn edit_without_fields_is_usage() {
     assert!(output
         .stderr
         .contains(
-        "title, notes, append-notes, assignee, base, after, on, --unassign, --clear-base, or --clear-after is required"
+        "title, notes, append-notes, assignee, base, due, after, on, --unassign, --clear-base, --clear-due, or --clear-after is required"
     ));
 }
 

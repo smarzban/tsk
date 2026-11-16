@@ -540,6 +540,7 @@ pub fn map_responsive_board_mouse(
             BoardInputMode::EditTitle
                 | BoardInputMode::EditNotes
                 | BoardInputMode::EditThread
+                | BoardInputMode::EditDue
                 | BoardInputMode::EditScope
                 | BoardInputMode::FormDropdown
         );
@@ -675,6 +676,8 @@ pub fn map_scrollbar_mouse(
             | BoardInputMode::EditScope
             | BoardInputMode::EditThread
             | BoardInputMode::SelectThread
+            | BoardInputMode::EditDue
+            | BoardInputMode::SelectDue
     ) {
         *dragging = false;
         return ScrollbarMouse::Miss;
@@ -714,6 +717,8 @@ fn wheel_board_intent(model: &BoardModel, kind: MouseEventKind) -> Option<BoardI
         | BoardInputMode::EditScope
         | BoardInputMode::EditThread
         | BoardInputMode::SelectThread
+        | BoardInputMode::EditDue
+        | BoardInputMode::SelectDue
         | BoardInputMode::EditStep => match kind {
             MouseEventKind::ScrollUp => Some(BoardIntent::PageWheelScrollUp),
             MouseEventKind::ScrollDown => Some(BoardIntent::PageWheelScrollDown),
@@ -775,6 +780,8 @@ pub fn map_board_mouse(
                 | BoardInputMode::EditScope
                 | BoardInputMode::EditThread
                 | BoardInputMode::SelectThread
+                | BoardInputMode::EditDue
+                | BoardInputMode::SelectDue
                 | BoardInputMode::EditStep
         )
     {
@@ -871,6 +878,7 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::FormThread) => {
                 Some(BoardIntent::FocusFormField(CaptureField::Thread))
             }
+            Some(QueueHitTarget::FormDue) => Some(BoardIntent::FocusFormField(CaptureField::Due)),
             Some(QueueHitTarget::Step(index)) if model.task_editing() => {
                 Some(BoardIntent::SelectStep(index))
             }
@@ -878,8 +886,32 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::Verb(index)) => form_verb_intent(model, index),
             _ => None,
         },
-        BoardInputMode::SelectThread | BoardInputMode::EditThread => match hit_at(hits, pos) {
-            Some(QueueHitTarget::FormThread) => Some(BoardIntent::ToggleThreadEditing),
+        // A second click on the selected footer text field opens or closes its editor; a
+        // click on the other one moves there.
+        BoardInputMode::SelectThread
+        | BoardInputMode::EditThread
+        | BoardInputMode::SelectDue
+        | BoardInputMode::EditDue => match hit_at(hits, pos) {
+            Some(QueueHitTarget::FormThread)
+                if matches!(
+                    model.input_mode(),
+                    BoardInputMode::SelectThread | BoardInputMode::EditThread
+                ) =>
+            {
+                Some(BoardIntent::ToggleThreadEditing)
+            }
+            Some(QueueHitTarget::FormThread) => {
+                Some(BoardIntent::FocusFormField(CaptureField::Thread))
+            }
+            Some(QueueHitTarget::FormDue)
+                if matches!(
+                    model.input_mode(),
+                    BoardInputMode::SelectDue | BoardInputMode::EditDue
+                ) =>
+            {
+                Some(BoardIntent::ToggleDueEditing)
+            }
+            Some(QueueHitTarget::FormDue) => Some(BoardIntent::FocusFormField(CaptureField::Due)),
             Some(QueueHitTarget::FormTitle) => {
                 Some(BoardIntent::FocusFormField(CaptureField::Title))
             }
@@ -911,6 +943,9 @@ pub fn map_board_mouse(
             }
             Some(QueueHitTarget::FormThread) if model.task_editing() => {
                 Some(BoardIntent::FocusFormField(CaptureField::Thread))
+            }
+            Some(QueueHitTarget::FormDue) if model.task_editing() => {
+                Some(BoardIntent::FocusFormField(CaptureField::Due))
             }
             Some(QueueHitTarget::FormScope) if model.task_editing() => {
                 Some(BoardIntent::OpenFormDropdown(CaptureField::Scope))
@@ -954,6 +989,7 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::FormThread) => {
                 Some(BoardIntent::FocusFormField(CaptureField::Thread))
             }
+            Some(QueueHitTarget::FormDue) => Some(BoardIntent::FocusFormField(CaptureField::Due)),
             Some(QueueHitTarget::FormScope) => {
                 Some(BoardIntent::OpenFormDropdown(CaptureField::Scope))
             }

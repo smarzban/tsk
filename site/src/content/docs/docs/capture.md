@@ -17,7 +17,7 @@ Add a task without leaving your work: quick-add on the board, the Herdr or Rex p
 
 ## Details
 
-Press `Tab` on the line to open the full draft in Notes. It holds the task page's fields in the same [order](/docs/task-page/#edit): notes, steps, assignee, base, after, thread, and scope.
+Press `Tab` on the line to open the full draft in Notes. It holds the task page's fields in the same [order](/docs/task-page/#edit): notes, steps, assignee, base, due, after, thread, and scope.
 
 - `shift+Enter` saves.
 - `Esc` returns to the line. `Tab` brings your details back while the line is unchanged.
@@ -35,11 +35,11 @@ Title tokens or the draft's Scope field change the destination. Archived project
 
 ## Title tokens
 
-Set a project, thread, assignee, base branch, or the tasks to run after while you type the title:
+Set a project, thread, assignee, base branch, due day, or the tasks to run after while you type the title:
 
 ```text
 Fix login timeout !p atlas !t auth !a reviewer !b main
-Ship the release notes !w T202 !w T205
+Ship the release notes !w T202 !w T205 !d 2026-11-30
 Buy coffee !p !a
 ```
 
@@ -53,6 +53,7 @@ Buy coffee !p !a
 | `!a` | Unassigned |
 | `!a name` | That agent profile, you (`!a me`), or a person, by the [assignee name](/docs/dispatch/#assignee-names) rules |
 | `!b branch` | The dispatch base: an existing local or remote branch in the task's repository |
+| `!d 2026-11-30` | The due day, written `YYYY-MM-DD`, or `2026-8-8` with a one-digit month or day |
 | `!w T202` | Run after T202 ("wait for"). Repeat for several. `!w 202` works too |
 
 - Each token takes one word. Put a bare `!p`, `!t`, or `!a` at the end, or before another token or a `#word`.
@@ -60,6 +61,7 @@ Buy coffee !p !a
 - `!p name` must match one project the board knows: one with tasks, or the launch repository. Otherwise the draft stays open and says so, such as `project atlss is not on the board`. An archived project refuses with `project atlas is archived`.
 - `!p` creates a project only from an existing absolute directory, `/…` or `~/…`. A relative path or a file keeps the draft open.
 - `!b` is checked against the branches on disk, without fetching. An unknown branch refuses on save and keeps the draft open. [Base branch](/docs/dispatch/#base-branch).
+- `!d` needs a real day. A day that does not exist, a different format, or a bare `!d` refuses and keeps the draft open, such as `due 2026-02-30: that day does not exist in the calendar`.
 - `!w` takes any task number on the board, in any project. A missing or done task refuses and keeps the draft open. [After](/docs/board/#after).
 
 ## Thread names

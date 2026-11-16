@@ -82,6 +82,9 @@ review is on you (`review.on` names your profile), never on a review you asked f
     ([JSON plans](https://gettsk.sh/docs/cli.md#json-plans)).
 12. **A restored task may change number.** `tsk trash restore T12` prints the number it got; use that
     one from then on ([trash](https://gettsk.sh/docs/cli.md#trash)).
+13. **A due date is a day.** `--due YYYY-MM-DD` on `tsk add` and `tsk edit`, `--clear-due` to remove
+    it; a time, a zone, or a word refuses with `invalid-due`. Order by it with
+    `tsk list --sort due --json` ([edit](https://gettsk.sh/docs/cli.md#edit)).
 
 ## Reading the board
 
