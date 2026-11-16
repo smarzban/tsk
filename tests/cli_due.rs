@@ -124,7 +124,11 @@ fn only_a_real_yyyy_mm_dd_day_is_accepted() {
         "2100-02-29",
         "0000-01-01",
         "tomorrow",
-        "2026-2-3",
+        "2026-02-003",
+        "2026--3",
+        "2026-2-",
+        "-2026-2-3",
+        "2026-+2-3",
         "26-02-03",
         "",
         " 2026-03-15",
@@ -175,6 +179,48 @@ fn only_a_real_yyyy_mm_dd_day_is_accepted() {
         assert_eq!(added.code, 0, "{good}: {added:?}");
         assert_eq!(board.row(&title)["due"], good);
     }
+}
+
+/// A one-digit month or day is accepted on `add`, `edit` and a plan item, and stored padded,
+/// so it sorts and dedupes like the padded spelling.
+#[test]
+fn a_one_digit_month_or_day_is_accepted_and_stored_padded() {
+    let board = Board::new("short-day");
+    for (typed, stored) in [
+        ("2020-8-8", "2020-08-08"),
+        ("2020-08-8", "2020-08-08"),
+        ("2020-8-08", "2020-08-08"),
+        ("2026-12-1", "2026-12-01"),
+    ] {
+        let title = format!("short-{typed}");
+        assert_eq!(board.add(&title, &[&format!("--due={typed}")]).code, 0);
+        assert_eq!(board.row(&title)["due"], stored, "add {typed}");
+    }
+    assert_eq!(board.add("edited", &[]).code, 0);
+    let number = board.row("edited")["number"].as_u64().expect("number");
+    let task = format!("T{number}");
+    assert_eq!(board.run(&["edit", &task, "--due", "2027-1-2"]).code, 0);
+    assert_eq!(board.row("edited")["due"], "2027-01-02");
+    let before = board.store_bytes();
+    assert_eq!(board.run(&["edit", &task, "--due", "2027-01-02"]).code, 0);
+    assert_eq!(
+        board.store_bytes(),
+        before,
+        "the padded spelling of the same day is no change"
+    );
+    assert_eq!(
+        board.add("short-2020-8-8", &["--due", "2020-08-08"]).code,
+        0
+    );
+    assert_eq!(
+        board
+            .rows(&["--desk"])
+            .iter()
+            .filter(|row| row["title"] == "short-2020-8-8")
+            .count(),
+        1,
+        "the same title and day is the same task whichever spelling"
+    );
 }
 
 #[test]

@@ -2388,6 +2388,23 @@ fn page_edit_sets_the_due_day_with_a_paper_trail_entry_and_empty_clears_it() {
 }
 
 #[test]
+fn page_edit_takes_a_one_digit_month_and_day_and_saves_them_padded() {
+    let mut domain = DomainState::new();
+    let id = due_task(&mut domain);
+    let mut model = BoardModel::from_domain(&domain, Some(PathBuf::from(THIS_REPO)));
+    open_due_editor(&mut domain, &mut model);
+    type_text(&mut domain, &mut model, "2020-8-8");
+    assert_eq!(
+        apply_intent(&mut domain, &mut model, BoardIntent::ConfirmEdit, None).expect("save"),
+        IntentOutcome::Persist
+    );
+    assert_eq!(
+        domain.get(id).expect("task").due.as_deref(),
+        Some("2020-08-08")
+    );
+}
+
+#[test]
 fn a_bad_due_day_refuses_the_save_and_keeps_the_form_with_the_refusal_painted() {
     let mut domain = DomainState::new();
     let id = due_task(&mut domain);

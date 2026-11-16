@@ -210,8 +210,10 @@ pub fn lift_quick_add_tokens(
             "!d" => {
                 let text = quick_add_token_argument(&words, index)
                     .ok_or_else(|| QUICK_ADD_DUE_NEEDS_DAY.to_string())?;
-                crate::domain::parse_due(text).map_err(|error| format!("due {text}: {error}"))?;
-                due = Some(text.to_owned());
+                due = Some(
+                    crate::domain::parse_due(text)
+                        .map_err(|error| format!("due {text}: {error}"))?,
+                );
                 index += 2;
             }
             // `!w T202`: run after T202 ("wait for"). Unknown or done tasks refuse.
@@ -363,6 +365,11 @@ mod tests {
         let tokens = lift("Ship it !d 2026-11-30 soon").expect("lift");
         assert_eq!(tokens.title, "Ship it soon");
         assert_eq!(tokens.due.as_deref(), Some("2026-11-30"));
+        // A one-digit month and day are padded.
+        assert_eq!(
+            lift("pay !d 2020-8-8").expect("lift").due.as_deref(),
+            Some("2020-08-08")
+        );
         assert_eq!(lift("No day").expect("lift").due, None);
         assert_eq!(
             lift("Ship !d 2026-02-30").map(|_| ()),

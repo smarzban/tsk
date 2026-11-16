@@ -404,7 +404,7 @@ tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--a
 | `--clear-after` | Run after nothing |
 | `--on <who>` | Change who the open block or review waits on, as for [block](#block) and [review](#review) `--on` |
 
-- `--due` takes a calendar day that exists: `2028-02-29` is accepted, `2027-02-29` is not. A time, a time zone, or a word such as `tomorrow` refuses with `invalid-due`. A due date changes neither the status nor `--after`.
+- `--due` takes a calendar day that exists: `2028-02-29` is accepted, `2027-02-29` is not. A one-digit month or day works too: `2020-8-8` is stored as `2020-08-08`. A time, a time zone, or a word such as `tomorrow` refuses with `invalid-due`. A due date changes neither the status nor `--after`.
 - `--after` takes tasks in any project. It refuses the task itself, a task not on the board, or a done one (`invalid-after`), and a link that would close a loop (`after-loop`). There is no `--before`: set the other task's `--after`.
 - `--on` keeps the round, its text, checks, and replies. A task with no open block or review refuses with `not-blocked`.
 - Output is `edited T12 <title>`, plus `assigned T12 to @dana (not an agent profile)` for a person. Repeating the same values is safe.

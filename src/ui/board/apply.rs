@@ -4725,7 +4725,7 @@ fn form_due(value: &str) -> Result<Option<String>, String> {
         return Ok(None);
     }
     crate::domain::parse_due(value)
-        .map(|day| Some(day.to_string()))
+        .map(Some)
         .map_err(|error| format!("due {value}: {error}"))
 }
 

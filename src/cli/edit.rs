@@ -90,7 +90,7 @@ impl EditError {
 /// repeated append adds its text again.
 pub fn run(
     target: TaskAddress,
-    fields: EditFields,
+    mut fields: EditFields,
     state_dir: Option<PathBuf>,
 ) -> Result<EditResult, EditError> {
     if let Some(title) = fields.title.as_deref() {
@@ -101,8 +101,8 @@ pub fn run(
             return Err(EditError::EmptyTitle);
         }
     }
-    if let Some(text) = fields.due.as_ref().and_then(|due| due.as_deref()) {
-        crate::domain::parse_due(text)
+    if let Some(Some(text)) = fields.due.as_mut() {
+        *text = crate::domain::parse_due(text)
             .map_err(|error| EditError::InvalidDue(format!("{text:?}: {error}")))?;
     }
     let state_dir = state_dir.unwrap_or_else(default_state_dir);

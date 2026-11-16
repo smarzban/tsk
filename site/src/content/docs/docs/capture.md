@@ -53,7 +53,7 @@ Buy coffee !p !a
 | `!a` | Unassigned |
 | `!a name` | That agent profile, you (`!a me`), or a person, by the [assignee name](/docs/dispatch/#assignee-names) rules |
 | `!b branch` | The dispatch base: an existing local or remote branch in the task's repository |
-| `!d 2026-11-30` | The due day, written `YYYY-MM-DD` |
+| `!d 2026-11-30` | The due day, written `YYYY-MM-DD`, or `2026-8-8` with a one-digit month or day |
 | `!w T202` | Run after T202 ("wait for"). Repeat for several. `!w 202` works too |
 
 - Each token takes one word. Put a bare `!p`, `!t`, or `!a` at the end, or before another token or a `#word`.

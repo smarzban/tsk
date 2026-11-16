@@ -82,6 +82,7 @@ test("demo capture lifts a due day and refuses a bad or missing one", () => {
     parseCapture("Ship !d tomorrow", null).refuse,
     "due tomorrow: a due date is a day written YYYY-MM-DD",
   );
+  assert.equal(parseCapture("Ship !d 2020-8-8", null).due, "2020-08-08");
   assert.equal(
     parseCapture("Ship !d", null).refuse,
     "!d needs a day like 2026-11-30",

@@ -145,10 +145,13 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
     if title.is_empty() {
         return Err(AddError::EmptyTitle);
     }
-    if let Some(text) = input.due.as_deref() {
-        crate::domain::parse_due(text)
-            .map_err(|error| AddError::InvalidDue(format!("{text:?}: {error}")))?;
-    }
+    let due = match input.due.as_deref() {
+        Some(text) => Some(
+            crate::domain::parse_due(text)
+                .map_err(|error| AddError::InvalidDue(format!("{text:?}: {error}")))?,
+        ),
+        None => None,
+    };
 
     let state_dir = input.state_dir.unwrap_or_else(default_state_dir);
     // The name rule: you, an agent profile, or any other name for a person. Broken profiles
@@ -172,7 +175,6 @@ pub fn run(input: FlagAdd) -> Result<FlagAddResult, AddError> {
     let notes = input.notes.filter(|notes| !notes.trim().is_empty());
     let thread = input.thread;
     let base = input.base;
-    let due = input.due;
     store
         .locked_transition_if_changed(|domain| {
             let mut snapshot = snapshot.clone();
@@ -593,7 +595,7 @@ fn parse_plan_item(i: usize, value: Value) -> Result<PlanItem, Failed> {
     let due = match object.get("due") {
         None | Some(Value::Null) => None,
         Some(Value::String(text)) => match crate::domain::parse_due(text) {
-            Ok(_) => Some(text.clone()),
+            Ok(day) => Some(day),
             Err(error) => {
                 return Err(fail_item(
                     i,

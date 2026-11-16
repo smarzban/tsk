@@ -32,9 +32,10 @@ function tokenArgument(parts, index) {
   return next;
 }
 
-// A real `YYYY-MM-DD` day, year 0001 to 9999, worded like the board's refusals.
+// A real day, `YYYY-MM-DD` or with a one-digit month or day, year 0001 to 9999, worded
+// like the board's refusals.
 function dueRefusal(value) {
-  const shaped = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const shaped = /^\d{4}-\d{1,2}-\d{1,2}$/.test(value);
   if (!shaped) return `due ${value}: a due date is a day written YYYY-MM-DD`;
   const [year, month, day] = value.split("-").map(Number);
   const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
@@ -127,7 +128,10 @@ export function parseCapture(raw, fallbackProject) {
       i += 1;
       refuse = dueRefusal(argument);
       if (refuse) break;
-      due = argument;
+      due = argument
+        .split("-")
+        .map((part, index) => part.padStart(index === 0 ? 4 : 2, "0"))
+        .join("-");
       continue;
     }
     if (part === "!w") {

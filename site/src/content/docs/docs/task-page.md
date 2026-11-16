@@ -45,7 +45,7 @@ The footer shows the same fields in the same order. Clicking a field during an e
 | Steps | The checklist. [Steps](/docs/steps/) |
 | Assignee | An agent profile, you, or none. The task's current person stays on the list |
 | Base | An existing local or remote branch that dispatch starts from, not a tag or commit. Unset uses the repository default. [Base branch](/docs/dispatch/#base-branch) |
-| Due | A day written `YYYY-MM-DD`, optional. Empty clears it |
+| Due | A day written `YYYY-MM-DD`, or `2026-8-8` with a one-digit month or day, optional. Empty clears it |
 | After | The tasks this one waits for |
 | Thread | A [thread name](/docs/capture/#thread-names), optional |
 | Scope | The project, or desk. Archived projects are not offered |
