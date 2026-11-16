@@ -10,6 +10,7 @@
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Write};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -50,37 +51,46 @@ type MigrationStep = fn(serde_json::Value) -> Result<serde_json::Value, StoreErr
 /// v1 documents gain the empty per-project record map, v2 documents the notice
 /// counter, v3 documents rewrite ready to open, v4 documents gain batch undo, v5
 /// documents gain everything [`migrate_v5_to_v6`] lists, and v6 documents everything
-/// [`migrate_v6_to_v18`] lists.
-///
-/// v6 is the last released format before v18. v7..=v17 were development formats: dispatch
-/// dev builds wrote v7..=v15 with the v6 layout, and main builds wrote v16 and v17 as
-/// subsets of the v18 layout. Their steps change nothing, so every one of them reaches the
-/// one real step, which leaves a document that already has its changes as it is. A v6
-/// binary refuses a v18 store.
+/// [`migrate_v6_to_v7`] lists.
 const MIGRATIONS: &[MigrationStep] = &[
     migrate_v1_to_v2,
     migrate_v2_to_v3,
     migrate_v3_to_v4,
     migrate_v4_to_v5,
     migrate_v5_to_v6,
-    migrate_dev_layout,
-    migrate_dev_layout,
-    migrate_dev_layout,
-    migrate_dev_layout,
-    migrate_dev_layout,
-    migrate_dev_layout,
-    migrate_dev_layout,
-    migrate_dev_layout,
-    migrate_dev_layout,
-    migrate_dev_layout,
-    migrate_dev_layout,
-    migrate_v6_to_v18,
+    migrate_v6_to_v7,
 ];
 
 const _: () = assert!(
     MIGRATIONS.len() + 1 == STORE_FORMAT_VERSION as usize,
     "every format version below STORE_FORMAT_VERSION needs its migration step"
 );
+
+/// Development formats that never shipped. Dispatch dev builds wrote v7..=v15 with the v6
+/// layout, and main builds wrote v16..=v18 as the v7 layout grew. Every one of them is a
+/// subset of v7, and a dispatch record reads its pre-host shape by itself, so such a
+/// document opens as the current format with no transform. Its next save writes v7 and the
+/// `tsk.json.v<N>` copy keeps the original. A dispatch dev v7 document carries the current
+/// number already and opens the same way.
+///
+/// Delete this once no dev store remains. Until then the next format bump must go past
+/// v18.
+const DEV_FORMAT_VERSIONS: RangeInclusive<u32> = 8..=18;
+
+const _: () = assert!(
+    STORE_FORMAT_VERSION < *DEV_FORMAT_VERSIONS.start(),
+    "STORE_FORMAT_VERSION entered DEV_FORMAT_VERSIONS: a dev store would open as the new \
+     format. Delete DEV_FORMAT_VERSIONS once no dev store remains, or bump past its end."
+);
+
+/// The version a document at `found` opens as: a dev version reads as the current format.
+fn reads_as(found: u32) -> u32 {
+    if DEV_FORMAT_VERSIONS.contains(&found) {
+        STORE_FORMAT_VERSION
+    } else {
+        found
+    }
+}
 
 /// v1 -> v2: a v1 store has no archived projects, so it gains an empty project map.
 /// A v1 binary never wrote an `archived` task key either; one is stripped defensively
@@ -166,15 +176,7 @@ fn migrate_v5_to_v6(document: serde_json::Value) -> Result<serde_json::Value, St
     Ok(document)
 }
 
-/// v6 -> v7 ... v16 -> v17: development formats. Dispatch dev builds wrote the v6 layout as
-/// v7..=v15; main builds wrote v16 and v17, each a subset of the v18 layout. The one real
-/// step, [`migrate_v6_to_v18`], does the work for all of them.
-fn migrate_dev_layout(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
-    Ok(document)
-}
-
-/// v17 -> v18, the one step from the released v6 (through the development formats). v18
-/// adds:
+/// v6 -> v7, the one step after the released v6. v7 adds:
 ///
 /// - Dispatch host: every dispatch record names its `host`, and its `herdr_workspace_id`
 ///   becomes the host-neutral `session`. Released builds dispatched only in Herdr, but Rex
@@ -185,9 +187,8 @@ fn migrate_dev_layout(document: serde_json::Value) -> Result<serde_json::Value, 
 /// - Due days: a task gains an optional `due`.
 ///
 /// Titles and due days are optional fields, absent when unset, so they change no wire value.
-/// The host rewrite only fills what is missing, so a v16 or v17 document that already has
-/// `host` and `session` passes through unchanged.
-fn migrate_v6_to_v18(mut document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+/// The host rewrite only fills what is missing.
+fn migrate_v6_to_v7(mut document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
     for task in document
         .get_mut("tasks")
         .and_then(|tasks| tasks.as_array_mut())
@@ -789,14 +790,20 @@ impl TaskStore {
         }
         let data = fs::read_to_string(&file)?;
         let found = peek_format_version(&data)?;
+        let opens_as = reads_as(found);
         // Pre-versioned (0) and newer-than-supported documents are both refused.
-        if found == 0 || found > supported {
+        if found == 0 || opens_as > supported {
             return Err(StoreError::UnsupportedFormat { found, supported });
         }
-        if found < supported {
+        if opens_as < supported {
             let document: serde_json::Value = serde_json::from_str(&data)?;
             let migrated = migrations(document, found)?;
             return Ok(serde_json::from_value(migrated)?);
+        }
+        if found != opens_as {
+            let mut document: serde_json::Value = serde_json::from_str(&data)?;
+            document["format_version"] = serde_json::json!(opens_as);
+            return Ok(serde_json::from_value(document)?);
         }
         let state = serde_json::from_str(&data)?;
         Ok(state)
@@ -847,7 +854,7 @@ impl TaskStore {
                         supported,
                     });
                 }
-                Ok(version) if version > supported => {
+                Ok(version) if reads_as(version) > supported => {
                     return Err(StoreError::UnsupportedFormat {
                         found: version,
                         supported,
@@ -1234,13 +1241,13 @@ pub fn check_document(document: &[u8]) -> Result<(), RestoreError> {
         .map_err(|_| RestoreError::Invalid("not UTF-8 text".into()))?;
     let found = peek_format_version(text)
         .map_err(|error| RestoreError::Invalid(format!("not a tsk store: {error}")))?;
-    if found == 0 || found > STORE_FORMAT_VERSION {
+    if found == 0 || reads_as(found) > STORE_FORMAT_VERSION {
         return Err(RestoreError::Unsupported {
             found,
             supported: STORE_FORMAT_VERSION,
         });
     }
-    let parsed: Result<DomainState, StoreError> = if found < STORE_FORMAT_VERSION {
+    let parsed: Result<DomainState, StoreError> = if reads_as(found) < STORE_FORMAT_VERSION {
         serde_json::from_str(text)
             .map_err(StoreError::from)
             .and_then(|document| migrate(document, found))
@@ -2121,7 +2128,7 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join(STATE_FILE)).expect("read"))
                 .expect("json");
-        assert_eq!(value["format_version"], 18);
+        assert_eq!(value["format_version"], 7);
         assert_eq!(value["next_notice_number"], 1);
     }
 
@@ -2139,7 +2146,7 @@ mod tests {
             error,
             StoreError::UnsupportedFormat {
                 found: 0,
-                supported: 18
+                supported: 7
             }
         ));
         let on_disk: serde_json::Value =
@@ -2168,7 +2175,7 @@ mod tests {
                     error,
                     StoreError::UnsupportedFormat {
                         found,
-                        supported: 18
+                        supported: 7
                     } if found == format_version
                 ),
                 "{error}"
@@ -2199,7 +2206,7 @@ mod tests {
             error,
             StoreError::UnsupportedFormat {
                 found: 19,
-                supported: 18
+                supported: 7
             }
         ));
         assert!(!dir.join(STATE_FILE).exists());
@@ -2227,7 +2234,7 @@ mod tests {
             error,
             StoreError::UnsupportedFormat {
                 found: 19,
-                supported: 18
+                supported: 7
             }
         ));
         assert_eq!(
@@ -2255,7 +2262,7 @@ mod tests {
                 error,
                 StoreError::UnsupportedFormat {
                     found: 19,
-                    supported: 18
+                    supported: 7
                 }
             ),
             "{error}"
@@ -3586,7 +3593,7 @@ mod tests {
 
     #[test]
     fn load_refuses_a_higher_version_and_changes_nothing_in_the_state_dir() {
-        for (format_version, supported) in [(19u32, 18u32), (20, 18)] {
+        for (format_version, supported) in [(19u32, 7u32), (20, 7)] {
             let dir = temp_dir("format-higher");
             let _guard = TempDirGuard(dir.clone());
             let document = serde_json::json!({
@@ -3607,7 +3614,7 @@ mod tests {
             assert!(
                 matches!(
                     error,
-                    StoreError::UnsupportedFormat { found, supported: 18 } if found == format_version
+                    StoreError::UnsupportedFormat { found, supported: 7 } if found == format_version
                 ),
                 "{error}"
             );
@@ -3862,11 +3869,11 @@ mod tests {
         let store = TaskStore::new(&dir);
         let newer = format!(
             r#"{{"format_version":{},"tasks":[]}}"#,
-            STORE_FORMAT_VERSION + 1
+            DEV_FORMAT_VERSIONS.end() + 1
         );
         assert!(matches!(
             store.restore_document(newer.as_bytes(), SystemTime::now()),
-            Err(RestoreError::Unsupported { found, .. }) if found == STORE_FORMAT_VERSION + 1
+            Err(RestoreError::Unsupported { found, .. }) if found == DEV_FORMAT_VERSIONS.end() + 1
         ));
         assert!(matches!(
             store.restore_document(br#"{"tasks":[]}"#, SystemTime::now()),
@@ -4083,7 +4090,7 @@ mod tests {
     #[test]
     fn a_newer_backup_tells_the_user_to_update_tsk() {
         let error = check_document(
-            format!(r#"{{"format_version":{}}}"#, STORE_FORMAT_VERSION + 1).as_bytes(),
+            format!(r#"{{"format_version":{}}}"#, DEV_FORMAT_VERSIONS.end() + 1).as_bytes(),
         )
         .expect_err("newer");
         assert!(error.to_string().contains("update tsk first"), "{error}");
@@ -4152,11 +4159,16 @@ mod tests {
             assert_eq!(dispatch["host"], "herdr");
             assert_eq!(dispatch["session"], "w9");
             assert!(dispatch.get("herdr_workspace_id").is_none(), "{dispatch}");
-            assert_eq!(
-                fs::read_to_string(dir.join(format!("tsk.json.v{version}"))).expect("copy"),
-                original,
-                "the migrated load keeps the v{version} original"
-            );
+            if version == STORE_FORMAT_VERSION {
+                // A dispatch dev v7 document already carries the current number.
+                assert!(!dir.join(format!("tsk.json.v{version}")).exists());
+            } else {
+                assert_eq!(
+                    fs::read_to_string(dir.join(format!("tsk.json.v{version}"))).expect("copy"),
+                    original,
+                    "the migrated load keeps the v{version} original"
+                );
+            }
         }
     }
 
@@ -4175,7 +4187,7 @@ mod tests {
         assert_eq!(record.session, "w9");
     }
 
-    /// Rex dev builds (before v16) kept a Rex session, or a session still opening, in
+    /// Rex dev builds (before the host field) kept a Rex session, or a session still opening, in
     /// `herdr_workspace_id`: such a record migrates as a Rex dispatch, from the store and from
     /// trash alike.
     #[test]
@@ -4212,11 +4224,11 @@ mod tests {
         }
     }
 
-    /// v16 and v17 documents already name their host. The one real step reaches them too, and
-    /// must leave them as they are: a Rex record whose session reads like a Herdr workspace id
-    /// stays Rex, and the document's other content is untouched.
+    /// Main dev builds wrote v16..=v18 with the host already named. Such a store opens as the
+    /// current format with nothing changed but the number: a Rex record whose session reads
+    /// like a Herdr workspace id stays Rex. Its save keeps the `tsk.json.v<N>` original.
     #[test]
-    fn a_v16_or_v17_document_passes_the_one_real_step_unchanged() {
+    fn a_dev_v16_to_v18_store_opens_unchanged_as_the_current_format() {
         let mut state = round_tripped_current_state("Fix the login redirect");
         let id = state.tasks()[0].id;
         state
@@ -4237,15 +4249,32 @@ mod tests {
                 },
             )
             .expect("record");
-        for version in [16, 17] {
-            let mut document = serde_json::to_value(&state).expect("encode");
+        state.assign_numbers_for_persistence();
+        let current = serde_json::to_value(&state).expect("encode");
+        for version in [16u32, 17, 18] {
+            let dir = temp_dir("dev-main-format");
+            let _guard = TempDirGuard(dir.clone());
+            fs::create_dir_all(&dir).expect("mkdir");
+            let mut document = current.clone();
             document["format_version"] = serde_json::json!(version);
-            let migrated = migrate(document.clone(), version).expect("migrate");
-            let mut expected = document;
-            expected["format_version"] = serde_json::json!(STORE_FORMAT_VERSION);
-            assert_eq!(migrated, expected, "v{version}");
+            let original = serde_json::to_string_pretty(&document).expect("encode");
+            fs::write(dir.join(STATE_FILE), &original).expect("write");
+            let store = TaskStore::new(&dir);
+            let loaded = store.load().expect("a dev store opens");
             assert_eq!(
-                migrated["tasks"][0]["dispatch"]["host"], "rex",
+                serde_json::to_value(&loaded).expect("encode"),
+                current,
+                "v{version}: it opens with nothing changed but the number"
+            );
+            store.save(&loaded).expect("save");
+            let saved: serde_json::Value =
+                serde_json::from_slice(&fs::read(dir.join(STATE_FILE)).expect("live"))
+                    .expect("json");
+            assert_eq!(saved["format_version"], STORE_FORMAT_VERSION, "v{version}");
+            assert_eq!(saved["tasks"][0]["dispatch"]["host"], "rex", "v{version}");
+            assert_eq!(
+                fs::read_to_string(dir.join(format!("tsk.json.v{version}"))).expect("copy"),
+                original,
                 "v{version}"
             );
         }
@@ -4270,11 +4299,13 @@ mod tests {
             serde_json::to_vec(&value).expect("encode")
         };
         check_document(pre_host_document(15).as_bytes()).expect("a dev v15 store passes");
+        check_document(&document(17)).expect("a dev v17 store passes");
         check_document(&document(STORE_FORMAT_VERSION)).expect("the current format passes");
+        let newer = DEV_FORMAT_VERSIONS.end() + 1;
         assert!(matches!(
-            check_document(&document(STORE_FORMAT_VERSION + 1)),
+            check_document(&document(newer)),
             Err(RestoreError::Unsupported { found, supported })
-                if found == STORE_FORMAT_VERSION + 1 && supported == STORE_FORMAT_VERSION
+                if found == newer && supported == STORE_FORMAT_VERSION
         ));
         assert!(matches!(
             check_document(br#"{"format_version":15,"tasks":"oops"}"#),

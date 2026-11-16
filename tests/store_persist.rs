@@ -44,14 +44,14 @@ fn platform_nanos(nanos: u32) -> u32 {
 
 fn platform_current_fixture() -> Vec<u8> {
     #[cfg(not(windows))]
-    return include_bytes!("fixtures/current_store_v18.json").to_vec();
+    return include_bytes!("fixtures/current_store_v7.json").to_vec();
     #[cfg(windows)]
     {
         // Round-trip through the persisted type, not Value's sorted map. SystemTime applies
         // Windows' 100 ns precision while DomainState preserves the canonical field order.
         let state: DomainState =
-            serde_json::from_str(include_str!("fixtures/current_store_v18.json"))
-                .expect("v18 fixture");
+            serde_json::from_str(include_str!("fixtures/current_store_v7.json"))
+                .expect("v7 fixture");
         serde_json::to_vec_pretty(&state).expect("encode platform fixture")
     }
 }
@@ -346,37 +346,37 @@ fn literal_v5_fixture_migrates_to_canonical_current() {
     );
 }
 
-/// v18 is the current format: it opens with no migration, writes no version copy, and saves
+/// v7 is the current format: it opens with no migration, writes no version copy, and saves
 /// byte for byte.
 #[test]
-fn literal_v18_fixture_is_current_and_round_trips() {
+fn literal_v7_fixture_is_current_and_round_trips() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let current = platform_current_fixture();
-    fs::write(dir.join("tsk.json"), &current).expect("install current v18 fixture");
+    fs::write(dir.join("tsk.json"), &current).expect("install current v7 fixture");
     let store = TaskStore::new(&dir);
 
-    let loaded = store.load().expect("load current v18 fixture");
+    let loaded = store.load().expect("load current v7 fixture");
     assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
     store.save(&loaded).expect("save current state");
     assert!(
-        !dir.join("tsk.json.v18").exists(),
+        !dir.join("tsk.json.v7").exists(),
         "a current document needs no version copy"
     );
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read live document"),
         current,
-        "a v18 state must serialize as canonical platform v18"
+        "a v7 state must serialize as canonical platform v7"
     );
 }
 
-/// A v17 store (the last format before due days) migrates by its version alone: its first
-/// save writes v18, keeps the original as `tsk.json.v17`, and no task gains a `due` key.
+/// A dev v17 store (a main build before due days) opens as the current format: its first
+/// save writes v7, keeps the original as `tsk.json.v17`, and no task gains a `due` key.
 #[test]
-fn literal_v17_fixture_migrates_to_v18_without_a_due_key() {
+fn literal_dev_v17_fixture_opens_as_current_without_a_due_key() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
-    let v17 = include_bytes!("fixtures/current_store_v17.json").to_vec();
+    let v17 = include_bytes!("fixtures/dev_store_v17.json").to_vec();
     fs::write(dir.join("tsk.json"), &v17).expect("install v17 fixture");
     let store = TaskStore::new(&dir);
 
@@ -388,19 +388,19 @@ fn literal_v17_fixture_migrates_to_v18_without_a_due_key() {
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read live document"),
         platform_current_fixture(),
-        "a v17 state must serialize as canonical platform v18"
+        "a dev v17 state must serialize as canonical platform v7"
     );
 }
 
-/// A v16 store (an archived project record, no titles) migrates by its version alone: its
-/// first save writes the current format and keeps the original as `tsk.json.v16`, and the archived project
+/// A dev v16 store (an archived project record, no titles) opens as the current format: its
+/// first save writes v7 and keeps the original as `tsk.json.v16`, and the archived project
 /// stays archived and untitled.
 #[test]
-fn literal_v16_fixture_migrates_to_current_and_keeps_its_archived_project() {
+fn literal_dev_v16_fixture_opens_as_current_and_keeps_its_archived_project() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let mut document: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/current_store_v16.json")).expect("v16");
+        serde_json::from_str(include_str!("fixtures/dev_store_v16.json")).expect("v16");
     document["projects"] = serde_json::json!({ "/tmp/example-project": { "archived": true } });
     let v16 = serde_json::to_vec_pretty(&document).expect("encode v16");
     fs::write(dir.join("tsk.json"), &v16).expect("install v16 fixture");
@@ -487,7 +487,7 @@ fn literal_v6_fixture_migrates_to_canonical_current() {
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read live document"),
         platform_current_fixture(),
-        "a v6 state must serialize as canonical platform v18"
+        "a v6 state must serialize as canonical platform v7"
     );
     let reloaded = store.load().expect("reload");
     assert_eq!(
@@ -497,26 +497,25 @@ fn literal_v6_fixture_migrates_to_canonical_current() {
     );
 }
 
+/// A dispatch dev build wrote the v6 layout as v7, the number the released format now uses.
+/// It opens as the current format, and its first save writes the current wire. There is no
+/// version copy: the number is the same.
 #[test]
-fn literal_dev_v7_fixture_migrates_and_backs_up() {
+fn literal_dev_v7_fixture_opens_as_the_current_format() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
-    let v7 = include_bytes!("fixtures/current_store_v7.json");
-    fs::write(dir.join("tsk.json"), v7).expect("install current v7 fixture");
+    let v7 = include_bytes!("fixtures/dev_store_v7.json");
+    fs::write(dir.join("tsk.json"), v7).expect("install dev v7 fixture");
     let store = TaskStore::new(&dir);
 
-    let loaded = store.load().expect("load current v7 fixture");
+    let loaded = store.load().expect("load dev v7 fixture");
     assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
-    store.save(&loaded).expect("save migrated state");
+    store.save(&loaded).expect("save");
+    assert!(!dir.join("tsk.json.v7").exists());
     assert_eq!(
-        fs::read(dir.join("tsk.json.v7")).expect("read version backup"),
-        v7.as_slice(),
-        "the v7 document is backed up byte-identically"
-    );
-    assert_eq!(
-        fs::read(dir.join("tsk.json")).expect("read migrated live document"),
+        fs::read(dir.join("tsk.json")).expect("read live document"),
         platform_current_fixture().as_slice(),
-        "a v7 state must serialize as canonical platform v6"
+        "a dev v7 state must serialize as canonical platform v7"
     );
 }
 
@@ -524,7 +523,7 @@ fn literal_dev_v7_fixture_migrates_and_backs_up() {
 fn literal_dev_v8_fixture_migrates_and_backs_up() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
-    let v8 = include_bytes!("fixtures/current_store_v8.json");
+    let v8 = include_bytes!("fixtures/dev_store_v8.json");
     fs::write(dir.join("tsk.json"), v8).expect("install current v8 fixture");
     let store = TaskStore::new(&dir);
 
@@ -547,7 +546,7 @@ fn literal_dev_v8_fixture_migrates_and_backs_up() {
 fn literal_dev_v9_fixture_migrates_and_backs_up() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
-    let v9 = include_bytes!("fixtures/current_store_v9.json");
+    let v9 = include_bytes!("fixtures/dev_store_v9.json");
     fs::write(dir.join("tsk.json"), v9).expect("install current v9 fixture");
     let store = TaskStore::new(&dir);
 
@@ -572,7 +571,7 @@ fn literal_dev_v9_fixture_migrates_and_backs_up() {
 fn literal_dev_v10_fixture_migrates_backs_up_and_gains_after() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
-    let v10 = include_bytes!("fixtures/current_store_v10.json");
+    let v10 = include_bytes!("fixtures/dev_store_v10.json");
     fs::write(dir.join("tsk.json"), v10).expect("install current v10 fixture");
     let store = TaskStore::new(&dir);
 
@@ -624,7 +623,7 @@ fn literal_dev_v10_fixture_migrates_backs_up_and_gains_after() {
 fn literal_dev_v11_fixture_migrates_and_backs_up() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
-    let v11 = include_bytes!("fixtures/current_store_v11.json");
+    let v11 = include_bytes!("fixtures/dev_store_v11.json");
     fs::write(dir.join("tsk.json"), v11).expect("install current v11 fixture");
     let store = TaskStore::new(&dir);
 
@@ -651,7 +650,7 @@ fn v9_events_render_without_who_or_what_and_new_events_carry_both() {
     let _guard = TempDirGuard(dir.clone());
     fs::write(
         dir.join("tsk.json"),
-        include_bytes!("fixtures/current_store_v9.json"),
+        include_bytes!("fixtures/dev_store_v9.json"),
     )
     .expect("install current v9 fixture");
     let store = TaskStore::new(&dir);
@@ -694,7 +693,7 @@ fn v8_review_task_without_a_round_migrates_and_reads_as_review() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let mut v8: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/current_store_v8.json")).expect("v8 json");
+        serde_json::from_str(include_str!("fixtures/dev_store_v8.json")).expect("v8 json");
     v8["tasks"][0]["status"] = serde_json::json!("review");
     fs::write(
         dir.join("tsk.json"),
@@ -1400,7 +1399,7 @@ fn noncurrent_store_is_refused_without_rewriting_the_file() {
     let error = TaskStore::new(&dir)
         .save(&DomainState::new())
         .expect_err("current writer refuses noncurrent store");
-    assert!(error.to_string().contains("expected 18"));
+    assert!(error.to_string().contains("expected 7"));
     assert_eq!(fs::read(dir.join("tsk.json")).expect("read"), bytes);
 }
 
@@ -1443,7 +1442,7 @@ fn v1_migration_strips_defensive_archived_keys() {
 fn populated_v10_fixture_round_trips_losslessly() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
-    let v10 = include_str!("fixtures/populated_store_v10.json");
+    let v10 = include_str!("fixtures/dev_populated_store_v10.json");
     fs::write(dir.join("tsk.json"), v10).expect("install populated v10 fixture");
     let store = TaskStore::new(&dir);
 
@@ -1475,7 +1474,7 @@ fn populated_v10_fixture_round_trips_losslessly() {
     );
 }
 
-/// A pre-v16 dispatch record gains `host: herdr`, and its `herdr_workspace_id` becomes
+/// A pre-host dispatch record (v6, or dev v7..=v15) gains `host: herdr`, and its `herdr_workspace_id` becomes
 /// `session`.
 fn with_dispatch_host(document: &mut serde_json::Value) {
     for task in document["tasks"].as_array_mut().expect("tasks") {
@@ -1518,7 +1517,7 @@ fn v11_replies_migrate_as_not_yet_sent() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let mut document: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/populated_store_v10.json")).expect("json");
+        serde_json::from_str(include_str!("fixtures/dev_populated_store_v10.json")).expect("json");
     document["format_version"] = 11.into();
     let v11 = serde_json::to_string_pretty(&document).expect("encode v11");
     assert!(
@@ -1581,7 +1580,7 @@ fn v11_replies_migrate_as_not_yet_sent() {
 fn literal_dev_v12_fixture_migrates_and_its_done_undoes_to_open() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
-    let v12 = include_bytes!("fixtures/current_store_v12.json");
+    let v12 = include_bytes!("fixtures/dev_store_v12.json");
     assert!(
         !String::from_utf8_lossy(v12).contains("\"previous\""),
         "a v12 done's undo entry has no previous status"
@@ -1625,7 +1624,7 @@ fn v13_assignees_migrate_as_agents_and_a_person_round_trips() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let mut v13: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/current_store_v13.json")).expect("v13 json");
+        serde_json::from_str(include_str!("fixtures/dev_store_v13.json")).expect("v13 json");
     v13["tasks"][0]["assignee"] = serde_json::json!("claude");
     v13["undo_stack"] = serde_json::json!([{
         "assign": {
@@ -1680,7 +1679,7 @@ fn v13_assignees_migrate_as_agents_and_a_person_round_trips() {
 fn literal_dev_v14_fixture_migrates_and_a_hidden_name_round_trips() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
-    let v14 = include_bytes!("fixtures/current_store_v14.json");
+    let v14 = include_bytes!("fixtures/dev_store_v14.json");
     fs::write(dir.join("tsk.json"), v14).expect("install v14 fixture");
     let store = TaskStore::new(&dir);
 
@@ -2090,7 +2089,7 @@ fn a_concurrent_removal_keeps_the_other_writers_assignment_undo() {
 
 /// A store a dispatch dev build wrote at v15 (an agent and a person assignee, a hidden name,
 /// an `after` link, a review round with a sent reply, a batch done on the undo stack) has the
-/// v6 layout and migrates like v6. Its first save writes v18, keeps the original as
+/// v6 layout and opens as the current format. Its first save writes v7, keeps the original as
 /// `tsk.json.v15`, and the batch still undoes as one.
 #[test]
 fn a_populated_dev_v15_store_migrates_and_keeps_tsk_json_v15() {
@@ -2185,11 +2184,11 @@ fn a_populated_dev_v15_store_migrates_and_keeps_tsk_json_v15() {
     }
 }
 
-/// Every dev version migrates like v6 and keeps its own copy; the first version past the
-/// current one is refused without a write.
+/// Every dev version opens as the current format and keeps its own copy; the first version
+/// past the dev range is refused without a write.
 #[test]
-fn dev_v7_and_v11_migrate_like_v6_and_v19_is_refused() {
-    for version in [7, 11] {
+fn dev_v8_v11_and_v18_open_as_current_and_v19_is_refused() {
+    for version in [8, 11, 18] {
         let dir = temp_state_dir();
         let _guard = TempDirGuard(dir.clone());
         let mut document: serde_json::Value =

@@ -69,7 +69,7 @@ pub enum AgentHost {
 }
 
 impl AgentHost {
-    /// The host of a record from before the host field (store v15 and older), from its
+    /// The host of a record from before the host field (store v6, and the dev formats v7..=v15), from its
     /// `herdr_workspace_id`: Rex dev builds stored a Rex session (`session:…`) or a session
     /// still opening (`rex-pending:…`) there; anything else is a Herdr workspace.
     pub fn of_legacy_id(id: &str) -> Self {
@@ -139,9 +139,10 @@ pub struct Dispatch {
     pub cleaned: bool,
 }
 
-/// What a [`Dispatch`] reads from. A record from before store v16 has no `host` and keeps its
-/// `session` under `herdr_workspace_id`; trash lines from then never pass through the store
-/// migration, so the record itself reads them, deciding the host as the migration does
+/// What a [`Dispatch`] reads from. A record from before the host field (store v6, and the
+/// dev formats v7..=v15) has no `host` and keeps its `session` under `herdr_workspace_id`.
+/// Trash lines from then never pass through the store migration, and a dev store opens with
+/// no transform, so the record itself reads them, deciding the host as the migration does
 /// ([`AgentHost::of_legacy_id`]).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -642,7 +643,7 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 18;
+pub const STORE_FORMAT_VERSION: u32 = 7;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -655,7 +656,7 @@ fn default_next_notice_number() -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct ProjectRecord {
     pub archived: bool,
-    /// The project's display name, shown instead of its folder name. Absent before v17,
+    /// The project's display name, shown instead of its folder name. Absent before v7,
     /// and left out of the document while unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
