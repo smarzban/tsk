@@ -49,13 +49,14 @@ type MigrationStep = fn(serde_json::Value) -> Result<serde_json::Value, StoreErr
 ///
 /// v1 documents gain the empty per-project record map, v2 documents the notice
 /// counter, v3 documents rewrite ready to open, v4 documents gain batch undo, v5
-/// documents gain everything [`migrate_v5_to_v6`] lists, v15 documents gain the dispatch
-/// host ([`migrate_v15_to_v16`]), v16 documents project titles ([`migrate_v16_to_v17`]),
-/// and v17 documents due days ([`migrate_v17_to_v18`]).
+/// documents gain everything [`migrate_v5_to_v6`] lists, and v6 documents everything
+/// [`migrate_v6_to_v18`] lists.
 ///
-/// v7..=v15 were dispatch dev builds whose layout equals v6, and released v6 binaries open
-/// them as v6. Their steps change nothing, so a dev document migrates exactly like a v6 one,
-/// and the dispatch host bump goes past them: a v6 binary refuses a v16 store.
+/// v6 is the last released format before v18. v7..=v17 were development formats: dispatch
+/// dev builds wrote v7..=v15 with the v6 layout, and main builds wrote v16 and v17 as
+/// subsets of the v18 layout. Their steps change nothing, so every one of them reaches the
+/// one real step, which leaves a document that already has its changes as it is. A v6
+/// binary refuses a v18 store.
 const MIGRATIONS: &[MigrationStep] = &[
     migrate_v1_to_v2,
     migrate_v2_to_v3,
@@ -71,9 +72,9 @@ const MIGRATIONS: &[MigrationStep] = &[
     migrate_dev_layout,
     migrate_dev_layout,
     migrate_dev_layout,
-    migrate_v15_to_v16,
-    migrate_v16_to_v17,
-    migrate_v17_to_v18,
+    migrate_dev_layout,
+    migrate_dev_layout,
+    migrate_v6_to_v18,
 ];
 
 const _: () = assert!(
@@ -165,16 +166,28 @@ fn migrate_v5_to_v6(document: serde_json::Value) -> Result<serde_json::Value, St
     Ok(document)
 }
 
-/// v6 -> v7 ... v14 -> v15: dispatch dev builds wrote the v6 layout under these versions.
+/// v6 -> v7 ... v16 -> v17: development formats. Dispatch dev builds wrote the v6 layout as
+/// v7..=v15; main builds wrote v16 and v17, each a subset of the v18 layout. The one real
+/// step, [`migrate_v6_to_v18`], does the work for all of them.
 fn migrate_dev_layout(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
     Ok(document)
 }
 
-/// v15 -> v16: every dispatch record names its host, and its `herdr_workspace_id` becomes the
-/// host-neutral `session`. Released builds dispatched only in Herdr, but Rex dev builds stored
-/// their session there (`session:…`, or `rex-pending:…` while it opened): those records gain
-/// `host: rex`, every other one `host: herdr` ([`crate::domain::AgentHost::of_legacy_id`]).
-fn migrate_v15_to_v16(mut document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+/// v17 -> v18, the one step from the released v6 (through the development formats). v18
+/// adds:
+///
+/// - Dispatch host: every dispatch record names its `host`, and its `herdr_workspace_id`
+///   becomes the host-neutral `session`. Released builds dispatched only in Herdr, but Rex
+///   dev builds stored their session there (`session:…`, or `rex-pending:…` while it
+///   opened): those records gain `host: rex`, every other one `host: herdr`
+///   ([`crate::domain::AgentHost::of_legacy_id`]).
+/// - Project titles: a project record gains an optional `title`.
+/// - Due days: a task gains an optional `due`.
+///
+/// Titles and due days are optional fields, absent when unset, so they change no wire value.
+/// The host rewrite only fills what is missing, so a v16 or v17 document that already has
+/// `host` and `session` passes through unchanged.
+fn migrate_v6_to_v18(mut document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
     for task in document
         .get_mut("tasks")
         .and_then(|tasks| tasks.as_array_mut())
@@ -200,18 +213,6 @@ fn migrate_v15_to_v16(mut document: serde_json::Value) -> Result<serde_json::Val
             .entry("host".to_string())
             .or_insert_with(|| serde_json::json!(host));
     }
-    Ok(document)
-}
-
-/// v16 -> v17: a project record gains an optional `title`. No existing wire value changes,
-/// so a v16 document reads as v17 as it is, and a v16 binary refuses a v17 store.
-fn migrate_v16_to_v17(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
-    Ok(document)
-}
-
-/// v17 -> v18: a task gains an optional `due` day. No existing wire value changes, so a v17
-/// document reads as v18 as it is, and a v17 binary refuses a v18 store.
-fn migrate_v17_to_v18(document: serde_json::Value) -> Result<serde_json::Value, StoreError> {
     Ok(document)
 }
 
@@ -4208,6 +4209,45 @@ mod tests {
             let lines = parse_trash_lines(format!("{line}\n").as_bytes());
             let record = lines[0].task.dispatch.clone().expect("trash record");
             assert_eq!(record.host, host, "trash line for {session}");
+        }
+    }
+
+    /// v16 and v17 documents already name their host. The one real step reaches them too, and
+    /// must leave them as they are: a Rex record whose session reads like a Herdr workspace id
+    /// stays Rex, and the document's other content is untouched.
+    #[test]
+    fn a_v16_or_v17_document_passes_the_one_real_step_unchanged() {
+        let mut state = round_tripped_current_state("Fix the login redirect");
+        let id = state.tasks()[0].id;
+        state
+            .record_dispatch(
+                id,
+                crate::domain::Dispatch {
+                    argv: vec!["claude".into()],
+                    worktree: "/w/t12".into(),
+                    branch: "tsk/t12-fix".into(),
+                    base: None,
+                    base_ref: None,
+                    base_commit: None,
+                    base_remote: None,
+                    host: crate::domain::AgentHost::Rex,
+                    session: "w9".into(),
+                    at: UNIX_EPOCH + Duration::from_secs(1_793_817_827),
+                    cleaned: false,
+                },
+            )
+            .expect("record");
+        for version in [16, 17] {
+            let mut document = serde_json::to_value(&state).expect("encode");
+            document["format_version"] = serde_json::json!(version);
+            let migrated = migrate(document.clone(), version).expect("migrate");
+            let mut expected = document;
+            expected["format_version"] = serde_json::json!(STORE_FORMAT_VERSION);
+            assert_eq!(migrated, expected, "v{version}");
+            assert_eq!(
+                migrated["tasks"][0]["dispatch"]["host"], "rex",
+                "v{version}"
+            );
         }
     }
 
