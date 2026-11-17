@@ -129,7 +129,7 @@ const STATUS_USAGE: &[&str] = &[
     "tsk status <task> review [--done <text>] [--check <text>]... [--next <text>] [--on <who>]",
 ];
 const EDIT_USAGE: &[&str] = &[
-    "tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--due <date> | --clear-due] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]",
+    "tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--assignee <name> | --unassign] [--thread <name> | --clear-thread] [--base <branch> | --clear-base] [--due <date> | --clear-due] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]",
 ];
 const STEPS_USAGE: &[&str] = &[
     "tsk steps <task> add <text> [<place>] [--state-dir <dir>]",
@@ -2261,7 +2261,7 @@ pub fn status_rejected(error: StatusError, task: TaskAddress) -> CliOutput {
 pub fn edit_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(EDIT_USAGE),
-        purpose: "Change a task's title, notes, assignee, dispatch base, due date, the tasks it runs after, or who its open block or review waits on. Scope and thread stay as they are.".into(),
+        purpose: "Change a task's title, notes, assignee, thread, dispatch base, due date, the tasks it runs after, or who its open block or review waits on. Scope stays as it is.".into(),
         groups: vec![
             group("Arguments", &[("<task>", "a task number or UUID")]),
             group(
@@ -2278,6 +2278,11 @@ pub fn edit_help() -> CliOutput {
                         "assign an agent profile from config.toml, me, or a person's name",
                     ),
                     ("--unassign", "clear the assignee"),
+                    (
+                        "--thread <name>",
+                        "set or change the thread: letters, numbers, hyphens, dots",
+                    ),
+                    ("--clear-thread", "take the task off its thread"),
                     (
                         "--base <branch>",
                         "dispatch from this existing branch of the project",
@@ -2311,6 +2316,7 @@ pub fn edit_help() -> CliOutput {
         examples: vec![
             "tsk edit T12 --title \"Fix timeout on slow connections\"".into(),
             "tsk edit T12 --assignee claude --base main".into(),
+            "tsk edit T12 --thread auth".into(),
             "tsk edit T205 --after T202 --after T12".into(),
             "tsk edit T12 --on coordinator".into(),
         ],

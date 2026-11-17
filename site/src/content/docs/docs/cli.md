@@ -19,7 +19,7 @@ tsk list
 | [`tsk add`](#add) | Add a task, or every task in a JSON plan |
 | [`tsk list`](#list) | Read tasks |
 | [`tsk status`](#status) | Set a task's status, block it, or put it up for review |
-| [`tsk edit`](#edit) | Change a task's title, notes, assignee, base, due date, after list, or who its block or review waits on |
+| [`tsk edit`](#edit) | Change a task's title, notes, assignee, thread, base, due date, after list, or who its block or review waits on |
 | [`tsk steps`](#steps) | Add, toggle, rename, move, or remove a step |
 | [`tsk checks`](#checks) | Mark a review check open, passed, or failed |
 | [`tsk reply`](#reply) | Answer a block, or give feedback on a review |
@@ -385,10 +385,10 @@ tsk status T12 review --done "Opened PR #42" --check "tests pass" --next "docs"
 
 ## edit
 
-Changes a task's title, notes, assignee, dispatch base, due date, the tasks it runs after, or who its open block or review waits on. Scope and thread stay as they are: to move a task, add it again in the right scope and archive the old one.
+Changes a task's title, notes, assignee, thread, dispatch base, due date, the tasks it runs after, or who its open block or review waits on. Scope stays as it is: to move a task, add it again in the right scope and archive the old one.
 
 ```text
-tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--assignee <name> | --unassign] [--base <branch> | --clear-base] [--due <date> | --clear-due] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]
+tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--assignee <name> | --unassign] [--thread <name> | --clear-thread] [--base <branch> | --clear-base] [--due <date> | --clear-due] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]
 ```
 
 | Flag | Meaning |
@@ -398,6 +398,8 @@ tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--a
 | `--append-notes <text>` | Add text below the notes after one blank line, or set it as the notes when there are none |
 | `--assignee <name>` | Assign an agent profile from [`config.toml`](/docs/storage/#configuration), `me`, or a person ([names](/docs/dispatch/#assignee-names)) |
 | `--unassign` | Clear the assignee |
+| `--thread <name>` | Put the task on this [thread](/docs/capture/#thread-names), replacing any other |
+| `--clear-thread` | Take the task off its thread |
 | `--base <branch>` | Dispatch from this existing branch, not a tag or commit (`unknown-base`) |
 | `--clear-base` | Dispatch from the project's default branch |
 | `--due <date>` | Set the day it is due, as `YYYY-MM-DD`. No time of day (`invalid-due`) |

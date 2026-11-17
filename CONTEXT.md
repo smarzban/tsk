@@ -12,8 +12,8 @@ this file names things.
 - **list command**: `tsk list`, which prints tasks without changing them.
 - **status command**: `tsk status`, which sets a task's human status. `start` is an alias
   for `started`.
-- **edit command**: `tsk edit`, which changes a task's title, notes, assignee, base, or
-  `after` list. It never changes scope or thread.
+- **edit command**: `tsk edit`, which changes a task's title, notes, assignee, thread, base,
+  due date, or `after` list. It never changes scope.
 - **bulk add**: one `add` of many items. It reports each item and makes one durable write
   of the successes.
 - **invocation default**: the scope `add` uses when no project or `--desk` is given: the

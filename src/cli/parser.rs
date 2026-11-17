@@ -732,6 +732,9 @@ pub struct FlagEdit {
     pub append_notes: Option<String>,
     pub assignee: Option<String>,
     pub unassign: bool,
+    /// `--thread`: normalized at the argv boundary, like `tsk add --thread`.
+    pub thread: Option<String>,
+    pub clear_thread: bool,
     pub base: Option<String>,
     pub clear_base: bool,
     /// `--due`: a day as typed. Checked when the edit runs, so a bad date refuses with
@@ -754,6 +757,12 @@ pub fn parse_assignee(value: &str) -> Result<String, String> {
         .map_err(|error| format!("invalid assignee name · {}", thread_refusal_message(error)))
 }
 
+/// Parse one `--thread` value by the thread rules.
+fn parse_thread(value: &str) -> Result<String, String> {
+    normalize_thread(value)
+        .map_err(|error| format!("invalid thread name · {}", thread_refusal_message(error)))
+}
+
 /// Parse one `--after` value: a task number, with or without its `T`.
 pub fn parse_after_number(value: &str) -> Result<u64, String> {
     let digits = value.strip_prefix(['T', 't']).unwrap_or(value);
@@ -764,7 +773,7 @@ pub fn parse_after_number(value: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("invalid --after value {value} · use a task number like T12"))
 }
 
-/// Parse `tsk edit <task> [--title <title>] [--notes <notes>]` arguments, including argv0.
+/// Parse `tsk edit <task> [<field flags>]` arguments, including argv0.
 pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
     if args.get(1).map(String::as_str) != Some("edit") {
         return Err("expected edit command".into());
@@ -777,6 +786,8 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
         append_notes: None,
         assignee: None,
         unassign: false,
+        thread: None,
+        clear_thread: false,
         base: None,
         clear_base: false,
         due: None,
@@ -836,6 +847,18 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
             }
             "--unassign" => {
                 parsed.unassign = true;
+                index += 1;
+            }
+            flag if flag.starts_with("--thread=") => {
+                parsed.thread = Some(parse_thread(&flag["--thread=".len()..])?);
+                index += 1;
+            }
+            "--thread" => {
+                parsed.thread = Some(parse_thread(&value(flag)?)?);
+                index += 2;
+            }
+            "--clear-thread" => {
+                parsed.clear_thread = true;
                 index += 1;
             }
             flag if flag.starts_with("--base=") => {
@@ -900,6 +923,9 @@ pub fn parse_flag_edit(args: &[String]) -> Result<FlagEdit, String> {
     }
     if parsed.unassign && parsed.assignee.is_some() {
         return Err("--unassign cannot be used with --assignee".into());
+    }
+    if parsed.clear_thread && parsed.thread.is_some() {
+        return Err("--clear-thread cannot be used with --thread".into());
     }
     if parsed.clear_base && parsed.base.is_some() {
         return Err("--clear-base cannot be used with --base".into());
@@ -1206,6 +1232,8 @@ mod tests {
                 append_notes: None,
                 assignee: None,
                 unassign: false,
+                thread: None,
+                clear_thread: false,
                 base: None,
                 clear_base: false,
                 due: None,
@@ -1217,6 +1245,29 @@ mod tests {
                 help: false,
             }
         );
+    }
+
+    #[test]
+    fn edit_parses_thread_flags_by_the_thread_rules() {
+        let args = |rest: &[&str]| {
+            ["tsk", "edit", "T5"]
+                .iter()
+                .chain(rest)
+                .map(|arg| (*arg).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let set = parse_flag_edit(&args(&["--thread", "Auth"])).expect("thread");
+        assert_eq!(set.thread.as_deref(), Some("auth"));
+        assert!(!set.clear_thread);
+        let equals = parse_flag_edit(&args(&["--thread=release"])).expect("thread=");
+        assert_eq!(equals.thread.as_deref(), Some("release"));
+        let clear = parse_flag_edit(&args(&["--clear-thread"])).expect("clear");
+        assert!(clear.clear_thread);
+        assert_eq!(clear.thread, None);
+        let invalid = parse_flag_edit(&args(&["--thread", "two words"])).expect_err("invalid");
+        assert!(invalid.starts_with("invalid thread name · "), "{invalid}");
+        assert!(parse_flag_edit(&args(&["--thread", "a", "--clear-thread"])).is_err());
+        assert!(parse_flag_edit(&args(&["--thread"])).is_err());
     }
 
     #[test]
@@ -1628,9 +1679,7 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
                 index += 1;
             }
             flag if flag.starts_with("--thread=") => {
-                parsed.thread = Some(normalize_thread(&flag["--thread=".len()..]).map_err(
-                    |error| format!("invalid thread name · {}", thread_refusal_message(error)),
-                )?);
+                parsed.thread = Some(parse_thread(&flag["--thread=".len()..])?);
                 parsed.has_item_flags = true;
                 index += 1;
             }
@@ -1650,9 +1699,7 @@ pub fn parse_flag_add(args: &[String]) -> Result<FlagAdd, String> {
                 index += 2;
             }
             "--thread" => {
-                parsed.thread = Some(normalize_thread(&value(flag)?).map_err(|error| {
-                    format!("invalid thread name · {}", thread_refusal_message(error))
-                })?);
+                parsed.thread = Some(parse_thread(&value(flag)?)?);
                 parsed.has_item_flags = true;
                 index += 2;
             }

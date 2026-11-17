@@ -1,7 +1,7 @@
 ---
 name: tsk-cli
 description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|reply|edit|steps|archive|dispatch|clean|trash`, never the TUI.
-version: 1.7.0
+version: 1.8.0
 ---
 
 # tsk: the user's task board
@@ -184,8 +184,8 @@ criteria, no design document, no code. It ends with a better task on the board.
    - Does not exist yet: `tsk add -t "…" -n "…"` in the agreed scope (`--desk`, `-p`), with
      `--thread` if agreed.
    - Steps only when the user wants order of work tracked: `tsk steps T12 add "…"` per step.
-   - Never change status. `edit` cannot change scope or thread: for a scope change re-add in the
-     right scope and archive the stray; say so before doing it.
+   - Never change status. `edit --thread` changes the thread; `edit` cannot change scope: re-add
+     in the right scope and archive the stray, and say so before doing it.
 7. **Stop.** The hand-off is the updated or created task. Report its number and title in one line.
    Do not offer builders, worktrees, or plans, and do not start building unless asked.
 

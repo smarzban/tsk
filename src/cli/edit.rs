@@ -1,5 +1,5 @@
-//! Headless edits: title, notes, assignee, base, due date, after, and who an open block or
-//! review waits on.
+//! Headless edits: title, notes, assignee, thread, base, due date, after, and who an open
+//! block or review waits on.
 
 use std::path::PathBuf;
 
@@ -21,6 +21,8 @@ pub struct EditFields {
     pub append_notes: Option<String>,
     /// `None` leaves it unchanged, `Some(None)` clears it. A name is read by the name rule.
     pub assignee: Option<Option<String>>,
+    /// `None` leaves it unchanged, `Some(None)` clears it. A name is already normalized.
+    pub thread: Option<Option<String>>,
     /// `None` leaves it unchanged, `Some(None)` clears it.
     pub base: Option<Option<String>>,
     /// `None` leaves it unchanged, `Some(None)` clears it. A day is `YYYY-MM-DD`.
@@ -84,7 +86,7 @@ impl EditError {
     }
 }
 
-/// Replace the supplied title and/or notes, keeping scope and thread.
+/// Replace the supplied fields, keeping scope.
 ///
 /// Whitespace-only notes clear the field. Repeating the stored values writes nothing; a
 /// repeated append adds its text again.
@@ -131,6 +133,7 @@ pub fn run(
         notes: fields.notes,
         append_notes: fields.append_notes,
         assignee,
+        thread: fields.thread,
         base: fields.base,
         due: fields.due,
         after: fields.after,
@@ -167,6 +170,7 @@ struct Edit {
     notes: Option<String>,
     append_notes: Option<String>,
     assignee: Option<Option<Assignee>>,
+    thread: Option<Option<String>>,
     base: Option<Option<String>>,
     due: Option<Option<String>>,
     after: Option<Vec<u64>>,
@@ -225,6 +229,10 @@ fn apply(
         .assignee
         .clone()
         .unwrap_or_else(|| found.assignee.clone());
+    let next_thread = fields
+        .thread
+        .clone()
+        .unwrap_or_else(|| found.thread.clone());
     let next_base = fields.base.clone().unwrap_or_else(|| found.base.clone());
     if let Some(base) = fields.base.as_ref().and_then(|value| value.as_deref()) {
         if let Err(error) = crate::git_base::validate_task_base(&found.scope, base, true) {
@@ -256,6 +264,7 @@ fn apply(
     let assignee = fields.assignee.clone().flatten();
     if next_title == found.title
         && next_notes == found.notes
+        && next_thread == found.thread
         && next_assignee == found.assignee
         && next_base == found.base
         && !changed_after
@@ -273,6 +282,7 @@ fn apply(
     }
     let fields_changed = next_title != found.title
         || next_notes != found.notes
+        || next_thread != found.thread
         || next_assignee != found.assignee
         || next_base != found.base;
     let edited = if fields_changed {
@@ -281,7 +291,7 @@ fn apply(
             &next_title,
             next_notes,
             found.scope,
-            found.thread,
+            next_thread,
             next_assignee,
             next_base,
         )

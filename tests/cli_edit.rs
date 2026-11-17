@@ -303,6 +303,82 @@ fn edit_clears_notes_and_keeps_scope_and_thread() {
 }
 
 #[test]
+fn edit_sets_changes_and_clears_the_thread_keeping_scope() {
+    let dir = temp_state_dir("thread");
+    let _guard = TempDirGuard(dir.clone());
+    let mut state = DomainState::new();
+    state
+        .create(
+            "needs a thread",
+            None,
+            TaskScope::Project {
+                path: "/tmp/edit-cli-thread-project".into(),
+            },
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("seed");
+    TaskStore::new(&dir).save(&state).expect("save seed");
+    let load = || TaskStore::new(&dir).load().expect("load").tasks()[0].clone();
+    let thread_edits = |task: &tsk_tui::domain::Task| {
+        task.history
+            .iter()
+            .filter(|event| event.kind == TaskEventKind::Edited)
+            .filter(|event| {
+                event.detail.as_ref().map(|detail| detail.fields.clone())
+                    == Some(vec![tsk_tui::domain::EditedField::Thread])
+            })
+            .count()
+    };
+
+    let set = edit(&dir, &["T1", "--thread", "Auth"]);
+    assert_eq!(set.code, 0, "{:?}", set.stderr);
+    assert_eq!(set.stdout, "edited T1 needs a thread\n");
+    let task = load();
+    assert_eq!(task.thread.as_deref(), Some("auth"));
+    assert_eq!(thread_edits(&task), 1, "the paper trail names the thread");
+    assert_eq!(
+        task.scope,
+        TaskScope::Project {
+            path: "/tmp/edit-cli-thread-project".into(),
+        }
+    );
+
+    let before_repeat = fs::read(dir.join("tsk.json")).expect("read store");
+    let again = edit(&dir, &["T1", "--thread=auth"]);
+    assert_eq!(again.code, 0, "{:?}", again.stderr);
+    assert_eq!(
+        fs::read(dir.join("tsk.json")).expect("read store"),
+        before_repeat,
+        "a repeat writes nothing"
+    );
+
+    let changed = edit(&dir, &["T1", "--thread", "release"]);
+    assert_eq!(changed.code, 0, "{:?}", changed.stderr);
+    let task = load();
+    assert_eq!(task.thread.as_deref(), Some("release"));
+    assert_eq!(thread_edits(&task), 2);
+
+    let invalid = edit(&dir, &["T1", "--thread", "bad_name"]);
+    assert_eq!(invalid.code, 2);
+    assert!(
+        invalid.stderr.contains("invalid thread name"),
+        "{}",
+        invalid.stderr
+    );
+    let both = edit(&dir, &["T1", "--thread", "x", "--clear-thread"]);
+    assert_eq!(both.code, 2);
+    assert_eq!(load().thread.as_deref(), Some("release"));
+
+    let cleared = edit(&dir, &["T1", "--clear-thread"]);
+    assert_eq!(cleared.code, 0, "{:?}", cleared.stderr);
+    let task = load();
+    assert_eq!(task.thread, None);
+    assert_eq!(thread_edits(&task), 3);
+    assert_eq!(task.title, "needs a thread");
+}
+
+#[test]
 fn edit_notes_keeps_newlines_and_tabs_like_add() {
     let dir = temp_state_dir("multiline");
     let _guard = TempDirGuard(dir.clone());
@@ -445,7 +521,7 @@ fn edit_without_fields_is_usage() {
     assert!(output
         .stderr
         .contains(
-        "title, notes, append-notes, assignee, base, due, after, on, --unassign, --clear-base, --clear-due, or --clear-after is required"
+        "title, notes, append-notes, assignee, thread, base, due, after, on, --unassign, --clear-thread, --clear-base, --clear-due, or --clear-after is required"
     ));
 }
 
@@ -461,6 +537,8 @@ fn edit_help_names_title_notes_and_equals_forms() {
         "--title=<value>",
         "--notes=<value>",
         "--append-notes <text>",
+        "--thread <name>",
+        "--clear-thread",
         "--append-notes=<value>",
         "Arguments",
         "Options",

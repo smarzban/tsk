@@ -495,6 +495,8 @@ fn run_edit(args: Vec<String>) -> CliOutput {
         && input.append_notes.is_none()
         && input.assignee.is_none()
         && !input.unassign
+        && input.thread.is_none()
+        && !input.clear_thread
         && input.base.is_none()
         && !input.clear_base
         && input.due.is_none()
@@ -504,13 +506,18 @@ fn run_edit(args: Vec<String>) -> CliOutput {
         && input.on.is_none()
     {
         return presenter::edit_usage(
-            "title, notes, append-notes, assignee, base, due, after, on, --unassign, --clear-base, --clear-due, or --clear-after is required",
+            "title, notes, append-notes, assignee, thread, base, due, after, on, --unassign, --clear-thread, --clear-base, --clear-due, or --clear-after is required",
         );
     }
     let assignee = if input.unassign {
         Some(None)
     } else {
         input.assignee.map(Some)
+    };
+    let thread = if input.clear_thread {
+        Some(None)
+    } else {
+        input.thread.map(Some)
     };
     let base = if input.clear_base {
         Some(None)
@@ -532,6 +539,7 @@ fn run_edit(args: Vec<String>) -> CliOutput {
             notes: input.notes,
             append_notes: input.append_notes,
             assignee,
+            thread,
             base,
             due,
             after: if input.clear_after {
