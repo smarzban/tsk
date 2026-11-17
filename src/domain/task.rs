@@ -141,8 +141,8 @@ pub struct Dispatch {
 
 /// What a [`Dispatch`] reads from. A record from before the host field (store v6, and the
 /// dev formats v7..=v15) has no `host` and keeps its `session` under `herdr_workspace_id`.
-/// Trash lines from then never pass through the store migration, and a dev store opens with
-/// no transform, so the record itself reads them, deciding the host as the migration does
+/// Trash lines from then never pass through the store migration, and a dispatch dev v7
+/// store opens with no transform, so the record itself reads them, deciding the host as the migration does
 /// ([`AgentHost::of_legacy_id`]).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
