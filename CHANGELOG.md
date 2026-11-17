@@ -12,6 +12,8 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+## v0.14.1
+
 ### Added
 
 - `tsk edit --thread <name>` puts an existing task on a thread, and `--clear-thread` takes it off ([edit](https://gettsk.sh/docs/cli/#edit)).
