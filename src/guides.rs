@@ -51,9 +51,10 @@ pub const CATALOG: [Guide; 4] = [
                 **Make one**\n\
                 - Press `+`, type a title, press `Enter`. It lands in the ON DECK inbox as `open`.\n\
                 - Press `ctrl+n` when you pick it for the ready queue.\n\
-                - Press `Tab` instead of `Enter` to open the full page first, where you can add notes, steps, a thread, and a project before you save.\n\
-                - Type `!p name` in the title to file it under a project the board already knows, by its folder name. A full path to an existing folder, like `!p ~/code/widget`, adds a new one. Bare `!p` keeps it on your desk.\n\
+                - Press `Tab` instead of `Enter` to open the full page first, where you can add notes, steps, a thread, a project, and a due day before you save.\n\
+                - Type `!p name` in the title to file it under a project the board already knows, by its title or folder name. A full path to an existing folder, like `!p ~/code/widget`, adds a new one. Bare `!p` keeps it on your desk.\n\
                 - Type `!t release` in the title to tag it with the thread `release`. Threads group related work inside one project, and the project board can filter by them.\n\
+                - Type `!d 2026-11-30` in the title to give it a due day.\n\
                 \n\
                 **Read one**\n\
                 - `→` peeks at the notes under the task. `←` or `Esc` closes the peek.\n\
@@ -63,7 +64,8 @@ pub const CATALOG: [Guide; 4] = [
                 **Change one**\n\
                 - On the page, `ctrl+e` edits the title, then `Tab` moves to notes. `shift+Enter` saves.\n\
                 - `Enter` on a step checks it. The `+ step` row at the bottom adds one.\n\
-                - Steps never finish a task. Check every step below and this task stays `started` until you press `ctrl+d`. You decide when work is done.",
+                - Steps never finish a task. Check every step below and this task stays `started` until you press `ctrl+d`. You decide when work is done.\n\
+                - While a task is started, blocked, or in review, its row shows how many steps are done, such as `steps 1/4`.",
         status: HumanStatus::Started,
         steps: &[
             ("Press Enter on this step to check it", false),

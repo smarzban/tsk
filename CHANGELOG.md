@@ -12,6 +12,8 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+## v0.14.0
+
 ### Breaking
 
 - Dispatch refusal codes name no host: `not-in-herdr` is `no-host` and `herdr-failed` is `host-failed` ([refusal codes](https://gettsk.sh/docs/cli/#exit-contract)).
@@ -23,10 +25,10 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 - Dispatch in Rex: each task gets its own tab in the Rex session you dispatch from; relaunch, reply delivery, cleanup, and `--merge` work as in Herdr ([dispatch](https://gettsk.sh/docs/dispatch/)).
 - A task dispatched in Herdr or Rex starts plainly in the other; relaunch, reply delivery, and cleanup there refuse with `other-host`.
 - `[dispatch] worktrees` in `config.toml` sets where dispatch puts new worktrees ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
-- Step progress: started, blocked, and review tasks show `steps 2/5` in their board row and in `tsk list`; `--json` rows carry `steps_done` and `steps_total` ([rows](https://gettsk.sh/docs/board/#rows)). Thanks @joops (#273).
-- Project titles: `ctrl+e` on a project row or `tsk project title` names a project; `-p` accepts the title ([project titles](https://gettsk.sh/docs/board/#project-titles)). Thanks @s3rgiosan (#249).
-- `tsk checks T12 set 2 passed` marks a review check from the command line ([checks](https://gettsk.sh/docs/cli/#checks)). Thanks @Tobi4161 (#269).
-- Due days: `tsk add --due YYYY-MM-DD`, `tsk edit --due` or `--clear-due`, a plan item's `due`, `tsk list --sort due`, quick-add `!d`, and the task page's Due field. Thanks @bnivanov-true (#270).
+- Step progress: started, blocked, and review tasks show `steps 2/5` in their board row and in `tsk list`; `--json` rows carry `steps_done` and `steps_total` ([rows](https://gettsk.sh/docs/board/#rows)). Thanks @joops for the request (#273).
+- Project titles: `ctrl+e` on a project row or `tsk project title` names a project; `-p` accepts the title ([project titles](https://gettsk.sh/docs/board/#project-titles)). Thanks @LukasGold for the request and @s3rgiosan for the report (#249).
+- `tsk checks T12 set 2 passed` marks a review check from the command line ([checks](https://gettsk.sh/docs/cli/#checks)). Thanks @Tobi4161 for the request (#269).
+- Due days: `tsk add --due YYYY-MM-DD`, `tsk edit --due` or `--clear-due`, a plan item's `due`, `tsk list --sort due`, quick-add `!d`, and the task page's Due field. Thanks @bnivanov-true (#271).
 
 ### Changed
 
@@ -40,11 +42,12 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 - `ctrl+l` redraws the whole board and turns clicks back on after a terminal hid and reopened its pane ([keys](https://gettsk.sh/docs/keys/#esc-and-quit)).
 - The starter tour and the site footer link to https://x.com/smarzban. A tour already on your board keeps its notes.
-- `tsk list -p` and `tsk project archive|unarchive` refuse a name two projects share, like `tsk add`, instead of matching nothing. Thanks @s3rgiosan (#249).
-- `tsk list --all --group project` labels projects that share a name by their shortest distinct path, such as `site-a/wordpress/wp-content`. Thanks @s3rgiosan (#249).
+- `tsk list -p` and `tsk project archive|unarchive` refuse a name two projects share, like `tsk add`, instead of matching nothing. Thanks @s3rgiosan for the report (#249).
+- `tsk list --all --group project` labels projects that share a name by their shortest distinct path, such as `site-a/wordpress/wp-content`. Thanks @s3rgiosan for the report (#249).
 - A bare token in an https backup URL is removed and masked even when the URL does not start at the scheme.
 - An open board shows the update notice as soon as the release check finishes, and a board left open checks again once a day.
 - A token in a backup URL stays out of git's command line and the backup's local clone, so other local users cannot see it.
+- The Windows installer extracts the release archive on hosts where `Expand-Archive` fails.
 
 ## v0.13.0
 
