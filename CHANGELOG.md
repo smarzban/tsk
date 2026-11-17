@@ -12,39 +12,41 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+## v0.14.0
+
 ### Breaking
 
-- Dispatch refusal codes name no host: `not-in-herdr` is `no-host` and `herdr-failed` is `host-failed` ([refusal codes](https://gettsk.sh/docs/cli/#exit-contract)).
-- Store format 7 records each dispatch's host, project titles, and due days: `tsk list T12 --json` shows `host` and `session`, and Herdr keeps `herdr_workspace_id`. tsk 0.13 and older refuse it; roll back with `tsk.json.v6`.
+- tsk 0.14 updates your task file on its first save, and tsk 0.13 or older cannot open it afterwards. To go back, restore the `tsk.json.v6` copy beside it.
+- Two dispatch refusal codes are renamed: `not-in-herdr` is now `no-host`, and `herdr-failed` is now `host-failed` ([refusal codes](https://gettsk.sh/docs/cli/#exit-contract)).
+- A backup URL with a user name, such as `https://org@host/…`, skips your credential manager. Remove `org@` from the URL so it logs you in ([credentials](https://gettsk.sh/docs/storage/#credentials)).
 
 ### Added
 
-- Rex support: `tsk setup rex` binds the board to `alt+t` and quick capture to `alt+a`. The installer and `tsk update` offer or refresh it ([Add to Rex](https://gettsk.sh/docs/install/#add-to-rex)).
-- Dispatch in Rex: each task gets its own tab in the Rex session you dispatch from; relaunch, reply delivery, cleanup, and `--merge` work as in Herdr ([dispatch](https://gettsk.sh/docs/dispatch/)).
-- A task dispatched in Herdr or Rex starts plainly in the other; relaunch, reply delivery, and cleanup there refuse with `other-host`.
-- `[dispatch] worktrees` in `config.toml` sets where dispatch puts new worktrees ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
-- Step progress: started, blocked, and review tasks show `steps 2/5` in their board row and in `tsk list`; `--json` rows carry `steps_done` and `steps_total` ([rows](https://gettsk.sh/docs/board/#rows)). Thanks @joops (#273).
-- Project titles: `ctrl+e` on a project row or `tsk project title` names a project; `-p` accepts the title ([project titles](https://gettsk.sh/docs/board/#project-titles)). Thanks @s3rgiosan (#249).
-- `tsk checks T12 set 2 passed` marks a review check from the command line ([checks](https://gettsk.sh/docs/cli/#checks)). Thanks @Tobi4161 (#269).
-- Due days: `tsk add --due YYYY-MM-DD`, `tsk edit --due` or `--clear-due`, a plan item's `due`, `tsk list --sort due`, quick-add `!d`, and the task page's Due field. Thanks @bnivanov-true (#270).
+- Rex: `tsk setup rex` puts the board on `alt+t` and quick capture on `alt+a`. The installer and `tsk update` offer it ([Add to Rex](https://gettsk.sh/docs/install/#add-to-rex)).
+- Dispatch works in Rex: each task opens in its own tab in your Rex session. Relaunch, replies, cleanup, and `--merge` work as in Herdr ([dispatch](https://gettsk.sh/docs/dispatch/)).
+- A task dispatched in Herdr starts as a plain status change in Rex, and the other way round. Relaunch, replies, and cleanup there refuse with `other-host`.
+- Due days: `!d 2026-11-30` in quick add, the Due field on the task page, or `tsk add --due`. `tsk list --sort due` lists the nearest first. Thanks @bnivanov-true (#271).
+- Step progress: started, blocked, and review rows show `steps 2/5` on the board and in `tsk list` ([rows](https://gettsk.sh/docs/board/#rows)). Thanks @joops for the request (#273).
+- Project titles: name a project with `ctrl+e` on its row or `tsk project title`, and use the name with `-p` ([project titles](https://gettsk.sh/docs/board/#project-titles)). Thanks @LukasGold for the request and @s3rgiosan for the report (#249).
+- `tsk checks T12 set 2 passed` marks a review check from the command line ([checks](https://gettsk.sh/docs/cli/#checks)). Thanks @Tobi4161 for the request (#269).
+- `[dispatch] worktrees` in `config.toml` chooses where new worktrees go ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
+- `tsk list T12 --json` shows where a dispatch runs as `host` and `session`. Herdr dispatches also keep `herdr_workspace_id`.
 
 ### Changed
 
-- Agent skills 1.7.0 cover dispatch in Herdr and Rex; the coordinator hands a passed review to you and cleans up after every merge. `tsk update` refreshes installed copies.
-- Dispatch puts new worktrees under `~/.tsk/worktrees/<repo>/` instead of Herdr's `~/.herdr/worktrees`. Tasks already dispatched keep their worktree.
-- Dispatch messages name Herdr or Rex: outside both, a start prints `no launch: outside Herdr or Rex`.
-- `tsk setup` names both installed skills, `tsk-cli` and `tsk-coordinator`, beside each agent's skills directory instead of printing only the `tsk-cli` file.
-- A backup URL with a user name, such as `https://org@host/…`, no longer asks your credential manager. Drop `org@` from the URL ([credentials](https://gettsk.sh/docs/storage/#credentials)).
+- New worktrees go under `~/.tsk/worktrees/<repo>/`. Tasks already dispatched keep theirs.
+- Dispatch messages name Herdr or Rex. Outside both, a start prints `no launch: outside Herdr or Rex`.
+- Agent skills 1.7.0 cover dispatch in Herdr and Rex. The coordinator hands passed reviews to you and cleans up after each merge. `tsk update` refreshes them.
+- `tsk setup` lists both installed skills, `tsk-cli` and `tsk-coordinator`, for each agent.
 
 ### Fixed
 
-- `ctrl+l` redraws the whole board and turns clicks back on after a terminal hid and reopened its pane ([keys](https://gettsk.sh/docs/keys/#esc-and-quit)).
-- The starter tour and the site footer link to https://x.com/smarzban. A tour already on your board keeps its notes.
-- `tsk list -p` and `tsk project archive|unarchive` refuse a name two projects share, like `tsk add`, instead of matching nothing. Thanks @s3rgiosan (#249).
-- `tsk list --all --group project` labels projects that share a name by their shortest distinct path, such as `site-a/wordpress/wp-content`. Thanks @s3rgiosan (#249).
-- A bare token in an https backup URL is removed and masked even when the URL does not start at the scheme.
-- An open board shows the update notice as soon as the release check finishes, and a board left open checks again once a day.
-- A token in a backup URL stays out of git's command line and the backup's local clone, so other local users cannot see it.
+- `ctrl+l` redraws the whole board and turns mouse clicks back on after the terminal hid the pane ([keys](https://gettsk.sh/docs/keys/#esc-and-quit)).
+- Two projects with the same folder name: `tsk list -p` and `tsk project archive|unarchive` refuse the name instead of matching nothing. Thanks @s3rgiosan for the report (#249).
+- `tsk list --all --group project` tells same-named projects apart by path, such as `site-a/wordpress/wp-content`. Thanks @s3rgiosan for the report (#249).
+- A token in a backup URL stays out of git's command line and the local clone, and is always masked in output.
+- An open board shows the update notice as soon as the check finishes, and checks again daily.
+- The Windows installer works on machines where `Expand-Archive` fails.
 
 ## v0.13.0
 

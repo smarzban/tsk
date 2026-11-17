@@ -6,6 +6,12 @@
 
 A terminal task board for you and your agents: one shared queue, a TUI for you, a CLI for them.
 
+| Runs in | Open the board | Quick capture | Dispatch agents |
+| --- | --- | --- | --- |
+| [Herdr](https://herdr.dev) | `prefix+t` | `prefix+a` | ✓ |
+| [Rex](https://www.superlogical.com/rex/) | `alt+t` | `alt+a` | ✓ |
+| Any terminal: T3 Code, Cursor, VS Code, Ghostty, iTerm2 | `tsk` | `tsk capture` | — |
+
 Keep the next task, the work in progress, and the things waiting on you in view.
 Press `+` to capture a thought, add notes and steps when it needs a plan, and give
 your agent the task number when you are ready. New tasks start in the open inbox.
@@ -24,8 +30,7 @@ Click a task's `T` number to copy it, then paste it into your agent conversation
 ![A wide tsk board with the selected task's notes and steps open alongside it](docs/images/wide-task-page.png)
 
 In a wide pane, click a task or press `→` or `l` to open it beside the board; `←` or `h`
-brings you back. `Enter` opens the task full screen and `Esc` returns. Outside Herdr
-or Rex, run `tsk` in any terminal.
+brings you back. `Enter` opens the task full screen and `Esc` returns.
 
 ### From task to implementation
 
