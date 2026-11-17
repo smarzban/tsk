@@ -2261,7 +2261,7 @@ pub fn status_rejected(error: StatusError, task: TaskAddress) -> CliOutput {
 pub fn edit_help() -> CliOutput {
     help(HelpDoc {
         usage: lines(EDIT_USAGE),
-        purpose: "Change a task's title, notes, assignee, dispatch base, due date, the tasks it runs after, or who its open block or review waits on. Scope and thread stay as they are.".into(),
+        purpose: "Change a task's title, notes, assignee, thread, dispatch base, due date, the tasks it runs after, or who its open block or review waits on. Scope stays as it is.".into(),
         groups: vec![
             group("Arguments", &[("<task>", "a task number or UUID")]),
             group(

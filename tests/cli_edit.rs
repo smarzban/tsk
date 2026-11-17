@@ -344,9 +344,14 @@ fn edit_sets_changes_and_clears_the_thread_keeping_scope() {
         }
     );
 
+    let before_repeat = fs::read(dir.join("tsk.json")).expect("read store");
     let again = edit(&dir, &["T1", "--thread=auth"]);
     assert_eq!(again.code, 0, "{:?}", again.stderr);
-    assert_eq!(thread_edits(&load()), 1, "a repeat writes nothing");
+    assert_eq!(
+        fs::read(dir.join("tsk.json")).expect("read store"),
+        before_repeat,
+        "a repeat writes nothing"
+    );
 
     let changed = edit(&dir, &["T1", "--thread", "release"]);
     assert_eq!(changed.code, 0, "{:?}", changed.stderr);
