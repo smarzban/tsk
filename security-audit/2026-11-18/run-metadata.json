@@ -1,0 +1,96 @@
+{
+  "run_id": "run-4",
+  "repo": "smarzban/tsk",
+  "target": "/agent/repos/tsk",
+  "source_ref": {
+    "commit": "d5b1e7f3cef1d7f70569573c99b52e928f70811f",
+    "branch": "main",
+    "worktree_dirty": false,
+    "delta_from": "d6016c00a673c76e6a0dd30de9cb6ad498c50be3",
+    "delta_to": "d5b1e7f3cef1d7f70569573c99b52e928f70811f",
+    "commits": [
+      "e7b98fe Due dates on tasks: CLI, quick-add !d, and a task page Due field (#304)",
+      "b97e60d Store: the next released format is 7, not 18 (#305)",
+      "afd4446 Store: refuse dev formats 8-18 instead of reading them as 7 (#306)",
+      "9740f61 Release v0.14.0 (#307)",
+      "2aaf705 CLI: tsk edit --thread and --clear-thread (#308)",
+      "d5b1e7f Release v0.14.1 (#309)"
+    ]
+  },
+  "profile": "standard",
+  "scope": "scoped delta d6016c00a673c76e6a0dd30de9cb6ad498c50be3..d5b1e7f3cef1d7f70569573c99b52e928f70811f plus code those commits touch, and revalidation of ui.paint.project-basename.c0 and windows-state-dir-acl",
+  "scope_paths": [
+    "src/domain/due.rs",
+    "src/domain/task.rs",
+    "src/domain/thread.rs",
+    "src/store.rs",
+    "src/capture.rs",
+    "src/cli/add.rs",
+    "src/cli/edit.rs",
+    "src/cli/list.rs",
+    "src/cli/parser.rs",
+    "src/cli/presenter.rs",
+    "src/cli/mod.rs",
+    "src/ui/board/apply.rs",
+    "src/ui/board/draw.rs",
+    "src/ui/board/model.rs",
+    "src/ui/board/chrome.rs",
+    "src/ui/input.rs",
+    "src/ui/mouse.rs",
+    "src/ui/queue.rs",
+    "src/ui/render.rs",
+    "src/ui/mod.rs",
+    "src/fsperm.rs",
+    "src/scope.rs",
+    "src/context.rs",
+    "site/public/capture.js",
+    "site/public/board-demo.js",
+    "skills/tsk-cli/SKILL.md",
+    "skills/tsk-coordinator/SKILL.md"
+  ],
+  "budget": null,
+  "execution_policy": "sandboxed-source-and-local-only",
+  "selected_companion_files": [
+    "CLIENT-SIDE.md",
+    "DESKTOP-MOBILE-AND-LOCAL-IPC.md",
+    "DATA-ISOLATION-AND-LIFECYCLE.md"
+  ],
+  "prior_run_paths": [
+    "/home/ubuntu/security-audit-skill/tsk/run-4/prior/coverage-ledger.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-4/prior/findings.json",
+    "/home/ubuntu/security-audit-skill/tsk/run-4/prior/architecture.md"
+  ],
+  "prior_source_ref": "d6016c00a673c76e6a0dd30de9cb6ad498c50be3",
+  "prior_audit_commit": "fee08e726c54f8510c72e32bc9bde1bbc69b6ec8",
+  "shared_file_owners": {
+    "run-metadata.json": "parent",
+    "architecture.md": "parent",
+    "coverage-ledger.json": "parent",
+    "findings.json": "parent",
+    "REPORT.md": "parent",
+    "FINDINGS-DETAIL.md": "parent",
+    "NEEDS-VALIDATION.md": "parent"
+  },
+  "run_status": "complete",
+  "sandbox_note": "pending host capability probe",
+  "agents_spent": {
+    "reconnaissance": 4,
+    "hunters": 7,
+    "critics": 2,
+    "phase3_verifiers": 4,
+    "phase5_verifiers": 2,
+    "total": 19
+  },
+  "sandbox": {
+    "user_namespace_net": true,
+    "user_namespace_mount": true,
+    "cargo_present": true,
+    "crate_registry_present": false,
+    "target_dir_present": false,
+    "target_execution": "blocked_no_offline_crate_registry"
+  },
+  "phase5": {
+    "ui.paint.project-basename.c0": "line correction applied: terminal_text evidence line 18 to 22",
+    "windows-state-dir-acl": "verified"
+  }
+}

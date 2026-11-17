@@ -1,0 +1,199 @@
+[
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "ui.paint.project-basename.c0",
+    "title": "Untitled project folder name reaches a Span with no terminal_text on a fitting line",
+    "description": "On the fitting-line path, an untitled Git project's folder name is still copied raw into the wide task-column state Span and the project group-header Span. bound_line returns that line unchanged, so terminal_text does not run, and put_line renders the spans. The Due footer escapes the due day and can replace the state slot with editing due while that editor is open. It does not escape the project name on the closed-editor path.",
+    "claimed_root_cause": "ProjectNames::name returns project_basename when the project has no title. task_header_state and the project group label place that string in a Span. When the line width is within the column, bound_line returns the spans unchanged, so present_line and terminal_text never see a C0 or C1 scalar before Paragraph paint.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/context.rs",
+        "line": 99,
+        "scope": "build_snapshot",
+        "description": "A directory whose ancestor contains .git becomes TaskScope::Project with path taken from to_string_lossy. No control-character filter runs on that path."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/capture.rs",
+        "line": 74,
+        "scope": "capture_save",
+        "description": "A capture with no scope override stores snapshot.default_scope, so the Git root path is the task scope."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/scope.rs",
+        "line": 123,
+        "scope": "ProjectNames::name",
+        "description": "With no stored title, name returns project_basename of the path."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/scope.rs",
+        "line": 70,
+        "scope": "project_basename",
+        "description": "The last non-empty component is returned. A separator is only slash, or backslash on Windows, so a C0 or C1 scalar stays in the folder name."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/ui/board/model.rs",
+        "line": 3806,
+        "scope": "BoardModel::project_name",
+        "description": "project_name copies ProjectNames::name into an owned string and does not call terminal_text."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/ui/board/draw.rs",
+        "line": 2672,
+        "scope": "task_header_state",
+        "description": "For a project task that is not in an editor and has no dirty retained draft, the state string is status, a middle dot, and that project name."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/ui/board/draw.rs",
+        "line": 2942,
+        "scope": "draw_wide_board",
+        "description": "That string is TaskColumnHeader.state. The title may be windowed. The state string is not passed through terminal_text."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/ui/render.rs",
+        "line": 1649,
+        "scope": "draw_task_column",
+        "description": "The state is formatted with one trailing space and placed in a dim Span. present_line is applied to the title, not to the state."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/ui/queue.rs",
+        "line": 1559,
+        "scope": "group_key",
+        "description": "A project group label is names.name(path) with no terminal_text call."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/ui/render.rs",
+        "line": 6865,
+        "scope": "paint_group_header",
+        "description": "The group word is copied into a Span. The chevron and count are separate spans."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/ui/render.rs",
+        "line": 7784,
+        "scope": "bound_line",
+        "description": "When line.width() is at most max_width, bound_line returns the line. present_line, which calls terminal_text, runs only on the overflow branch."
+      },
+      {
+        "kind": "sink",
+        "file": "src/ui/render.rs",
+        "line": 7768,
+        "scope": "put_line_at",
+        "description": "put_line and the group-header row both reach put_line_at, which renders Paragraph::new of the line. This repository does not show the tty bytes for a Span scalar."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/ui/mod.rs",
+        "line": 22,
+        "description": "terminal_text rewrites every char::is_control scalar to a visible backslash-u form. present_line calls it before measuring width."
+      },
+      {
+        "file": "src/ui/render.rs",
+        "line": 7782,
+        "description": "bound_line's fitting branch returns the original spans. The overflow branch is the only call to present_line."
+      },
+      {
+        "file": "src/ui/board/draw.rs",
+        "line": 1210,
+        "description": "The new Due footer runs terminal_text on the due draft or stored day. That call does not receive the project name."
+      },
+      {
+        "file": "src/ui/board/draw.rs",
+        "line": 2630,
+        "description": "SelectDue and EditDue make task_header_state return editing due, so the project name is absent only while that editor is the active field."
+      },
+      {
+        "file": "src/ui/board/model.rs",
+        "line": 7978,
+        "description": "project_option_label calls terminal_text on a folder name. The task-column state and the group header do not use that helper."
+      },
+      {
+        "file": "src/ui/render.rs",
+        "line": 5723,
+        "description": "A built GroupHeader line is passed to put_line with no further text rewrite."
+      },
+      {
+        "file": "Cargo.toml",
+        "line": 57,
+        "description": "ratatui 0.30.2 is an external dependency. No ratatui backend source is in this tree."
+      }
+    ],
+    "blockers": [
+      "ratatui's tty backend is not in this workspace, so the bytes written for a Span that contains a C0 scalar were not observed.",
+      "This host has no cargo registry and target-controlled execution is blocked, so the crate was not compiled and no local pty capture was taken."
+    ],
+    "validation_plan": {
+      "local": "With crates already cached and a pty, create a Unix directory whose name contains U+001B, run git init, open that directory as an untitled project, add a task, and use a wide frame with project grouping. Capture the task-column state cell and the project group-header cell while both lines fit. Compare the pty bytes with the visible escape terminal_text would emit. Repeat with the column narrower than the state line."
+    }
+  },
+  {
+    "verdict": "needs_validation",
+    "fingerprint": "windows-state-dir-acl",
+    "title": "Windows state files inherit the parent directory DACL",
+    "description": "On Windows, default_state_dir selects LOCALAPPDATA\\tsk or USERPROFILE\\.tsk. ensure_private_dir creates that directory with create_dir_all and applies mode 0700 only under cfg(unix). create_private_file sets mode 0600 only under cfg(unix), and tighten_file discards the path off Unix. This repository never sets a Windows security descriptor, so the state directory and tsk.json keep the DACL inherited from the parent. Whether a second non-admin account can read them is an operating-system fact the source does not show.",
+    "claimed_root_cause": "Owner-only modes live entirely inside cfg(unix): tighten_private_dir masks the directory with 0o700, and create_private_file passes 0o600 to OpenOptions. Off Unix, tighten_file discards its path, create_dir_all is called with no security descriptor, and no DACL API is called on the state directory or tsk.json, so Windows leaves both with the parent directory ACL.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "src/store.rs",
+        "line": 1420,
+        "scope": "default_state_dir",
+        "description": "On Windows, selects LOCALAPPDATA\\tsk when that variable is non-empty, otherwise USERPROFILE\\.tsk."
+      },
+      {
+        "kind": "propagation",
+        "file": "src/fsperm.rs",
+        "line": 45,
+        "scope": "ensure_private_dir",
+        "description": "Creates a missing directory with create_dir_all. Mode 0700 is applied only on Unix."
+      },
+      {
+        "kind": "sink",
+        "file": "src/fsperm.rs",
+        "line": 302,
+        "scope": "tighten_file",
+        "description": "Off Unix the function discards the path and does not set a DACL."
+      }
+    ],
+    "evidence": [
+      {
+        "file": "src/fsperm.rs",
+        "line": 45,
+        "description": "create_dir_all is called with no security descriptor."
+      },
+      {
+        "file": "src/fsperm.rs",
+        "line": 179,
+        "description": "create_private_file sets mode 0600 only inside cfg(unix)."
+      },
+      {
+        "file": "src/fsperm.rs",
+        "line": 302,
+        "description": "The non-Unix arm of tighten_file discards the path."
+      },
+      {
+        "file": "src/store.rs",
+        "line": 1420,
+        "description": "The Windows branch of default_state_dir reads LOCALAPPDATA. The delta did not change src/fsperm.rs."
+      }
+    ],
+    "blockers": [
+      "The inherited DACL is an operating-system fact. This repository never sets a Windows security descriptor, so source cannot show whether a second non-admin account has an allow ACE on the state directory or tsk.json.",
+      "This host is Linux, so the DACL was not observed and the Windows path was not executed."
+    ],
+    "validation_plan": {
+      "local": "On a Windows machine, create the default state directory with tsk and record icacls for the directory and tsk.json, then try to read the file from a second non-admin account.",
+      "deployment": "On a Windows install of this binary, record Get-Acl for the default state directory and tsk.json and whether a second non-admin account can read them."
+    }
+  }
+]

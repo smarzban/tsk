@@ -1,0 +1,3728 @@
+[
+  {
+    "coverage_id": ".github%2Fworkflows%2Fci.yml%23pull_request::.github%2Fworkflows%2Fci.yml%23permissions::.github%2Fworkflows::ATTACK-CLASSES.md%23Access%20control",
+    "canonical_refs": {
+      "surface": ".github/workflows/ci.yml#pull_request",
+      "boundary": ".github/workflows/ci.yml#permissions",
+      "subsystem": ".github/workflows",
+      "attack_class": "ATTACK-CLASSES.md#Access control"
+    },
+    "surface": "GitHub Actions workflows",
+    "boundary": "Workflow permissions",
+    "subsystem": ".github/workflows",
+    "attack_class": "Untrusted PR code reaching secrets",
+    "starting_paths": [
+      ".github/workflows/ci.yml",
+      ".github/workflows/release.yml"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "AGENTS.md%23Assignee%20and%20dispatch::src%2Fdispatch%2Fhost.rs%23from_env::src%2Fdispatch.rs::ATTACK-CLASSES.md%23Access%20control",
+    "canonical_refs": {
+      "surface": "AGENTS.md#Assignee and dispatch",
+      "boundary": "src/dispatch/host.rs#from_env",
+      "subsystem": "src/dispatch.rs",
+      "attack_class": "ATTACK-CLASSES.md#Access control"
+    },
+    "surface": "AGENTS.md dispatch gate",
+    "boundary": "HostKind::from_env",
+    "subsystem": "src/dispatch.rs",
+    "attack_class": "Documented host gate disagrees with launch refusal",
+    "starting_paths": [
+      "AGENTS.md",
+      "src/dispatch/host.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Herdr and Rex are local host CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "This delta does not add a shared quota or an amplification loop."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path is safe Rust and does not add an unsafe parser."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path paints a terminal, not a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not change profile templates or tool arguments."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "This delta does not change installers, hashes, or the update client."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This delta does not change store identity or project scope."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "This path has no socket, deep link, or exported component."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "AGENTS.md%23delta::src%2Fmain.rs%23main::repository-delta-2026-11-09::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "AGENTS.md#delta",
+      "boundary": "src/main.rs#main",
+      "subsystem": "repository-delta-2026-11-09",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "Delta text for secrets and debug gates",
+    "boundary": "No production debug switch in main",
+    "subsystem": "repository-delta-2026-11-09",
+    "attack_class": "Obvious exposures in this audited diff",
+    "starting_paths": [
+      "AGENTS.md",
+      "src/app.rs",
+      "src/ui/board/model.rs",
+      "src/ui/render.rs",
+      "tests/queue_board_render.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Herdr and Rex are local host CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "This delta does not add a shared quota or an amplification loop."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path is safe Rust and does not add an unsafe parser."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path paints a terminal, not a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not change profile templates or tool arguments."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "This delta does not change installers, hashes, or the update client."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This delta does not change store identity or project scope."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "This path has no socket, deep link, or exported component."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "CHANGELOG.md%23Unreleased::src%2Fmain.rs%23main::repository-delta-2026-11-07::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "CHANGELOG.md#Unreleased",
+      "boundary": "src/main.rs#main",
+      "subsystem": "repository-delta-2026-11-07",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "Delta added lines for secrets and debug gates",
+    "boundary": "No production debug switch in main",
+    "subsystem": "repository-delta-2026-11-07",
+    "attack_class": "Obvious exposures in the audited diff",
+    "starting_paths": [
+      "CHANGELOG.md",
+      "src/dispatch.rs",
+      "src/dispatch/rex.rs",
+      "src/setup/rex.rs",
+      "src/agents.rs",
+      "site/public/install.sh"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "Workflows are an out-of-scope unit. This unit is the diff text."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "CHANGELOG.md%23Unreleased::src%2Fmain.rs%23main::repository-delta-2026-11-08::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "CHANGELOG.md#Unreleased",
+      "boundary": "src/main.rs#main",
+      "subsystem": "repository-delta-2026-11-08",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "Delta added lines for secrets and debug gates",
+    "boundary": "No production debug switch in main",
+    "subsystem": "repository-delta-2026-11-08",
+    "attack_class": "Obvious exposures in the project-title diff",
+    "starting_paths": [
+      "CHANGELOG.md",
+      "src/main.rs",
+      "src/setup_agent.rs",
+      "src/domain/task.rs",
+      "src/cli/parser.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a workflow, installer fetch, or signing step."
+      },
+      {
+        "block": "AI-AND-LLM.md#Sensitive context extraction",
+        "reason": "The diff does not add a model context or a secret log."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Credential-store and local-secret boundary mismatch",
+        "reason": "No new credential store is in this diff."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "CHANGELOG.md%23Unreleased::src%2Fmain.rs%23main::repository-delta-2026-11-14::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "CHANGELOG.md#Unreleased",
+      "boundary": "src/main.rs#main",
+      "subsystem": "repository-delta-2026-11-14",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "Delta text for secrets and debug gates",
+    "boundary": "No production debug switch in main",
+    "subsystem": "repository-delta-2026-11-14",
+    "attack_class": "Obvious exposures in the focus redraw diff",
+    "starting_paths": [
+      "CHANGELOG.md",
+      "site/src/content/docs/docs/keys.md",
+      "src/app.rs",
+      "src/ui/input.rs",
+      "src/ui/mouse.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Herdr and Rex are local host CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "A focus or ctrl+l flood redraws the operator's own process. There is no second tenant or shared quota."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path is safe Rust and does not add an unsafe parser."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path paints a terminal, not a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not change profile templates or tool arguments."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "This delta does not change installers, hashes, or the update client."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "The repaint path does not read or write another tenant's store."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "Focus reporting is a mode bit on the operator's stdout. There is no socket, deep link, or exported component."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "CHANGELOG.md%23Unreleased::src%2Fmain.rs%23main::repository-delta-2026-11-15::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "CHANGELOG.md#Unreleased",
+      "boundary": "src/main.rs#main",
+      "subsystem": "repository-delta-2026-11-15",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "Delta text for secrets and debug gates",
+    "boundary": "No production debug switch in main",
+    "subsystem": "repository-delta-2026-11-15",
+    "attack_class": "Obvious exposures in the mode-restore diff",
+    "starting_paths": [
+      "CHANGELOG.md",
+      "site/src/content/docs/docs/keys.md",
+      "src/app.rs",
+      "src/ui/input.rs",
+      "src/ui/mouse.rs",
+      "src/main.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Herdr and Rex are local host CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "ctrl+l runs in the operator's process. This path adds no shared quota."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path is safe Rust and does not add an unsafe parser."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path paints a terminal, not a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not change profile templates or tool arguments."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "This delta does not change installers, hashes, or the update client."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This delta does not change store identity or project scope."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "This path has no socket, deep link, or exported component."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "CHANGELOG.md%23Unreleased::src%2Fmain.rs%23main::repository-delta-2026-11-17::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "CHANGELOG.md#Unreleased",
+      "boundary": "src/main.rs#main",
+      "subsystem": "repository-delta-2026-11-17",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "2026-11-17 delta text for secrets and debug gates",
+    "boundary": "No production debug switch in main",
+    "subsystem": "repository-delta-2026-11-17",
+    "attack_class": "Obvious exposures in the checks and installer diff",
+    "starting_paths": [
+      "CHANGELOG.md",
+      "src/cli/checks.rs",
+      "src/cli/parser.rs",
+      "src/cli/presenter.rs",
+      "src/agents.rs",
+      "site/public/install.ps1",
+      "src/main.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Terminal and HTML encoding are separate units."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "The checks authorization path is a separate unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Resource and file handling",
+        "reason": "Zip extraction is a separate unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "This path adds no key, token, or secret comparison."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+        "reason": "This path adds no export, search, or webhook."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries",
+        "reason": "No later component treats this output as a new authorization decision."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Wildcard",
+        "reason": "The assigned class is the changed control."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "This path has no HTTP session or authentication protocol."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "This path has no cloud identity or workload policy."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#Core discipline",
+        "reason": "This path has no RPC, queue, or broker message."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "The changed Rust has no unsafe block and no binary loader."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "This path does not call a model or dispatch a tool from model output."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Core discipline",
+        "reason": "This path does not schedule shared work or spend."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "The store is one OS user's file. There is no second tenant."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside the 2026-11-18 delta. The prior unit is not a surface this range changed."
+    ]
+  },
+  {
+    "coverage_id": "CHANGELOG.md%23Unreleased::src%2Fmain.rs%23main::repository-delta-2026-11-18::ATTACK-CLASSES.md%23Obvious%20things",
+    "canonical_refs": {
+      "surface": "CHANGELOG.md#Unreleased",
+      "boundary": "src/main.rs#main",
+      "subsystem": "repository-delta-2026-11-18",
+      "attack_class": "ATTACK-CLASSES.md#Obvious things"
+    },
+    "surface": "2026-11-18 delta text for secrets and debug gates",
+    "boundary": "No production debug switch in main",
+    "subsystem": "repository-delta-2026-11-18",
+    "attack_class": "Obvious exposures in the due, store, and release diff",
+    "starting_paths": [
+      "CHANGELOG.md",
+      "src/main.rs",
+      "src/domain/due.rs",
+      "src/store.rs",
+      "src/cli/edit.rs",
+      "skills/tsk-cli/SKILL.md"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Obvious things",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Secret and debug-gate scan is a separate unit from the injection traces."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-obvious",
+    "reviewed_paths": [
+      "CHANGELOG.md",
+      "src/main.rs",
+      "src/domain/due.rs",
+      "src/store.rs",
+      "src/cli/edit.rs",
+      "skills/tsk-cli/SKILL.md",
+      "Cargo.toml"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-obvious",
+        "reviewed_paths": [
+          "CHANGELOG.md",
+          "src/main.rs",
+          "src/domain/due.rs",
+          "src/store.rs",
+          "src/cli/edit.rs",
+          "skills/tsk-cli/SKILL.md",
+          "Cargo.toml"
+        ],
+        "invariant": "The delta adds no secret, debug gate, or dynamic execution of input.",
+        "method": "source",
+        "result": "main is unchanged and only routes. The diff adds due parsing, format refusal, thread flags, version bumps, and skill wording. No credential literal, auth skip, or eval of input.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_note": "",
+    "hardening": []
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Fboard-demo.js%23fullRowLabel::site%2Fpublic%2Fboard-demo.js%23esc::site%2Fpublic%2Fboard-demo.js::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "site/public/board-demo.js#fullRowLabel",
+      "boundary": "site/public/board-demo.js#esc",
+      "subsystem": "site/public/board-demo.js",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Board demo row labels after the due-date edit",
+    "boundary": "esc before a label is inserted into HTML",
+    "subsystem": "site/public/board-demo.js",
+    "attack_class": "Unescaped task text in the demo innerHTML",
+    "starting_paths": [
+      "site/public/board-demo.js",
+      "site/public/capture.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#postMessage origin and source trust",
+        "reason": "No postMessage handler was added."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-demo2",
+    "reviewed_paths": [
+      "site/public/board-demo.js",
+      "site/public/capture.js"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-demo2",
+        "reviewed_paths": [
+          "site/public/board-demo.js",
+          "site/public/capture.js"
+        ],
+        "invariant": "New due-date strings from task text or the draft are not placed in innerHTML without esc.",
+        "method": "source",
+        "result": "fullRowLabel is unchanged and its callers still pass the string through esc. The due diff adds a static placeholder, a sort name that layoutButtons escapes, and due field stores that are not interpolated into HTML.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_note": "",
+    "hardening": []
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Fboard-demo.js%23innerHTML::site%2Fpublic%2Fboard-demo.js%23esc::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/board-demo.js#innerHTML",
+      "boundary": "site/public/board-demo.js#esc",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "Board demo innerHTML",
+    "boundary": "esc before innerHTML",
+    "subsystem": "site/public",
+    "attack_class": "DOM XSS in the static board demo",
+    "starting_paths": [
+      "site/public/board-demo.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Fcapture.js%23parseCapture::site%2Fpublic%2Fboard-demo.js%23esc::site%2Fpublic::CLIENT-SIDE.md%23DOM-based%20XSS",
+    "canonical_refs": {
+      "surface": "site/public/capture.js#parseCapture",
+      "boundary": "site/public/board-demo.js#esc",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM-based XSS"
+    },
+    "surface": "Demo quick-add !d refusal and draft",
+    "boundary": "esc before refuse or draft is inserted into HTML",
+    "subsystem": "site/public",
+    "attack_class": "Script execution from a due token or thread token in the demo",
+    "starting_paths": [
+      "site/public/capture.js",
+      "site/public/board-demo.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "CLIENT-SIDE.md#Core discipline",
+      "CLIENT-SIDE.md#DOM-based XSS",
+      "CLIENT-SIDE.md#Universal moves",
+      "CLIENT-SIDE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#postMessage origin and source trust",
+        "reason": "The demo does not handle postMessage."
+      },
+      {
+        "block": "CLIENT-SIDE.md#Prototype pollution and gadget chain",
+        "reason": "parseCapture assigns fixed fields and does not merge object keys."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "The demo stores nothing in cookies or a server session."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-demo2",
+    "reviewed_paths": [
+      "site/public/capture.js",
+      "site/public/board-demo.js"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-demo2",
+        "reviewed_paths": [
+          "site/public/capture.js",
+          "site/public/board-demo.js"
+        ],
+        "invariant": "dueRefusal and the draft reach innerHTML only through esc, and parsed.due is not concatenated into HTML.",
+        "method": "source",
+        "result": "dueRefusal embeds the raw token in refuse. renderFooter places esc(state.refuse) and esc(state.draft) into the HTML. parsed.due is stored as a padded date and used as a sort key, not as markup. The typist is the same person viewing the demo.",
+        "artifact": null
+      },
+      {
+        "agent_id": "hunter-demo2",
+        "reviewed_paths": [
+          "site/public/capture.js",
+          "site/public/board-demo.js"
+        ],
+        "invariant": "parsed.due is not concatenated into an HTML string.",
+        "method": "source",
+        "result": "The only uses are object fields and a sort comparator. No template interpolates task.due.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_note": "",
+    "hardening": []
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Fgithub-stars.js%23fetch::site%2Fpublic%2Fgithub-stars.js%23textContent::site%2Fpublic::CLIENT-SIDE.md%23DOM%20and%20object-state%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/github-stars.js#fetch",
+      "boundary": "site/public/github-stars.js#textContent",
+      "subsystem": "site/public",
+      "attack_class": "CLIENT-SIDE.md#DOM and object-state attack classes"
+    },
+    "surface": "GitHub stars script",
+    "boundary": "textContent sink",
+    "subsystem": "site/public",
+    "attack_class": "DOM or cross-origin injection via the stars widget",
+    "starting_paths": [
+      "site/public/github-stars.js"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Finstall.ps1%23ExtractToDirectory::site%2Fpublic%2Finstall.ps1%23entry%20allowlist::site%2Fpublic%2Finstall.ps1::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "site/public/install.ps1#ExtractToDirectory",
+      "boundary": "site/public/install.ps1#entry allowlist",
+      "subsystem": "site/public/install.ps1",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "Windows release zip extract",
+    "boundary": "three-name allowlist before ExtractToDirectory",
+    "subsystem": "site/public/install.ps1",
+    "attack_class": "Zip slip or an archive write outside the extract directory",
+    "starting_paths": [
+      "site/public/install.ps1",
+      "tests/packaging/test_install_windows.py"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "The extract path does not interpolate archive names into a shell command."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "The installer runs as the invoking user and installs into that user's directory."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Dependency and build-input attack classes",
+        "reason": "This hunk does not change dependency resolution or the lockfile."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "No workflow file changed in this delta."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Deep-link, callback, and navigation attack classes",
+        "reason": "The installer has no URI scheme handler."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "The installer has no webview."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "The installer does not listen on a local socket."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Application-state and device-lifecycle attack classes",
+        "reason": "The installer does not restore an account or a device backup."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "This path adds no key, token, or secret comparison."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+        "reason": "This path adds no export, search, or webhook."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries",
+        "reason": "No later component treats this output as a new authorization decision."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Wildcard",
+        "reason": "The assigned class is the changed control."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "This path has no HTTP session or authentication protocol."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "This path has no cloud identity or workload policy."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#Core discipline",
+        "reason": "This path has no RPC, queue, or broker message."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "The changed Rust has no unsafe block and no binary loader."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "This path does not call a model or dispatch a tool from model output."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Core discipline",
+        "reason": "This path does not schedule shared work or spend."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "The store is one OS user's file. There is no second tenant."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside the 2026-11-18 delta. The prior unit is not a surface this range changed."
+    ]
+  },
+  {
+    "coverage_id": "site%2Fpublic%2Finstall.sh%23setup%20rex::site%2Fpublic%2Finstall.sh%23SHA256SUMS::site::SUPPLY-CHAIN-AND-RELEASE.md%23Release%20and%20update%20attack%20classes",
+    "canonical_refs": {
+      "surface": "site/public/install.sh#setup rex",
+      "boundary": "site/public/install.sh#SHA256SUMS",
+      "subsystem": "site",
+      "attack_class": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes"
+    },
+    "surface": "Installer setup rex and the site lockfile bump",
+    "boundary": "SHA256SUMS check and pinned npm versions",
+    "subsystem": "site/public/install.sh",
+    "attack_class": "Command injection or an unbound dependency in the delta",
+    "starting_paths": [
+      "site/public/install.sh",
+      "site/package.json",
+      "site/package-lock.json"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "SUPPLY-CHAIN-AND-RELEASE.md#Core discipline",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Dependency and build-input attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Universal moves",
+      "SUPPLY-CHAIN-AND-RELEASE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "The installer is a shell script, not a webview."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fagents.rs%23resolve_assignee::src%2Fagents.rs%23profiles.contains_key::src%2Fagents.rs::ATTACK-CLASSES.md%23Access%20control",
+    "canonical_refs": {
+      "surface": "src/agents.rs#resolve_assignee",
+      "boundary": "src/agents.rs#profiles.contains_key",
+      "subsystem": "src/agents.rs",
+      "attack_class": "ATTACK-CLASSES.md#Access control"
+    },
+    "surface": "Assignee name resolution after resolve_name removal",
+    "boundary": "resolve_assignee still requires an exact profile key",
+    "subsystem": "src/agents.rs",
+    "attack_class": "Removing resolve_name drops a live profile-name check",
+    "starting_paths": [
+      "src/agents.rs",
+      "src/cli/add.rs",
+      "src/cli/edit.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Launcher quoting is unchanged and is not this removal."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+        "reason": "No helper or IPC path changed with the deletion."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "This path adds no key, token, or secret comparison."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+        "reason": "This path adds no export, search, or webhook."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries",
+        "reason": "No later component treats this output as a new authorization decision."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Wildcard",
+        "reason": "The assigned class is the changed control."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "This path has no HTTP session or authentication protocol."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "This path has no cloud identity or workload policy."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#Core discipline",
+        "reason": "This path has no RPC, queue, or broker message."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "The changed Rust has no unsafe block and no binary loader."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "This path does not call a model or dispatch a tool from model output."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Core discipline",
+        "reason": "This path does not schedule shared work or spend."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "The store is one OS user's file. There is no second tenant."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside the 2026-11-18 delta. The prior unit is not a surface this range changed."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fagents.rs%23shell_script::src%2Fagents.rs%23shell_quote::src%2Fagents.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/agents.rs#shell_script",
+      "boundary": "src/agents.rs#shell_quote",
+      "subsystem": "src/agents.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Unix and Windows launcher scripts",
+    "boundary": "shell_quote and the typed launch line",
+    "subsystem": "src/agents.rs",
+    "attack_class": "Shell or PowerShell injection from task text or profile env",
+    "starting_paths": [
+      "src/agents.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules",
+      "AI-AND-LLM.md#Core discipline",
+      "AI-AND-LLM.md#Tool and action attack classes",
+      "AI-AND-LLM.md#Universal moves",
+      "AI-AND-LLM.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fapp.rs%23board_mouse_intent::src%2Fapp.rs%23resolve_board_surface::src%2Fapp.rs::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/app.rs#board_mouse_intent",
+      "boundary": "src/app.rs#resolve_board_surface",
+      "subsystem": "src/app.rs",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "Board mouse click routing",
+    "boundary": "Hit map matches the painted frame",
+    "subsystem": "src/app.rs",
+    "attack_class": "Click lands on a control the frame withdrew",
+    "starting_paths": [
+      "src/app.rs",
+      "src/ui/board/draw.rs",
+      "src/ui/board/model.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Herdr and Rex are local host CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "This delta does not add a shared quota or an amplification loop."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path is safe Rust and does not add an unsafe parser."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path paints a terminal, not a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not change profile templates or tool arguments."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "This delta does not change installers, hashes, or the update client."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This delta does not change store identity or project scope."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "This path has no socket, deep link, or exported component."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fapp.rs%23run_board_loop::src%2Fapp.rs%23is_full_repaint_request::src%2Fapp.rs::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/app.rs#run_board_loop",
+      "boundary": "src/app.rs#is_full_repaint_request",
+      "subsystem": "src/app.rs",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "Board focus and ctrl+l repaint",
+    "boundary": "is_full_repaint_request consumes the event before intent dispatch",
+    "subsystem": "src/app.rs",
+    "attack_class": "Repaint changes task status, dispatch, paste, or save recovery",
+    "starting_paths": [
+      "src/app.rs",
+      "src/ui/input.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Herdr and Rex are local host CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "A focus or ctrl+l flood redraws the operator's own process. There is no second tenant or shared quota."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path is safe Rust and does not add an unsafe parser."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path paints a terminal, not a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not change profile templates or tool arguments."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "This delta does not change installers, hashes, or the update client."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "The repaint path does not read or write another tenant's store."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "Focus reporting is a mode bit on the operator's stdout. There is no socket, deep link, or exported component."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fbackup.rs%23scheme_token::src%2Fbackup.rs%23credentials::src%2Fbackup.rs::ATTACK-CLASSES.md%23Cryptography%20and%20secrets",
+    "canonical_refs": {
+      "surface": "src/backup.rs#scheme_token",
+      "boundary": "src/backup.rs#credentials",
+      "subsystem": "src/backup.rs",
+      "attack_class": "ATTACK-CLASSES.md#Cryptography and secrets"
+    },
+    "surface": "Backup URL scheme token",
+    "boundary": "scheme_token strips a prefixed https userinfo",
+    "subsystem": "src/backup.rs",
+    "attack_class": "Credential disclosure from a backup URL whose scheme is not at byte zero",
+    "starting_paths": [
+      "src/backup.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Cryptography and secrets",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Deep-link, callback, and navigation attack classes",
+        "reason": "Backup URLs are git remotes, not OS deep links."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fcapture.rs%23lift_quick_add_tokens::src%2Fui%2Fmod.rs%23terminal_text::src%2Fui::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/capture.rs#lift_quick_add_tokens",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Quick-add !d and task-page Due field",
+    "boundary": "present_line and escaped_line_window before the refusal or draft is painted",
+    "subsystem": "src/ui",
+    "attack_class": "Terminal control injection from a due draft or refusal",
+    "starting_paths": [
+      "src/capture.rs",
+      "src/ui/board/apply.rs",
+      "src/ui/board/draw.rs",
+      "src/ui/render.rs",
+      "src/ui/edit.rs",
+      "src/ui/mod.rs",
+      "src/domain/due.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM-based XSS",
+        "reason": "This unit's sink is the terminal or CLI, not the browser DOM."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local file ownership and TOCTOU",
+        "reason": "This unit does not check or write the state-directory ACL."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Migration default and ownership confusion",
+        "reason": "This unit does not migrate the store document."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "The board has no second principal whose authority these strings could bypass."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "Due days and thread names are not secrets."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "These paths do not build or publish a release."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-ui2",
+    "reviewed_paths": [
+      "src/capture.rs",
+      "src/domain/due.rs",
+      "src/ui/board/apply.rs",
+      "src/ui/board/draw.rs",
+      "src/ui/board/model.rs",
+      "src/ui/edit.rs",
+      "src/ui/mod.rs",
+      "src/ui/render.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-ui2",
+        "reviewed_paths": [
+          "src/capture.rs",
+          "src/domain/due.rs",
+          "src/ui/board/apply.rs",
+          "src/ui/board/draw.rs",
+          "src/ui/board/model.rs",
+          "src/ui/edit.rs",
+          "src/ui/mod.rs",
+          "src/ui/render.rs"
+        ],
+        "invariant": "C0/C1 in a due token or its refusal are escaped before a Span or the status row.",
+        "method": "source",
+        "result": "The !d refusal is built with the raw token, then set_message stores terminal_text. form_due uses the same wording. The footer editor uses escaped_line_window. paint_bottom_input_message and paint_status_line call present_line. The due segment in the footer is passed through terminal_text. parse_due stores only YYYY-MM-DD.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_note": "",
+    "hardening": []
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fchecks.rs%23run::src%2Fdomain%2Ftask.rs%23set_check::src%2Fdomain%2Ftask.rs::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/cli/checks.rs#run",
+      "boundary": "src/domain/task.rs#set_check",
+      "subsystem": "src/domain/task.rs",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "tsk checks set transition",
+    "boundary": "set_check writes only the addressed check state",
+    "subsystem": "src/domain/task.rs",
+    "attack_class": "set changes human status, saves a no-op, or marks a different check than list order",
+    "starting_paths": [
+      "src/cli/checks.rs",
+      "src/domain/task.rs",
+      "src/cli/presenter.rs",
+      "src/domain/block.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "Who may call set_check is the access-control unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "The bytes written to the terminal are the presenter unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "This path adds no key, token, or secret comparison."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+        "reason": "This path adds no export, search, or webhook."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries",
+        "reason": "No later component treats this output as a new authorization decision."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Wildcard",
+        "reason": "The assigned class is the changed control."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "This path has no HTTP session or authentication protocol."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "This path has no cloud identity or workload policy."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#Core discipline",
+        "reason": "This path has no RPC, queue, or broker message."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "The changed Rust has no unsafe block and no binary loader."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "This path does not call a model or dispatch a tool from model output."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Core discipline",
+        "reason": "This path does not schedule shared work or spend."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "The store is one OS user's file. There is no second tenant."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside the 2026-11-18 delta. The prior unit is not a surface this range changed."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fparser.rs%23--due::src%2Fui%2Fmod.rs%23terminal_text::src%2Fcli::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/cli/parser.rs#--due",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/cli",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "CLI --due and list due text",
+    "boundary": "terminal_text or serde JSON string encoding before stdout",
+    "subsystem": "src/cli",
+    "attack_class": "Terminal control injection from a due day or its refusal",
+    "starting_paths": [
+      "src/domain/due.rs",
+      "src/cli/add.rs",
+      "src/cli/edit.rs",
+      "src/cli/parser.rs",
+      "src/cli/presenter.rs",
+      "src/cli/list.rs",
+      "src/ui/mod.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM-based XSS",
+        "reason": "This unit's sink is the terminal or CLI, not the browser DOM."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local file ownership and TOCTOU",
+        "reason": "This unit does not check or write the state-directory ACL."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Migration default and ownership confusion",
+        "reason": "This unit does not migrate the store document."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "The board has no second principal whose authority these strings could bypass."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "Due days and thread names are not secrets."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "These paths do not build or publish a release."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-cli",
+    "reviewed_paths": [
+      "src/domain/due.rs",
+      "src/cli/add.rs",
+      "src/cli/edit.rs",
+      "src/cli/parser.rs",
+      "src/cli/presenter.rs",
+      "src/cli/list.rs",
+      "src/ui/mod.rs",
+      "src/cli/mod.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-cli",
+        "reviewed_paths": [
+          "src/domain/due.rs",
+          "src/cli/add.rs",
+          "src/cli/edit.rs",
+          "src/cli/parser.rs",
+          "src/cli/presenter.rs",
+          "src/cli/list.rs",
+          "src/ui/mod.rs",
+          "src/cli/mod.rs"
+        ],
+        "invariant": "A due token is accepted only as parse_due YYYY-MM-DD, refusals are Debug-formatted then terminal_text, and list JSON uses serde_json.",
+        "method": "source",
+        "result": "No due byte is interpolated into a shell, path, or raw terminal sequence. Human list lines call terminal_text. JSON encoding escapes controls.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_note": "new due CLI surface",
+    "hardening": []
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fparser.rs%23parse_flag_checks::src%2Fdomain%2Ftask.rs%23set_check::src%2Fcli%2Fchecks.rs::ATTACK-CLASSES.md%23Access%20control",
+    "canonical_refs": {
+      "surface": "src/cli/parser.rs#parse_flag_checks",
+      "boundary": "src/domain/task.rs#set_check",
+      "subsystem": "src/cli/checks.rs",
+      "attack_class": "ATTACK-CLASSES.md#Access control"
+    },
+    "surface": "tsk checks argv and store write",
+    "boundary": "set_check requires an open review on the addressed task",
+    "subsystem": "src/cli/checks.rs",
+    "attack_class": "A caller marks a check the review record does not allow",
+    "starting_paths": [
+      "src/cli/checks.rs",
+      "src/cli/parser.rs",
+      "src/cli/mod.rs",
+      "src/cli/router.rs",
+      "src/main.rs",
+      "src/domain/task.rs",
+      "src/store.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Argument injection into a shell is not this boundary. Output encoding is a separate unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Business logic",
+        "reason": "Status and idempotence are a separate unit on the same function."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Resource and file handling",
+        "reason": "The state directory is the caller's store. Path traversal of --state-dir is the same-user store selection older verbs already have."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+        "reason": "No new OS principal is introduced. The Windows DACL lead is its own carried unit."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "This path adds no key, token, or secret comparison."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Feature abuse and data leakage",
+        "reason": "This path adds no export, search, or webhook."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Chained vulnerabilities and trust boundaries",
+        "reason": "No later component treats this output as a new authorization decision."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Wildcard",
+        "reason": "The assigned class is the changed control."
+      },
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Core discipline",
+        "reason": "This path has no HTTP session or authentication protocol."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Core discipline",
+        "reason": "This path has no cloud identity or workload policy."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#Core discipline",
+        "reason": "This path has no RPC, queue, or broker message."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Core discipline",
+        "reason": "The changed Rust has no unsafe block and no binary loader."
+      },
+      {
+        "block": "AI-AND-LLM.md#Core discipline",
+        "reason": "This path does not call a model or dispatch a tool from model output."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Core discipline",
+        "reason": "This path does not schedule shared work or spend."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+        "reason": "The store is one OS user's file. There is no second tenant."
+      }
+    ],
+    "prior_status": "prior_covered_same_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Outside the 2026-11-18 delta. The prior unit is not a surface this range changed."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fparser.rs%23parse_thread::src%2Fdomain%2Fthread.rs%23normalize_thread::src%2Fcli::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/cli/parser.rs#parse_thread",
+      "boundary": "src/domain/thread.rs#normalize_thread",
+      "subsystem": "src/cli",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "tsk edit --thread and --clear-thread",
+    "boundary": "normalize_thread rejects characters outside letters, digits, hyphen, and dot",
+    "subsystem": "src/cli",
+    "attack_class": "Terminal or shell injection from a thread name",
+    "starting_paths": [
+      "src/cli/parser.rs",
+      "src/cli/edit.rs",
+      "src/cli/mod.rs",
+      "src/domain/thread.rs",
+      "src/cli/presenter.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM-based XSS",
+        "reason": "This unit's sink is the terminal or CLI, not the browser DOM."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local file ownership and TOCTOU",
+        "reason": "This unit does not check or write the state-directory ACL."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Migration default and ownership confusion",
+        "reason": "This unit does not migrate the store document."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "The board has no second principal whose authority these strings could bypass."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "Due days and thread names are not secrets."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "These paths do not build or publish a release."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-cli",
+    "reviewed_paths": [
+      "src/cli/parser.rs",
+      "src/cli/edit.rs",
+      "src/cli/mod.rs",
+      "src/domain/thread.rs",
+      "src/cli/presenter.rs",
+      "src/cli/add.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-cli",
+        "reviewed_paths": [
+          "src/cli/parser.rs",
+          "src/cli/edit.rs",
+          "src/cli/mod.rs",
+          "src/domain/thread.rs",
+          "src/cli/presenter.rs",
+          "src/cli/add.rs"
+        ],
+        "invariant": "Thread argv is accepted only after normalize_thread, and the refusal does not include the rejected character.",
+        "method": "source",
+        "result": "Bad characters are refused before storage. Usage errors pass through terminal_text. --clear-thread stores no thread. No shell interpolation.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_note": "",
+    "hardening": []
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fpresenter.rs%23present::src%2Fui%2Fmod.rs%23terminal_text::src%2Fcli%2Fpresenter.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/cli/presenter.rs#present",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/cli/presenter.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "CLI text for list rows after due was added",
+    "boundary": "terminal_text before stored text is printed",
+    "subsystem": "src/cli/presenter.rs",
+    "attack_class": "Terminal control injection from due, thread, or list text",
+    "starting_paths": [
+      "src/cli/presenter.rs",
+      "src/cli/list.rs",
+      "src/ui/mod.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM-based XSS",
+        "reason": "This unit's sink is the terminal or CLI, not the browser DOM."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local file ownership and TOCTOU",
+        "reason": "This unit does not check or write the state-directory ACL."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Migration default and ownership confusion",
+        "reason": "This unit does not migrate the store document."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "The board has no second principal whose authority these strings could bypass."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "Due days and thread names are not secrets."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "These paths do not build or publish a release."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-cli",
+    "reviewed_paths": [
+      "src/cli/presenter.rs",
+      "src/cli/list.rs",
+      "src/ui/mod.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-cli",
+        "reviewed_paths": [
+          "src/cli/presenter.rs",
+          "src/cli/list.rs",
+          "src/ui/mod.rs"
+        ],
+        "invariant": "Stored due and thread bytes printed by the human presenter pass through terminal_text.",
+        "method": "source",
+        "result": "append_row and the direct due line call terminal_text. list --json uses serde_json. The new due lines did not add a raw sink.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_note": "",
+    "hardening": []
+  },
+  {
+    "coverage_id": "src%2Fcli%2Fupdate.rs%23run_for::src%2Fcli%2Fupdate.rs%23hardened_curl::src%2Fcli%2Fupdate.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/cli/update.rs#run_for",
+      "boundary": "src/cli/update.rs#hardened_curl",
+      "subsystem": "src/cli/update.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Release update client",
+    "boundary": "hardened curl and the installer handoff",
+    "subsystem": "src/cli/update.rs",
+    "attack_class": "Installer script substitution",
+    "starting_paths": [
+      "src/cli/update.rs",
+      "src/update.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fcontext.rs%23HERDR_PLUGIN_CONTEXT_JSON::src%2Fboard_pane.rs%23is_flag_safe_pane_id::src%2Fcontext.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/context.rs#HERDR_PLUGIN_CONTEXT_JSON",
+      "boundary": "src/board_pane.rs#is_flag_safe_pane_id",
+      "subsystem": "src/context.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Herdr plugin context JSON",
+    "boundary": "Pane id allowlist",
+    "subsystem": "src/context.rs",
+    "attack_class": "Host-injected capture context",
+    "starting_paths": [
+      "src/context.rs",
+      "src/board_pane.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fdispatch%2Fhost.rs%23worktree_root::src%2Fdispatch%2Fhost.rs%23path_within::src%2Fdispatch::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "src/dispatch/host.rs#worktree_root",
+      "boundary": "src/dispatch/host.rs#path_within",
+      "subsystem": "src/dispatch",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "New worktree root and checkout path",
+    "boundary": "Refuse a checkout directory inside the project",
+    "subsystem": "src/dispatch",
+    "attack_class": "Path traversal or a checkout outside the intended root",
+    "starting_paths": [
+      "src/dispatch/host.rs",
+      "src/dispatch/rex.rs",
+      "src/agents.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fdispatch%2Fpr.rs%23merge::src%2Fdispatch%2Fpr.rs%23merge_args::src%2Fdispatch%2Fpr.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/dispatch/pr.rs#merge",
+      "boundary": "src/dispatch/pr.rs#merge_args",
+      "subsystem": "src/dispatch/pr.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "gh pull request merge argv",
+    "boundary": "merge flags without admin or branch delete",
+    "subsystem": "src/dispatch/pr.rs",
+    "attack_class": "Merge bypass or gh argument injection",
+    "starting_paths": [
+      "src/dispatch/pr.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fdispatch%2Frex.rs%23open_tab::src%2Fdispatch%2Frex.rs%23close_task_workspace::src%2Fdispatch%2Frex.rs::ATTACK-CLASSES.md%23Access%20control",
+    "canonical_refs": {
+      "surface": "src/dispatch/rex.rs#open_tab",
+      "boundary": "src/dispatch/rex.rs#close_task_workspace",
+      "subsystem": "src/dispatch/rex.rs",
+      "attack_class": "ATTACK-CLASSES.md#Access control"
+    },
+    "surface": "Rex session, tab, and workspace close",
+    "boundary": "session id shape and close_task_workspace",
+    "subsystem": "src/dispatch/rex.rs",
+    "attack_class": "Closing or opening a session the dispatch did not own",
+    "starting_paths": [
+      "src/dispatch/rex.rs",
+      "src/dispatch/host.rs",
+      "src/dispatch.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fdispatch%2Frex.rs%23rex%20api%20call::src%2Fdispatch%2Frex.rs%23prompt::src%2Fdispatch%2Frex.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/dispatch/rex.rs#rex api call",
+      "boundary": "src/dispatch/rex.rs#prompt",
+      "subsystem": "src/dispatch/rex.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Rex API calls and reply paste",
+    "boundary": "JSON argv and the block paste sink",
+    "subsystem": "src/dispatch/rex.rs",
+    "attack_class": "Injection into a Rex command or a typed pane line",
+    "starting_paths": [
+      "src/dispatch/rex.rs",
+      "src/dispatch.rs",
+      "src/cli/reply.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules",
+      "AI-AND-LLM.md#Core discipline",
+      "AI-AND-LLM.md#Tool and action attack classes",
+      "AI-AND-LLM.md#Universal moves",
+      "AI-AND-LLM.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fdispatch.rs%23git%20worktree%20remove::src%2Fdispatch%2Fhost.rs%23follows_path_rule::src%2Fdispatch::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "src/dispatch.rs#git worktree remove",
+      "boundary": "src/dispatch/host.rs#follows_path_rule",
+      "subsystem": "src/dispatch",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "Cleanup removal of a recorded worktree",
+    "boundary": "follows_path_rule plus git registration",
+    "subsystem": "src/dispatch",
+    "attack_class": "Removal of a path that is not the recorded checkout",
+    "starting_paths": [
+      "src/dispatch.rs",
+      "src/dispatch/host.rs",
+      "src/dispatch/rex.rs",
+      "src/ui/board/cleanup_card.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Deletion, revocation, and lifecycle attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fdispatch.rs%23update-ref::src%2Fgit_base.rs%23check-ref-format::src%2Fdispatch::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/dispatch.rs#update-ref",
+      "boundary": "src/git_base.rs#check-ref-format",
+      "subsystem": "src/dispatch",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Stored branch and base passed to git",
+    "boundary": "check-ref-format on values that reach git argv",
+    "subsystem": "src/dispatch",
+    "attack_class": "Argument injection into git or gh from a stored record",
+    "starting_paths": [
+      "src/dispatch.rs",
+      "src/git_base.rs",
+      "src/dispatch/pr.rs",
+      "src/domain/task.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules",
+      "AI-AND-LLM.md#Core discipline",
+      "AI-AND-LLM.md#Tool and action attack classes",
+      "AI-AND-LLM.md#Universal moves",
+      "AI-AND-LLM.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This unit is not project-identity selection. Basename collision has its own unit."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fdomain%2Ftask.rs%23project_name::src%2Fagents.rs%23render_template::src%2Fdispatch.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/domain/task.rs#project_name",
+      "boundary": "src/agents.rs#render_template",
+      "subsystem": "src/dispatch.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Project title versus launcher and git argv",
+    "boundary": "Profile templates substitute task fields only",
+    "subsystem": "src/dispatch.rs",
+    "attack_class": "A project title reaching a shell, launcher, or path",
+    "starting_paths": [
+      "src/domain/task.rs",
+      "src/agents.rs",
+      "src/dispatch.rs",
+      "src/ui/board/project_title.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a workflow, installer fetch, or signing step."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool-argument injection into a downstream sink",
+        "reason": "Project titles are not in the argv substitution set. Task title substitution is unchanged and outside this diff."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged helper as confused deputy",
+        "reason": "No helper receives the project title. Launcher text is unchanged."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Migration default and ownership confusion",
+        "reason": "This unit is the sink check, not the store migration."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Ffsperm.rs%23ensure_private_dir::src%2Ffsperm.rs%23tighten_file::src%2Fstore.rs::DESKTOP-MOBILE-AND-LOCAL-IPC.md%23Local%20file%20ownership%20and%20TOCTOU",
+    "canonical_refs": {
+      "surface": "src/fsperm.rs#ensure_private_dir",
+      "boundary": "src/fsperm.rs#tighten_file",
+      "subsystem": "src/store.rs",
+      "attack_class": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local file ownership and TOCTOU"
+    },
+    "surface": "State directory creation on Windows",
+    "boundary": "No DACL is set off Unix",
+    "subsystem": "src/store.rs",
+    "attack_class": "Windows state directory readable by another OS principal",
+    "starting_paths": [
+      "src/fsperm.rs",
+      "src/store.rs",
+      "src/dispatch.rs",
+      "src/agents.rs",
+      "site/public/install.ps1",
+      "site/src/content/docs/docs/storage.md"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "Single OS-user store. The question is the Windows DACL, not a tenant field."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "State files are not exposed through a webview."
+      }
+    ],
+    "prior_status": "prior_needs_validation",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "verifier-win2",
+    "reviewed_paths": [
+      "src/fsperm.rs",
+      "src/store.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-win2",
+        "reviewed_paths": [
+          "src/fsperm.rs",
+          "src/store.rs"
+        ],
+        "invariant": "Windows state objects are created with no security descriptor from this repository.",
+        "method": "source",
+        "result": "fsperm.rs is unchanged in the delta. Modes 0700 and 0600 are cfg(unix) only. tighten_file discards the path off Unix. The inherited DACL was not observed on this Linux host.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "windows-state-dir-acl"
+    ],
+    "unresolved": [],
+    "hunter_note": "phase 3 verifier is the first check; do not hunt"
+  },
+  {
+    "coverage_id": "src%2Fscope.rs%23resolve_project_path::src%2Fscope.rs%23ProjectResolveError%3A%3AAmbiguous::src%2Fscope.rs::ATTACK-CLASSES.md%23Access%20control",
+    "canonical_refs": {
+      "surface": "src/scope.rs#resolve_project_path",
+      "boundary": "src/scope.rs#ProjectResolveError::Ambiguous",
+      "subsystem": "src/scope.rs",
+      "attack_class": "ATTACK-CLASSES.md#Access control"
+    },
+    "surface": "Project title and basename resolution",
+    "boundary": "Title match first, then ambiguous refusal",
+    "subsystem": "src/scope.rs",
+    "attack_class": "A title or basename token selecting the wrong project",
+    "starting_paths": [
+      "src/scope.rs",
+      "src/domain/task.rs",
+      "src/cli/parser.rs",
+      "src/cli/archive.rs",
+      "src/cli/add.rs",
+      "src/capture.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "Project resolution does not cross a webview bridge."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fsetup%2Frex.rs%23lua_string::src%2Fsetup%2Fdir_unix.rs%23openat::src%2Fsetup%2Frex.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/setup/rex.rs#lua_string",
+      "boundary": "src/setup/dir_unix.rs#openat",
+      "subsystem": "src/setup/rex.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "tsk setup rex Lua and config writes",
+    "boundary": "lua_string and the managed tsk.lua rename",
+    "subsystem": "src/setup/rex.rs",
+    "attack_class": "Lua or path injection while writing Rex config",
+    "starting_paths": [
+      "src/setup/rex.rs",
+      "src/setup/rex.lua",
+      "src/setup/dir_unix.rs",
+      "src/setup/dir_windows.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Core discipline",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Privileged-helper and local-file attack classes",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Universal moves",
+      "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+        "reason": "Setup does not restore a task document."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fstore.rs%23TaskStore::src%2Ffsperm.rs%23ensure_private_dir::src%2Ffsperm.rs::ATTACK-CLASSES.md%23Resource%20and%20file%20handling",
+    "canonical_refs": {
+      "surface": "src/store.rs#TaskStore",
+      "boundary": "src/fsperm.rs#ensure_private_dir",
+      "subsystem": "src/fsperm.rs",
+      "attack_class": "ATTACK-CLASSES.md#Resource and file handling"
+    },
+    "surface": "Unix state file modes",
+    "boundary": "0700 directories and 0600 files",
+    "subsystem": "src/fsperm.rs",
+    "attack_class": "Another OS user reading the store on Unix",
+    "starting_paths": [
+      "src/fsperm.rs",
+      "src/store.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource and file handling",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_needs_validation",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "verifier-unix",
+    "reviewed_paths": [
+      "src/fsperm.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-unix",
+        "reviewed_paths": [
+          "src/fsperm.rs"
+        ],
+        "invariant": "Unix state directories and files are owner-only, and a symlink is not chmodded.",
+        "method": "source",
+        "result": "ensure_private_dir masks directory mode to 0o700 on Unix, create_private_file sets 0o600, and tighten_file masks to 0o600 after an inode check. The delta does not change fsperm.rs. The Windows DACL fingerprint does not describe this unit.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_note": "phase 3 verifier is the first check; do not hunt",
+    "hardening": [
+      "The prior ledger linked windows-state-dir-acl to this Unix unit. The fingerprint stays only on the Windows unit."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fstore.rs%23load_document::src%2Fstore.rs%23check_supported::src%2Fstore.rs::DATA-ISOLATION-AND-LIFECYCLE.md%23Migration%20default%20and%20ownership%20confusion",
+    "canonical_refs": {
+      "surface": "src/store.rs#load_document",
+      "boundary": "src/store.rs#check_supported",
+      "subsystem": "src/store.rs",
+      "attack_class": "DATA-ISOLATION-AND-LIFECYCLE.md#Migration default and ownership confusion"
+    },
+    "surface": "Store format 7 load and refusal of versions 8-18",
+    "boundary": "Versions above 7 are refused; version 7 is read without the v6 migration",
+    "subsystem": "src/store.rs",
+    "attack_class": "A dev or newer document is read as the released v7 layout",
+    "starting_paths": [
+      "src/store.rs",
+      "src/domain/task.rs",
+      "src/domain/due.rs"
+    ],
+    "ordinary_attack_class_block": null,
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Migration default and ownership confusion",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "ATTACK-CLASSES.md#Injection",
+        "reason": "Format refusal does not render task text. Display of a loaded due is a separate injection unit."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local file ownership and TOCTOU",
+        "reason": "This unit is the version gate, not the Windows DACL."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM-based XSS",
+        "reason": "The store is not parsed in the browser demo."
+      }
+    ],
+    "prior_status": "new",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-store",
+    "reviewed_paths": [
+      "src/store.rs",
+      "src/domain/task.rs",
+      "src/domain/due.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-store",
+        "reviewed_paths": [
+          "src/store.rs",
+          "src/domain/task.rs",
+          "src/domain/due.rs"
+        ],
+        "invariant": "Versions above 7 are refused, and a v7 direct load agrees with migrate_v6_to_v7 on host and session.",
+        "method": "source",
+        "result": "load_document and check_document refuse found 0 and found greater than 7 before parse. Versions 8-18 are not read as v7. DispatchWire aliases herdr_workspace_id and defaults host with of_legacy_id, matching the migration. A document with both session and herdr_workspace_id fails closed under deny_unknown_fields. Due is not revalidated on load; display and JSON sinks encode it, and the only writer of a raw due string is the store file owner.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_note": "",
+    "hardening": []
+  },
+  {
+    "coverage_id": "src%2Fstore.rs%23migrate_v15_to_v16::src%2Fdomain%2Ftask.rs%23AgentHost%3A%3Aof_legacy_id::src%2Fstore.rs::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/store.rs#migrate_v15_to_v16",
+      "boundary": "src/domain/task.rs#AgentHost::of_legacy_id",
+      "subsystem": "src/store.rs",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "Store v16 dispatch host migration",
+    "boundary": "AgentHost inferred from the session id prefix",
+    "subsystem": "src/store.rs",
+    "attack_class": "A migrated record aimed at the wrong host",
+    "starting_paths": [
+      "src/store.rs",
+      "src/domain/task.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Export, backup, restore, and migration attack classes",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#MCP and sub-agent trust classes",
+        "reason": "tsk does not speak MCP or load a tool schema from a model."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a GitHub Actions workflow."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Deep-link, callback, and navigation attack classes",
+        "reason": "Migration does not handle a deep link."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fstore.rs%23migrate_v16_to_v17::src%2Fdomain%2Ftask.rs%23merge_project_records::src%2Fstore.rs::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/store.rs#migrate_v16_to_v17",
+      "boundary": "src/domain/task.rs#merge_project_records",
+      "subsystem": "src/store.rs",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "Store v17 project title migration and merge",
+    "boundary": "Field-by-field reapply of unsaved title and archive intents",
+    "subsystem": "src/store.rs",
+    "attack_class": "A migrated or merged title aimed at the wrong project",
+    "starting_paths": [
+      "src/store.rs",
+      "src/domain/task.rs",
+      "src/domain/undo.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Core discipline",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Migration default and ownership confusion",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Universal moves",
+      "DATA-ISOLATION-AND-LIFECYCLE.md#Validation rules"
+    ],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a workflow, installer fetch, or signing step."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "The store is one OS user's file. There is no second tenant key."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "Migration does not call a model or a tool."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local file ownership and TOCTOU",
+        "reason": "Windows ACL is a separate carried unit. This unit is the title field merge."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Fboard%2Fmodel.rs%23CleanupRow%3A%3Apr_line::src%2Fdispatch%2Fpr.rs%23mergeable::src%2Fdispatch%2Fpr.rs::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/ui/board/model.rs#CleanupRow::pr_line",
+      "boundary": "src/dispatch/pr.rs#mergeable",
+      "subsystem": "src/dispatch/pr.rs",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "Cleanup card merge line",
+    "boundary": "pr::mergeable refuses a bad pull request",
+    "subsystem": "src/dispatch/pr.rs",
+    "attack_class": "Deleting merge_skip_reason drops a merge gate",
+    "starting_paths": [
+      "src/ui/board/model.rs",
+      "src/dispatch/pr.rs",
+      "src/ui/board/cleanup_card.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Herdr and Rex are local host CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "This delta does not add a shared quota or an amplification loop."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path is safe Rust and does not add an unsafe parser."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path paints a terminal, not a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not change profile templates or tool arguments."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "This delta does not change installers, hashes, or the update client."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This delta does not change store identity or project scope."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "This path has no socket, deep link, or exported component."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Finput.rs%23word_chord::src%2Fapp.rs%23save%20recovery%20allowlist::src%2Fui::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "src/ui/input.rs#word_chord",
+      "boundary": "src/app.rs#save recovery allowlist",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "Board keyboard chords",
+    "boundary": "Ctrl mutating verbs and the save-recovery allowlist",
+    "subsystem": "src/ui",
+    "attack_class": "Editing chords changing status",
+    "starting_paths": [
+      "src/ui/input.rs",
+      "src/app.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Rex and Herdr are spawned as local CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared service quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Fmod.rs%23terminal_text::src%2Fui%2Fedit.rs%23wrap_text::src%2Fui::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/ui/mod.rs#terminal_text",
+      "boundary": "src/ui/edit.rs#wrap_text",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Board paint of task text after redraw",
+    "boundary": "terminal_text before a cell is written",
+    "subsystem": "src/ui",
+    "attack_class": "Untrusted task text reaches the terminal as a control sequence",
+    "starting_paths": [
+      "src/ui/mod.rs",
+      "src/ui/edit.rs",
+      "src/ui/render.rs",
+      "src/ui/board/draw.rs",
+      "src/ui/text_select.rs",
+      "src/app.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Herdr and Rex are local host CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "ctrl+l runs in the operator's process. This path adds no shared quota."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path is safe Rust and does not add an unsafe parser."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path paints a terminal, not a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not change profile templates or tool arguments."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "This delta does not change installers, hashes, or the update client."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This delta does not change store identity or project scope."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "This path has no socket, deep link, or exported component."
+      }
+    ],
+    "prior_status": "prior_needs_validation",
+    "attempts": [],
+    "wave": 1,
+    "status": "candidate",
+    "agent_id": "verifier-paint",
+    "reviewed_paths": [
+      "src/context.rs",
+      "src/capture.rs",
+      "src/scope.rs",
+      "src/ui/board/model.rs",
+      "src/ui/board/draw.rs",
+      "src/ui/render.rs",
+      "src/ui/queue.rs",
+      "src/ui/mod.rs",
+      "Cargo.toml"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "verifier-paint",
+        "reviewed_paths": [
+          "src/context.rs",
+          "src/capture.rs",
+          "src/scope.rs",
+          "src/ui/board/model.rs",
+          "src/ui/board/draw.rs",
+          "src/ui/render.rs",
+          "src/ui/queue.rs",
+          "src/ui/mod.rs",
+          "Cargo.toml"
+        ],
+        "invariant": "An untitled project folder name reaches a fitting header or group span without terminal_text.",
+        "method": "source",
+        "result": "The Due footer escapes due text and does not wrap the project name. bound_line still returns a fitting line unchanged. Ratatui tty emission remains unobserved.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [
+      "ui.paint.project-basename.c0"
+    ],
+    "unresolved": [],
+    "hunter_note": "phase 3 verifier is the first check; do not hunt"
+  },
+  {
+    "coverage_id": "src%2Fui%2Fmouse.rs%23requested_terminal_input::src%2Fui%2Fmouse.rs%23TerminalInputGuard::src%2Fui%2Fmouse.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/ui/mouse.rs#requested_terminal_input",
+      "boundary": "src/ui/mouse.rs#TerminalInputGuard",
+      "subsystem": "src/ui/mouse.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Terminal focus-reporting mode",
+    "boundary": "TerminalInputGuard writes fixed mode bytes and restores them",
+    "subsystem": "src/ui/mouse.rs",
+    "attack_class": "Mode bytes include task text or leave a command-interpreting mode",
+    "starting_paths": [
+      "src/ui/mouse.rs",
+      "src/app.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Herdr and Rex are local host CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "A focus or ctrl+l flood redraws the operator's own process. There is no second tenant or shared quota."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path is safe Rust and does not add an unsafe parser."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path paints a terminal, not a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not change profile templates or tool arguments."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "This delta does not change installers, hashes, or the update client."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "The repaint path does not read or write another tenant's store."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "Focus reporting is a mode bit on the operator's stdout. There is no socket, deep link, or exported component."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Fqueue.rs%23group_key::src%2Fui%2Frender.rs%23paint_group_header::src%2Fui::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/ui/queue.rs#group_key",
+      "boundary": "src/ui/render.rs#paint_group_header",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Board group header for a project title",
+    "boundary": "Group header span painted without terminal_text",
+    "subsystem": "src/ui",
+    "attack_class": "Terminal control or bidi from a title in a group header",
+    "starting_paths": [
+      "src/ui/queue.rs",
+      "src/ui/render.rs",
+      "src/scope.rs",
+      "src/domain/task.rs",
+      "src/ui/mod.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "Work runs in the invoking user's process. No shared quota is in source."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path does not parse untrusted bytes in unsafe code."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path does not render into a browser DOM."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#CI and automation attack classes",
+        "reason": "This path is not a workflow, installer fetch, or signing step."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Webview and native-bridge attack classes",
+        "reason": "The board is a terminal, not a webview."
+      },
+      {
+        "block": "AI-AND-LLM.md#Insecure output rendering",
+        "reason": "The header is local terminal paint, not model output HTML."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Frender.rs%23paint_scope_dropdown::src%2Fui%2Fmod.rs%23terminal_text::src%2Fui::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/ui/render.rs#paint_scope_dropdown",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/ui",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Board paint after dead-helper removal",
+    "boundary": "terminal_text still encodes C0 and C1",
+    "subsystem": "src/ui",
+    "attack_class": "Removed helpers were not the terminal escape control",
+    "starting_paths": [
+      "src/ui/mod.rs",
+      "src/ui/render.rs",
+      "src/ui/board/model.rs",
+      "src/ui/edit.rs",
+      "src/ui/board/draw.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Herdr and Rex are local host CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "This delta does not add a shared quota or an amplification loop."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path is safe Rust and does not add an unsafe parser."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path paints a terminal, not a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not change profile templates or tool arguments."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "This delta does not change installers, hashes, or the update client."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This delta does not change store identity or project scope."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "This path has no socket, deep link, or exported component."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  },
+  {
+    "coverage_id": "src%2Fui%2Frender.rs%23row_step_label::src%2Fui%2Fmod.rs%23terminal_text::src%2Fui%2Frender.rs::ATTACK-CLASSES.md%23Injection",
+    "canonical_refs": {
+      "surface": "src/ui/render.rs#row_step_label",
+      "boundary": "src/ui/mod.rs#terminal_text",
+      "subsystem": "src/ui/render.rs",
+      "attack_class": "ATTACK-CLASSES.md#Injection"
+    },
+    "surface": "Board row step-progress label after the due edit",
+    "boundary": "present_line before the row label is painted",
+    "subsystem": "src/ui/render.rs",
+    "attack_class": "Step counts or row meta reach the terminal as controls",
+    "starting_paths": [
+      "src/ui/render.rs",
+      "src/ui/mod.rs",
+      "src/ui/board/draw.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "CLIENT-SIDE.md#DOM-based XSS",
+        "reason": "This unit's sink is the terminal or CLI, not the browser DOM."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local file ownership and TOCTOU",
+        "reason": "This unit does not check or write the state-directory ACL."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Migration default and ownership confusion",
+        "reason": "This unit does not migrate the store document."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Access control",
+        "reason": "The board has no second principal whose authority these strings could bypass."
+      },
+      {
+        "block": "ATTACK-CLASSES.md#Cryptography and secrets",
+        "reason": "Due days and thread names are not secrets."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "These paths do not build or publish a release."
+      }
+    ],
+    "prior_status": "prior_covered_changed_source",
+    "attempts": [],
+    "wave": 1,
+    "status": "covered",
+    "agent_id": "hunter-ui2",
+    "reviewed_paths": [
+      "src/ui/edit.rs",
+      "src/ui/mod.rs",
+      "src/ui/render.rs"
+    ],
+    "local_checks": [
+      {
+        "agent_id": "hunter-ui2",
+        "reviewed_paths": [
+          "src/ui/edit.rs",
+          "src/ui/mod.rs",
+          "src/ui/render.rs"
+        ],
+        "invariant": "The due change did not add an unescaped row sink on the row_step_label paint path.",
+        "method": "source",
+        "result": "row_step_label returns only a step count. paint_labelled_task_row_lines and paint_rail_row_lines call present_line before any Span. No due text is interpolated on this path.",
+        "artifact": null
+      }
+    ],
+    "result_fingerprints": [],
+    "unresolved": [],
+    "hunter_note": "",
+    "hardening": []
+  },
+  {
+    "coverage_id": "tests%2Fqueue_board_render.rs%23scene_rows::src%2Fui%2Fboard%2Fmodel.rs%23BoardModel%3A%3Anow::tests%2Fqueue_board_render.rs::ATTACK-CLASSES.md%23Business%20logic",
+    "canonical_refs": {
+      "surface": "tests/queue_board_render.rs#scene_rows",
+      "boundary": "src/ui/board/model.rs#BoardModel::now",
+      "subsystem": "tests/queue_board_render.rs",
+      "attack_class": "ATTACK-CLASSES.md#Business logic"
+    },
+    "surface": "Golden scene clock",
+    "boundary": "BoardModel::now uses SystemTime when unset",
+    "subsystem": "tests/queue_board_render.rs",
+    "attack_class": "Pinned test clock changes production time checks",
+    "starting_paths": [
+      "tests/queue_board_render.rs",
+      "tests/fixtures/queue_board/project_picker_110x30.txt",
+      "src/ui/board/model.rs"
+    ],
+    "ordinary_attack_class_block": "ATTACK-CLASSES.md#Business logic",
+    "selected_companion_blocks": [],
+    "excluded_blocks": [
+      {
+        "block": "WEB-PROTOCOL-AND-AUTH.md#Browser-session attack classes",
+        "reason": "tsk has no HTTP session, cookie, or origin server on this path."
+      },
+      {
+        "block": "CLOUD-AND-DEPLOYMENT.md#Workload identity and IAM attack classes",
+        "reason": "No cloud IAM or workload identity is in this path."
+      },
+      {
+        "block": "PROTOCOLS-RPC-AND-MESSAGING.md#RPC identity and authorization attack classes",
+        "reason": "Herdr and Rex are local host CLIs. This path does not implement an RPC schema."
+      },
+      {
+        "block": "RESOURCE-EXHAUSTION-AND-AVAILABILITY.md#Computational amplification attack classes",
+        "reason": "This delta does not add a shared quota or an amplification loop."
+      },
+      {
+        "block": "MEMORY-SAFETY-AND-BINARY.md#Bounds, integer, and representation attack classes",
+        "reason": "This path is safe Rust and does not add an unsafe parser."
+      },
+      {
+        "block": "CLIENT-SIDE.md#DOM and object-state attack classes",
+        "reason": "This path paints a terminal, not a browser DOM."
+      },
+      {
+        "block": "AI-AND-LLM.md#Tool and action attack classes",
+        "reason": "This delta does not change profile templates or tool arguments."
+      },
+      {
+        "block": "SUPPLY-CHAIN-AND-RELEASE.md#Release and update attack classes",
+        "reason": "This delta does not change installers, hashes, or the update client."
+      },
+      {
+        "block": "DATA-ISOLATION-AND-LIFECYCLE.md#Tenant and object-isolation attack classes",
+        "reason": "This delta does not change store identity or project scope."
+      },
+      {
+        "block": "DESKTOP-MOBILE-AND-LOCAL-IPC.md#Local IPC and exported-component attack classes",
+        "reason": "This path has no socket, deep link, or exported component."
+      }
+    ],
+    "prior_status": "prior_out_of_scope",
+    "attempts": [],
+    "wave": 1,
+    "status": "out_of_scope",
+    "agent_id": null,
+    "reviewed_paths": [],
+    "local_checks": [],
+    "result_fingerprints": [],
+    "unresolved": [
+      "Still outside this delta, carried from the 2026-11-17 ledger."
+    ]
+  }
+]
