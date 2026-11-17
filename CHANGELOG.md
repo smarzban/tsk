@@ -18,26 +18,26 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 - tsk 0.14 updates your task file on its first save, and tsk 0.13 or older cannot open it afterwards. To go back, restore the `tsk.json.v6` copy beside it.
 - Two dispatch refusal codes are renamed: `not-in-herdr` is now `no-host`, and `herdr-failed` is now `host-failed` ([refusal codes](https://gettsk.sh/docs/cli/#exit-contract)).
+- A backup URL with a user name, such as `https://org@host/…`, skips your credential manager. Remove `org@` from the URL so it logs you in ([credentials](https://gettsk.sh/docs/storage/#credentials)).
 
 ### Added
 
 - Rex: `tsk setup rex` puts the board on `alt+t` and quick capture on `alt+a`. The installer and `tsk update` offer it ([Add to Rex](https://gettsk.sh/docs/install/#add-to-rex)).
 - Dispatch works in Rex: each task opens in its own tab in your Rex session. Relaunch, replies, cleanup, and `--merge` work as in Herdr ([dispatch](https://gettsk.sh/docs/dispatch/)).
+- A task dispatched in Herdr starts as a plain status change in Rex, and the other way round. Relaunch, replies, and cleanup there refuse with `other-host`.
 - Due days: `!d 2026-11-30` in quick add, the Due field on the task page, or `tsk add --due`. `tsk list --sort due` lists the nearest first. Thanks @bnivanov-true (#271).
 - Step progress: started, blocked, and review rows show `steps 2/5` on the board and in `tsk list` ([rows](https://gettsk.sh/docs/board/#rows)). Thanks @joops for the request (#273).
 - Project titles: name a project with `ctrl+e` on its row or `tsk project title`, and use the name with `-p` ([project titles](https://gettsk.sh/docs/board/#project-titles)). Thanks @LukasGold for the request and @s3rgiosan for the report (#249).
 - `tsk checks T12 set 2 passed` marks a review check from the command line ([checks](https://gettsk.sh/docs/cli/#checks)). Thanks @Tobi4161 for the request (#269).
 - `[dispatch] worktrees` in `config.toml` chooses where new worktrees go ([worktree location](https://gettsk.sh/docs/storage/#worktree-location)).
+- `tsk list T12 --json` shows where a dispatch runs as `host` and `session`. Herdr dispatches also keep `herdr_workspace_id`.
 
 ### Changed
 
 - New worktrees go under `~/.tsk/worktrees/<repo>/`. Tasks already dispatched keep theirs.
-- A task dispatched in Herdr starts as a plain status change in Rex, and the other way round. Relaunch, replies, and cleanup there refuse with `other-host`.
 - Dispatch messages name Herdr or Rex. Outside both, a start prints `no launch: outside Herdr or Rex`.
-- `tsk list T12 --json` shows where a dispatch runs as `host` and `session`. Herdr dispatches also keep `herdr_workspace_id`.
 - Agent skills 1.7.0 cover dispatch in Herdr and Rex. The coordinator hands passed reviews to you and cleans up after each merge. `tsk update` refreshes them.
 - `tsk setup` lists both installed skills, `tsk-cli` and `tsk-coordinator`, for each agent.
-- A user name or token in a backup URL is the only login git tries. For `https://org@host/…` URLs, drop `org@` to use your credential manager ([credentials](https://gettsk.sh/docs/storage/#credentials)).
 
 ### Fixed
 
