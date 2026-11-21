@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    block_text, current_actor, Block, BlockDraft, BlockField, BlockKey, BlockKind, BlockOn,
-    BlockPatch, CheckState, CleanupOutcome, EditedField, EventDetail, ProvenanceOrigin, Reply,
-    Resolution, ReviewDraft, ReviewPatch, TaskEvent, TaskEventKind, UndoEntry, UNDO_CAP,
+    block_text, current_actor, Artifact, Block, BlockDraft, BlockField, BlockKey, BlockKind,
+    BlockOn, BlockPatch, CheckState, CleanupOutcome, EditedField, EventDetail, ProvenanceOrigin,
+    Reply, Resolution, ReviewDraft, ReviewPatch, TaskEvent, TaskEventKind, UndoEntry, UNDO_CAP,
 };
 use crate::scope::paths_equivalent;
 
@@ -245,6 +245,9 @@ pub struct Task {
     /// Flat, ordered steps. Only an explicit insert or move changes a step's position.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<Step>,
+    /// Named references attached to this task. Survives review rounds and status changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<Artifact>,
     pub soft_deleted: bool,
     /// Kept, off the radar: hidden from every working lens, visible only in the
     /// archived group of the done drawer. Human status is independent of it.
@@ -643,7 +646,7 @@ fn base_detail(base: &Option<String>) -> Option<EventDetail> {
 }
 
 /// Document version written by this binary.
-pub const STORE_FORMAT_VERSION: u32 = 7;
+pub const STORE_FORMAT_VERSION: u32 = 8;
 
 fn default_next_notice_number() -> u64 {
     1
@@ -1193,6 +1196,7 @@ impl DomainState {
             history: vec![event(TaskEventKind::Created, now, None, None)],
             steps: Vec::new(),
             soft_deleted: false,
+            artifacts: Vec::new(),
             archived: false,
             created_at: now,
             updated_at: now,
@@ -2681,6 +2685,104 @@ impl DomainState {
         Ok(())
     }
 
+    /// Attach one artifact, or update the label of one already attached to the same target.
+    /// Repeating the add without a new label is a no-op. Both paths are one undo entry.
+    pub fn add_artifact(
+        &mut self,
+        id: Uuid,
+        target: String,
+        label: Option<String>,
+        round: u32,
+        by: &str,
+    ) -> Result<bool, DomainError> {
+        let previous = self.task_mut(id)?.artifacts.clone();
+        let at = SystemTime::now();
+        let task = self.task_mut(id)?;
+        let changed = match task.artifacts.iter_mut().find(|a| a.target == target) {
+            Some(existing) if label.is_some() && existing.label != label => {
+                existing.label = label;
+                true
+            }
+            Some(_) => false,
+            None => {
+                task.artifacts.push(Artifact {
+                    target: target.clone(),
+                    label,
+                    by: by.to_string(),
+                    round,
+                    at,
+                });
+                true
+            }
+        };
+        if changed {
+            record_event(
+                task,
+                TaskEventKind::ArtifactAdded,
+                at,
+                Some(by),
+                Some(EventDetail {
+                    artifact: Some(target),
+                    ..EventDetail::default()
+                }),
+            );
+            let expected_revision = task.revision;
+            self.undo_stack.push(UndoEntry::Artifacts {
+                id,
+                previous,
+                expected_revision,
+            });
+        }
+        Ok(changed)
+    }
+
+    /// Remove the artifact at `index` in list order. A missing index is a no-op; callers that
+    /// address artifacts by position validate the index first. Returns the removed target.
+    pub fn remove_artifact(
+        &mut self,
+        id: Uuid,
+        index: usize,
+        by: &str,
+    ) -> Result<Option<String>, DomainError> {
+        let previous = self.task_mut(id)?.artifacts.clone();
+        let at = SystemTime::now();
+        let task = self.task_mut(id)?;
+        let Some(artifact) = task.artifacts.get(index) else {
+            return Ok(None);
+        };
+        let target = artifact.target.clone();
+        task.artifacts.remove(index);
+        record_event(
+            task,
+            TaskEventKind::ArtifactRemoved,
+            at,
+            Some(by),
+            Some(EventDetail {
+                artifact: Some(target.clone()),
+                ..EventDetail::default()
+            }),
+        );
+        let expected_revision = task.revision;
+        self.undo_stack.push(UndoEntry::Artifacts {
+            id,
+            previous,
+            expected_revision,
+        });
+        Ok(Some(target))
+    }
+
+    /// Put `previous` back after an artifact change.
+    pub(crate) fn restore_artifacts(
+        &mut self,
+        id: Uuid,
+        previous: Vec<Artifact>,
+    ) -> Result<(), DomainError> {
+        let task = self.task_mut(id)?;
+        task.artifacts = previous;
+        record_mutation(task, TaskEventKind::Edited);
+        Ok(())
+    }
+
     fn apply_status(
         &mut self,
         id: Uuid,
@@ -2992,6 +3094,7 @@ impl DomainState {
                             // A live entry's target was last changed by the action it records.
                             UndoEntry::Status { .. }
                             | UndoEntry::Steps { .. }
+                            | UndoEntry::Artifacts { .. }
                             | UndoEntry::Archive { .. } => Some(task.updated_at),
                             UndoEntry::Batch { .. } => unreachable!("batches are flattened"),
                         }

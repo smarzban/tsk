@@ -37,6 +37,7 @@ use tsk_tui::ui::input::{
 };
 use tsk_tui::ui::mouse::BoardPopup;
 use tsk_tui::ui::queue::{NavTab, SectionKind};
+use tsk_tui::ui::render::{row_artifact_marker, QueueHitTarget};
 use tsk_tui::ui::tier;
 
 const THIS_REPO: &str = "/repos/app";
@@ -9142,4 +9143,43 @@ fn ctrl_s_on_a_notice_in_review_stays_silent() {
     assert_eq!(outcome, IntentOutcome::None);
     assert_eq!(model.message(), None, "no task hint for a notice");
     assert_eq!(domain.get(id).expect("notice").status, HumanStatus::Review);
+}
+
+#[test]
+fn artifacts_mark_the_row_and_bare_o_opens_the_selected_one() {
+    let (mut domain, mut model, id) = board_with_task("with artifacts", HumanStatus::Review);
+    domain
+        .add_artifact(
+            id,
+            "https://github.com/org/repo/pull/42".into(),
+            Some("PR #42".into()),
+            1,
+            "you",
+        )
+        .expect("attach artifact");
+    model.sync_from_domain(&domain);
+
+    assert_eq!(
+        row_artifact_marker(domain.get(id).expect("task")).as_deref(),
+        Some("◆1")
+    );
+    assert_eq!(
+        map_key(BoardInputMode::TaskPage, press(KeyCode::Char('o'))),
+        Some(BoardIntent::OpenArtifact)
+    );
+    // The task page's reopen verb stays on Ctrl+O.
+    assert_eq!(
+        map_key(BoardInputMode::TaskPage, ctrl(KeyCode::Char('o'))),
+        Some(BoardIntent::Reopen)
+    );
+
+    apply_intent(&mut domain, &mut model, BoardIntent::OpenTaskPage, None).expect("open task page");
+    let area = Rect::new(0, 0, 110, 34);
+    let hits = board_hit_map(area, &model);
+    assert!(
+        hits.regions
+            .iter()
+            .any(|hit| hit.target == QueueHitTarget::Artifact(0)),
+        "the artifact line must be clickable"
+    );
 }

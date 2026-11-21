@@ -12,6 +12,19 @@ first added in the same Unreleased section is not an entry: edit that entry inst
 
 ## Unreleased
 
+### Breaking
+
+- tsk updates your task file on its first save, and tsk 0.14 or older cannot open it afterwards. To go back, restore the `tsk.json.v7` copy beside it.
+
+### Added
+
+- Artifacts: attach URLs and absolute paths to a task with `tsk artifacts T12 add <url|path> --label "…"`, or `--artifact` when handing work back. Open them from the task page with `o` or a click ([artifacts](https://gettsk.sh/docs/task-page/#artifacts)).
+- Board rows show a `◆N` marker for a task with artifacts; the task page lists them under ARTIFACTS and a review lists the ones from its round ([task page](https://gettsk.sh/docs/task-page/#artifacts)).
+
+### Changed
+
+- Agent skills 1.9.0 tell agents to attach deploy URLs, PRs, and screenshots when handing work back.
+
 ## v0.14.1
 
 ### Added

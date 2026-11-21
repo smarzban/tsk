@@ -9,6 +9,7 @@ use crate::dispatch::{CleanupError, HostKind};
 
 pub mod add;
 pub mod archive;
+pub mod artifacts;
 pub mod backup;
 pub mod checks;
 pub mod clean;
@@ -109,6 +110,7 @@ fn run_verb<R: Read>(
         Some("add") => run_add(args, &mut stdin, stdin_is_tty),
         Some("steps") => run_steps(args),
         Some("checks") => run_checks(args),
+        Some("artifacts") => run_artifacts(args),
         Some("list") => run_list(args, terminal_width),
         Some("status") => run_status(args),
         Some("reply") => run_reply(args),
@@ -128,7 +130,7 @@ fn run_verb<R: Read>(
             run_archive(args, verb, archive)
         }
         _ => presenter::usage(
-            "expected add, steps, checks, list, status, reply, dispatch, clean, edit, trash, backup, restore, archive, unarchive, or project command",
+            "expected add, steps, checks, artifacts, list, status, reply, dispatch, clean, edit, trash, backup, restore, archive, unarchive, or project command",
         ),
     }
 }
@@ -153,6 +155,7 @@ fn run_help(args: Vec<String>) -> CliOutput {
             "add" => presenter::add_help(),
             "steps" => presenter::steps_help(),
             "checks" => presenter::checks_help(),
+            "artifacts" => presenter::artifacts_help(),
             "list" => presenter::list_help(None),
             "status" => presenter::status_help(),
             "reply" => presenter::reply_help(),
@@ -174,6 +177,22 @@ fn run_help(args: Vec<String>) -> CliOutput {
     }
 }
 
+fn run_artifacts(args: Vec<String>) -> CliOutput {
+    let input = match parser::parse_flag_artifacts(&args) {
+        Ok(input) => input,
+        Err(reason) => return presenter::artifacts_usage(&reason),
+    };
+    if input.help {
+        return presenter::artifacts_help();
+    }
+    let (Some(task), Some(action)) = (input.task, input.action) else {
+        return presenter::artifacts_usage("task id and action are required");
+    };
+    match artifacts::run(task, action, input.state_dir) {
+        Ok(result) => presenter::artifacts(result),
+        Err(error) => presenter::artifacts_rejected(error, task),
+    }
+}
 fn run_steps(args: Vec<String>) -> CliOutput {
     let input = match parser::parse_flag_steps(&args) {
         Ok(input) => input,

@@ -437,6 +437,7 @@ fn run_board_loop(
                     frame_copyable = hits.copyable.clone();
                     frame_hits = hits;
                 })?;
+                crate::ui::render::emit_artifact_links(&frame_rows, &frame_hits.links);
                 Ok::<(), io::Error>(())
             })? {
                 event
@@ -453,7 +454,9 @@ fn run_board_loop(
                                 frame_copyable = hits.copyable.clone();
                                 frame_hits = hits;
                             })
-                            .map(|_| ())
+                            .map(|_| ())?;
+                        crate::ui::render::emit_artifact_links(&frame_rows, &frame_hits.links);
+                        Ok::<(), io::Error>(())
                     },
                     event::poll,
                     &store,

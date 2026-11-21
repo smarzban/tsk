@@ -1,0 +1,26 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│  ▲ Docs refresh pass after F9 ships                                  review  │
+│  ──────────────────────────────────────────────────────────────────────────  │
+│  @claude needs your review · 0s                                             ▌│
+│                                                                             ▌│
+│  Shipped the review fixtures                                                ▌│
+│                                                                             ▌│
+│  Artifacts                                                                  ▌│
+│  ◆ https://example.com/deploy/42   https://example.com/deploy/42            ▌│
+│                                                                             ▌│
+│  Check                                                                      ▌│
+│▸  ○ docs match                                                              ▌│
+│                                                                             ▌│
+│  tab next field · enter cycle check · r feedback · ctrl+s send back         ▌│
+│  ctrl+d approve · w waiting on                                              ▌│
+│  ─────────────────────────────────────────────────────────────────────────   │
+│                                                                              │
+│  ARTIFACTS · 1                                                               │
+│  ◆ https://example.com/deploy/42   https://example.com/deploy/42             │
+│  claude · 0s                                                                 │
+│  ⎇ default · herdr                                                           │
+│──────────────────────────────────────────────────────────────────────────────│
+│ herdr                                                                        │
+│ ctrl+e edit · ctrl+d done · ctrl+b block · esc close · : commands            │
+└──────────────────────────────────────────────────────────────────────────────┘

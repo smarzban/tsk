@@ -118,7 +118,7 @@ In view mode, before you start an edit:
 | --- | --- |
 | Close the page | `Esc` |
 | Move among steps (`↓` selects the first); otherwise scroll | `↑` / `↓` or `k` / `j` |
-| Walk the top line, options or checks, replies, steps, **+ step**, and the paper trail | `Tab` / `shift+Tab` |
+| Walk the top line, options or checks, replies, artifacts, steps, **+ step**, and the paper trail | `Tab` / `shift+Tab` |
 | Check / uncheck the selected step | `Enter` |
 | Add a step below the selected one, else at the end | `ctrl+a` |
 | Move the selected step up / down | `alt+↑` / `alt+↓` |
@@ -128,6 +128,7 @@ In view mode, before you start an edit:
 | Assign to an agent, you, or a person | `@` |
 | Expand / collapse the paper trail | `g`, or `Enter` on its heading |
 | Expand / fold a closed block or review round | `Enter` |
+| Open the selected [artifact](/docs/task-page/#artifacts) | `o`, or click it |
 | Status, undo, and archive, on this task | the [board's](#board) `ctrl` keys |
 | Command palette | `:` |
 | All keys | `?` |

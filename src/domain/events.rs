@@ -31,6 +31,8 @@ pub enum TaskEventKind {
     StepUnchecked,
     StepRenamed,
     StepRemoved,
+    ArtifactAdded,
+    ArtifactRemoved,
     Assigned,
     BaseSet,
     Dispatched,
@@ -136,6 +138,9 @@ pub struct EventDetail {
     pub on_from: Option<super::BlockOn>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_to: Option<super::BlockOn>,
+    /// The artifact target an `artifact_added` or `artifact_removed` event names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<String>,
 }
 
 impl EventDetail {

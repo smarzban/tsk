@@ -1449,13 +1449,23 @@ fn build_task_page_overlay<'a>(
         }
     }
     // A blocked task leads its page with the BLOCKED section, a task in review with the REVIEW
-    // section, outside an edit session.
-    let (block_rows, block_stops, block_cursor) = match bound_task {
+    // section, and any task's artifacts follow it, outside an edit session.
+    let (mut block_rows, mut block_stops, block_cursor) = match bound_task {
         Some(task) if !editing_session && super::block::has_open_section(task) => {
             block_page_rows(model, form, task, notes_width)
         }
         _ => (Vec::new(), Vec::new(), None),
     };
+    if let Some(task) = bound_task.filter(|_task| !editing_session) {
+        let (artifact_rows, artifact_stops) = artifact_page_rows(model, form, task, notes_width);
+        let offset = block_rows.len();
+        block_rows.extend(artifact_rows);
+        block_stops.extend(
+            artifact_stops
+                .into_iter()
+                .map(|(stop, row)| (stop, offset + row)),
+        );
+    }
     // The task's own form draws the trail, so the wide task column paints it too, through an
     // edit session as well (the page body never jumps as one starts or ends).
     let (trail_rows, trail_stops) = match bound_task.filter(|task| !task.is_notice()) {
@@ -1591,6 +1601,7 @@ fn trail_page_rows(
                 kind: BlockRowKind::Dim,
                 selected: index == 0 && selected,
                 target,
+                link: None,
             });
         }
     };
@@ -1718,6 +1729,7 @@ fn block_page_rows(
         kind,
         selected,
         target: None,
+        link: None,
     };
     // A click on a check cycles it; on the `N passed` line it shows or folds them.
     let click = |stop: Option<BlockTarget>| match stop {
@@ -1771,6 +1783,25 @@ fn block_page_rows(
         blank(&mut rows);
         for text in body {
             push(&mut rows, "", 0, text, BlockRowKind::Plain, None);
+        }
+    }
+    if review {
+        let round_artifacts: Vec<_> = task
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.round == block.round && artifact.round > 0)
+            .collect();
+        if !round_artifacts.is_empty() {
+            blank(&mut rows);
+            push(&mut rows, "", 0, "Artifacts", BlockRowKind::Dim, None);
+            for artifact in round_artifacts {
+                let text = format!(
+                    "◆ {}   {}",
+                    terminal_text(artifact.name()),
+                    terminal_text(&artifact.target)
+                );
+                push(&mut rows, "", 0, &text, BlockRowKind::Plain, None);
+            }
         }
     }
     if review {
@@ -1936,6 +1967,68 @@ fn block_page_rows(
     rows.push(row(String::new(), BlockRowKind::Rule, false));
     blank(&mut rows);
     (rows, stops, caret)
+}
+
+/// The task page's ARTIFACT section: its heading, then one line per artifact with the label,
+/// the target, and who attached it. Each row is an OSC 8 link to the target.
+fn artifact_page_rows(
+    model: &BoardModel,
+    form: &BoardForm,
+    task: &crate::domain::Task,
+    width: usize,
+) -> (
+    Vec<render::BlockPageRow>,
+    Vec<(crate::ui::board::BlockTarget, usize)>,
+) {
+    use crate::ui::board::BlockTarget;
+    use render::{BlockPageRow, BlockRowKind, QueueHitTarget};
+
+    if task.is_notice() || task.artifacts.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let width = width.max(8);
+    let now = model.now();
+    let own = model
+        .form
+        .as_ref()
+        .is_some_and(|current| std::ptr::eq(current, form));
+    let selected = model.block_target().filter(|_| own);
+    let mut rows = vec![BlockPageRow {
+        text: format!("ARTIFACTS · {}", task.artifacts.len()),
+        kind: BlockRowKind::Dim,
+        selected: false,
+        target: None,
+        link: None,
+    }];
+    let mut stops = Vec::new();
+    for (index, artifact) in task.artifacts.iter().enumerate() {
+        let stop = BlockTarget::Artifact(index);
+        stops.push((stop, rows.len()));
+        let text = format!(
+            "◆ {}   {}   {} · {}",
+            terminal_text(artifact.name()),
+            terminal_text(&artifact.target),
+            crate::domain::display_name(&artifact.by),
+            render::format_age(now, artifact.at)
+        );
+        for (line, text) in beside_lead("", 0, &text, width).into_iter().enumerate() {
+            rows.push(BlockPageRow {
+                text,
+                kind: BlockRowKind::Plain,
+                selected: line == 0 && selected == Some(stop),
+                target: (line == 0).then_some(QueueHitTarget::Artifact(index)),
+                link: (line == 0).then(|| artifact.target.clone()),
+            });
+        }
+    }
+    rows.push(BlockPageRow {
+        text: String::new(),
+        kind: BlockRowKind::Rule,
+        selected: false,
+        target: None,
+        link: None,
+    });
+    (rows, stops)
 }
 
 /// Narrowest reply text worth keeping beside the thread's name column.

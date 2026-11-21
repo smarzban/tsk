@@ -22,6 +22,7 @@ tsk list
 | [`tsk edit`](#edit) | Change a task's title, notes, assignee, thread, base, due date, after list, or who its block or review waits on |
 | [`tsk steps`](#steps) | Add, toggle, rename, move, or remove a step |
 | [`tsk checks`](#checks) | Mark a review check open, passed, or failed |
+| [`tsk artifacts`](#artifacts) | Attach URLs or file paths to a task, or remove them |
 | [`tsk reply`](#reply) | Answer a block, or give feedback on a review |
 | [`tsk dispatch`](#dispatch) | Launch a task's assigned agent in its own worktree |
 | [`tsk clean`](#clean) | Remove a dispatched task's worktree and merged branch |
@@ -222,6 +223,7 @@ A task waits while any `after` entry has `done: false`.
 | --- | --- |
 | `notes` | Notes, or `null` |
 | `steps` | Each step's `id`, `done`, `short_id` (for [`tsk steps`](#steps)), and `text` |
+| `artifacts` | Each artifact's `target`, `label` (absent when unset), `by`, `round` (`0` outside a review), and `at` |
 | `dispatch` | Present once dispatched: `argv`, `worktree`, `branch`, `base`, `base_ref`, `base_commit`, `base_remote`, `host` (`herdr` or `rex`), `session` (the Herdr workspace, or the Rex tab as `<session>/<window>`), `at`, and `cleaned: true` once cleaned. A Herdr dispatch also carries `herdr_workspace_id` |
 | `past_blocks`, `past_reviews` | Closed blocks and rounds, oldest first. Each adds `closed_at` and `closed_by` |
 | `activity` | Every event on the task, newest first, below |
@@ -257,7 +259,7 @@ Times such as `at` are `[seconds, nanoseconds]` since the Unix epoch.
 | --- | --- |
 | `at` | When |
 | `by` | `you`, the agent profile that made the change, or `null` on old events |
-| `kind` | `created`, `edited`, `status_set`, `completed`, `reopened`, `soft_deleted`, `restored`, `archived`, `unarchived`, `step_added`, `step_checked`, `step_unchecked`, `step_renamed`, `step_removed`, `assigned`, `base_set`, `dispatched`, `cleaned`, `block_edited`, `replied`, `reply_edited`, `reply_deleted`, `review_edited`, `check_set`, or `on_set` |
+| `kind` | `created`, `edited`, `status_set`, `completed`, `reopened`, `soft_deleted`, `restored`, `archived`, `unarchived`, `step_added`, `step_checked`, `step_unchecked`, `step_renamed`, `step_removed`, `artifact_added`, `artifact_removed`, `assigned`, `base_set`, `dispatched`, `cleaned`, `block_edited`, `replied`, `reply_edited`, `reply_deleted`, `review_edited`, `check_set`, or `on_set` |
 | `detail` | What changed, below, or `null` |
 
 | Event | `detail` |
@@ -268,6 +270,7 @@ Times such as `at` are `[seconds, nanoseconds]` since the Unix epoch.
 | `dispatched` | `branch`, `base`, `sha`, `relaunch: true` on a relaunch, and `after` as above |
 | `cleaned` | `outcome`: `removed`, `branch_kept`, or `missing` |
 | `on_set` | `on_from` and `on_to`, shaped like a block's `on` |
+| `artifact_added`, `artifact_removed` | `artifact`: the target |
 | `edited` | `fields`: any of `title`, `notes`, `thread`, `project`, `after`, `due` |
 
 ## status
@@ -278,8 +281,8 @@ Sets a task's status. Starting an assigned task launches its agent, and done sta
 tsk status <task> <status> [--state-dir <dir>]
 tsk status <task> started [--no-dispatch | --again] [--force]
 tsk status <task> done [--clean | --merge]
-tsk status <task> blocked [--why <text>] [--needs <text>] [--option <text>]... [--on <who>]
-tsk status <task> review [--done <text>] [--check <text>]... [--next <text>] [--on <who>]
+tsk status <task> blocked [--why <text>] [--needs <text>] [--option <text>]... [--artifact <url|path>]... [--on <who>]
+tsk status <task> review [--done <text>] [--check <text>]... [--artifact <url|path>]... [--next <text>] [--on <who>]
 ```
 
 `<status>` is `open`, `ready`, `started` (or `start`), `blocked`, `review`, or `done`. The command sets that status directly, and repeating it is safe. Output is `status T12 <status> <title>`, sometimes followed by a second line that says what else happened.
@@ -349,6 +352,7 @@ tsk status T12 done --merge
 | `--why <text>` | What stops the work |
 | `--needs <text>` | What would unblock it |
 | `--option <text>` | One suggested answer; repeat for more |
+| `--artifact <url\|path>` | Attach a reference to this block; repeat for more |
 | `--on <who>` | Who it waits on: `you` (the default), another task (`T202`), an agent profile (`pi` or `@pi`), or any other text |
 
 - Each text is at most 4 KB (`text-too-long`). A task number for `--on` must name another task on the board (`invalid-blocker`).
@@ -359,7 +363,7 @@ tsk status T12 done --merge
 - A block on you shows under NEEDS YOU. One on another task stays IN MOTION until that task is done or gone, then needs you. One on anything else stays IN MOTION ([sections](/docs/board/#sections-and-status)).
 
 ```sh
-tsk status T12 blocked --why "Which database?" --option postgres --option sqlite
+tsk status T12 blocked --why "Which database?" --option postgres --option sqlite --artifact https://example.com/schema
 ```
 
 ### Review
@@ -371,6 +375,7 @@ tsk status T12 blocked --why "Which database?" --option postgres --option sqlite
 | `--done <text>` | What was done |
 | `--check <text>` | One thing to check; repeat for more |
 | `--next <text>` | What comes after |
+| `--artifact <url\|path>` | Attach a reference to this review round; repeat for more |
 | `--on <who>` | Who reviews: `you` (the default), an agent profile (`pi` or `@pi`), or any other text |
 
 - Each text is at most 4 KB (`text-too-long`).
@@ -380,7 +385,7 @@ tsk status T12 blocked --why "Which database?" --option postgres --option sqlite
 - A review on you shows under NEEDS YOU. One on an agent or on anything else stays IN MOTION.
 
 ```sh
-tsk status T12 review --done "Opened PR #42" --check "tests pass" --next "docs"
+tsk status T12 review --done "Opened PR #42" --check "tests pass" --next "docs" --artifact https://github.com/org/repo/pull/42
 ```
 
 ## edit
@@ -473,6 +478,35 @@ tsk checks <task> set <n> open|passed|failed [--state-dir <dir>]
 
 ```sh
 tsk checks T12 set 2 passed
+```
+
+## artifacts
+
+Attaches references to a task: an http(s) URL or an absolute file path. tsk stores the reference only. It never fetches a URL, checks a path, or copies a file. See [artifacts on the task page](/docs/task-page/#artifacts).
+
+```text
+tsk artifacts <task> add <url|path> [--label <text>] [--state-dir <dir>]
+tsk artifacts <task> remove <n> [--state-dir <dir>]
+```
+
+`<n>` is the artifact's position, from 1, in the order `tsk list T12 --json` prints `artifacts`.
+
+| Action | Output | Safe to repeat |
+| --- | --- | --- |
+| `add` | `artifact <count> <target>` | Yes: adding a target already on the task changes only its label |
+| `remove` | `artifact <count> <target>` | No: the second run refuses with `unknown-artifact` |
+
+- A label is a short name shown in place of the target; it is at most 4 KB and cannot be empty.
+- `--artifact` on [`status`](#status) attaches references to the block or review round it opens. Those artifacts carry the round number, so a review shows what came with it.
+- Add and remove write a [paper trail](/docs/task-page/#paper-trail) entry and can be undone with `ctrl+u` on the board.
+- Notice rows cannot carry artifacts. Deleted and archived tasks keep theirs.
+
+**Refusals:** `unknown-task`, `soft-deleted-task`, `invalid-artifact`, `empty-artifact-label`, `artifact-label-too-long`, `unknown-artifact`; codes and exits in the [exit contract](#exit-contract).
+
+```sh
+tsk artifacts T12 add https://github.com/org/repo/pull/42 --label "PR #42"
+tsk artifacts T12 add /tmp/screenshot.png
+tsk artifacts T12 remove 2
 ```
 
 ## reply
@@ -832,13 +866,14 @@ A refusal prints `tsk <command>: <code>: <message>` on stderr, such as `tsk stat
 | --- | --- |
 | `add` | `empty-title`, `invalid-title`, `unknown-project`, `project-archived`, `unknown-base`, `invalid-due`; in a plan also `invalid-item`, `invalid-thread`, `invalid-assignee`, `invalid-after` |
 | `list` | `unknown-project` |
-| `status` | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker` |
+| `status` | `unknown-task`, `soft-deleted-task`, `text-too-long`, `invalid-blocker`, `invalid-artifact` |
 | `status … started` | `after-not-done`, `agent-gone`, and the `dispatch` codes `other-host`, `needs-git-project`, `unknown-agent`, `agent-config`, `unknown-base`, `no-default-base`, `host-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
 | `status … done --clean` | The `clean` codes except `not-dispatched` and `already-cleaned` |
 | `status … done --merge` | Every `clean` code, with `--merge` |
 | `edit` | `unknown-task`, `soft-deleted-task`, `empty-title`, `invalid-title`, `unknown-base`, `invalid-due`, `invalid-after`, `after-loop`; with `--on` also `not-blocked`, `invalid-blocker`, `text-too-long` |
 | `steps` | `unknown-task`, `soft-deleted-task`, `empty-step-text`, `invalid-step-text`, `unknown-step`, `ambiguous-step`, `same-step` |
 | `checks` | `unknown-task`, `soft-deleted-task`, `not-in-review`, `unknown-check` |
+| `artifacts` | `unknown-task`, `soft-deleted-task`, `invalid-artifact`, `empty-artifact-label`, `artifact-label-too-long`, `unknown-artifact` |
 | `reply` | `unknown-task`, `soft-deleted-task`, `not-blocked`, `empty-reply`, `text-too-long` |
 | `dispatch` | `unknown-task`, `soft-deleted-task`, `done-task`, `archived-task`, `no-assignee`, `unknown-agent`, `agent-config`, `already-dispatched`, `other-host`, `no-host`, `needs-git-project`, `unknown-base`, `no-default-base`, `host-failed`, `unsafe-state-dir`; on Windows `unsupported-platform` |
 | `clean` | `unknown-task`, `not-dispatched`, `already-cleaned`, `dirty-worktree`, `worktree-mismatch`, `other-host`, `host-failed`; on Windows `files-in-use`, `path-too-long`, `removal-timed-out`, `partly-removed`; with `--merge` also `gh-unavailable`, `no-pr`, `pr-not-open`, `pr-base-mismatch`, `merge-failed`, `merge-config` |

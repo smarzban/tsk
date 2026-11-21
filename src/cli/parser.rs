@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use uuid::Uuid;
 
+use super::artifacts::ArtifactsAction;
 use super::checks::ChecksAction;
 use super::steps::{StepPlacement, StepsAction};
 use crate::domain::{normalize_thread, thread_refusal_message, CheckState, HumanStatus};
@@ -461,7 +462,8 @@ pub struct FlagStatus {
 }
 
 /// `--why`, `--needs`, `--option` (repeatable) and `--on` for `status <task> blocked`;
-/// `--done`, `--check` (repeatable), `--next` and `--on` for `status <task> review`.
+/// `--done`, `--check` (repeatable), `--next` and `--on` for `status <task> review`;
+/// `--artifact` (repeatable) on either.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlockFlags {
     pub why: Option<String>,
@@ -471,11 +473,16 @@ pub struct BlockFlags {
     pub done: Option<String>,
     pub checks: Vec<String>,
     pub next: Option<String>,
+    /// Targets attached to the block or review round this status opens.
+    pub artifacts: Vec<String>,
 }
 
 impl BlockFlags {
     pub fn is_empty(&self) -> bool {
-        !self.has_block_fields() && !self.has_review_fields() && self.on.is_none()
+        !self.has_block_fields()
+            && !self.has_review_fields()
+            && self.on.is_none()
+            && self.artifacts.is_empty()
     }
 
     fn has_block_fields(&self) -> bool {
@@ -617,12 +624,27 @@ pub fn parse_flag_status(args: &[String]) -> Result<FlagStatus, String> {
         {
             return Err("--on requires blocked or review status".into());
         }
+        if !parsed.block.artifacts.is_empty()
+            && !matches!(
+                parsed.status,
+                Some(HumanStatus::Blocked | HumanStatus::Review)
+            )
+        {
+            return Err("--artifact requires blocked or review status".into());
+        }
     }
     Ok(parsed)
 }
 
-const BLOCK_FLAGS: [&str; 7] = [
-    "--why", "--needs", "--option", "--on", "--done", "--check", "--next",
+const BLOCK_FLAGS: [&str; 8] = [
+    "--why",
+    "--needs",
+    "--option",
+    "--on",
+    "--done",
+    "--check",
+    "--next",
+    "--artifact",
 ];
 
 fn set_block_flag(block: &mut BlockFlags, flag: &str, value: String) -> Result<(), String> {
@@ -634,6 +656,10 @@ fn set_block_flag(block: &mut BlockFlags, flag: &str, value: String) -> Result<(
         "--next" => &mut block.next,
         "--check" => {
             block.checks.push(value);
+            return Ok(());
+        }
+        "--artifact" => {
+            block.artifacts.push(value);
             return Ok(());
         }
         _ => {
@@ -1989,6 +2015,125 @@ pub fn parse_flag_steps(args: &[String]) -> Result<FlagSteps, String> {
         });
         parsed.task = Some(task);
     }
+    Ok(parsed)
+}
+
+/// Parsed `artifacts` input: the task address, the action, and its operand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagArtifacts {
+    pub task: Option<TaskAddress>,
+    pub action: Option<ArtifactsAction>,
+    pub state_dir: Option<PathBuf>,
+    pub help: bool,
+}
+
+/// Parse `tsk artifacts <task> add <target> [--label "…"]` or
+/// `tsk artifacts <task> remove <n>`, including argv0.
+pub fn parse_flag_artifacts(args: &[String]) -> Result<FlagArtifacts, String> {
+    if args.get(1).map(String::as_str) != Some("artifacts") {
+        return Err("expected artifacts command".into());
+    }
+    let mut parsed = FlagArtifacts {
+        task: None,
+        action: None,
+        state_dir: None,
+        help: false,
+    };
+    let mut positionals: Vec<&str> = Vec::new();
+    let mut label: Option<String> = None;
+    let mut index = 2;
+    let mut literal = false;
+    while let Some(flag) = args.get(index).map(String::as_str) {
+        let value = |name: &str| match args.get(index + 1) {
+            Some(value) => Ok(value.clone()),
+            None => Err(format!("missing value for {name}")),
+        };
+        match flag {
+            "--" => {
+                literal = true;
+                index += 1;
+            }
+            "--help" => {
+                parsed.help = true;
+                index += 1;
+            }
+            "--label" => {
+                if label.replace(value(flag)?).is_some() {
+                    return Err("--label given more than once".into());
+                }
+                index += 2;
+            }
+            flag if flag.starts_with("--label=") => {
+                if label.replace(flag["--label=".len()..].to_owned()).is_some() {
+                    return Err("--label given more than once".into());
+                }
+                index += 1;
+            }
+            flag if flag.starts_with("--state-dir=") => {
+                parsed.state_dir = Some(PathBuf::from(flag["--state-dir=".len()..].to_owned()));
+                index += 1;
+            }
+            "--state-dir" => {
+                parsed.state_dir = Some(PathBuf::from(value(flag)?));
+                index += 2;
+            }
+            positional if literal || !positional.starts_with('-') => {
+                if positionals.len() == 4 {
+                    return Err(format!("unexpected artifacts argument {positional}"));
+                }
+                positionals.push(positional);
+                index += 1;
+            }
+            flag => return Err(format!("unknown artifacts argument {flag}")),
+        }
+    }
+    if parsed.help {
+        return Ok(parsed);
+    }
+    if positionals.len() < 2 {
+        return Err(if positionals.is_empty() {
+            "task id is required".into()
+        } else {
+            "artifacts action is required".into()
+        });
+    }
+    let task = parse_task_address(positionals[0])?;
+    let operand = |name: &str| {
+        positionals
+            .get(2)
+            .copied()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("{name} is required"))
+    };
+    parsed.action = Some(match positionals[1] {
+        "add" => {
+            if positionals.len() > 3 {
+                return Err("unexpected artifacts argument".into());
+            }
+            ArtifactsAction::Add {
+                target: operand("artifact target")?,
+                label,
+            }
+        }
+        "remove" => {
+            if label.is_some() {
+                return Err("--label only applies to add".into());
+            }
+            if positionals.len() > 3 {
+                return Err("unexpected artifacts argument".into());
+            }
+            let raw = operand("artifact position")?;
+            let position = raw
+                .parse::<usize>()
+                .map_err(|_| format!("invalid artifact position {raw}"))?;
+            if position == 0 {
+                return Err("artifact positions start at 1".into());
+            }
+            ArtifactsAction::Remove { position }
+        }
+        other => return Err(format!("unknown artifacts action {other}")),
+    });
+    parsed.task = Some(task);
     Ok(parsed)
 }
 

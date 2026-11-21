@@ -1,7 +1,7 @@
 ---
 name: tsk-cli
-description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|reply|edit|steps|archive|dispatch|clean|trash`, never the TUI.
-version: 1.8.0
+description: Work the user's tsk task board from the command line. Use when asked to add, update, edit, start, block, finish, archive, or restore a task on the board (or "tsk", "the tsk board", "the desk"), to add or tick steps, attach artifacts (URLs and paths), to answer "what's on the board", "what's next", "what's on deck", "what needs me", or to refine a task ("refine T12", "let's discuss T12", "what's missing from T12", "improve / rewrite this task"). Always `tsk add|list|status|reply|edit|steps|artifacts|archive|dispatch|clean|trash`, never the TUI.
+version: 1.9.0
 ---
 
 # tsk: the user's task board
@@ -21,18 +21,21 @@ installer, package manager, or source build unless they asked.
 
 ## Workflow
 
-1. **Read.** `tsk list T12 --json` gives the task in full: notes, steps with their `short_id`, the
-   open `block` or `review`, the `dispatch` record, and `activity` (who did what, newest first). If
-   you were relaunched, also read the record that closed last (`closed_at`): the last `past_blocks`
-   entry's `replies`, or the last `past_reviews` entry's `feedback` and failed `checks`.
+1. **Read.** `tsk list T12 --json` gives the task in full: notes, steps with their `short_id`,
+   artifacts (`target`, `label`, `by`, `round`, `at`), the open `block` or `review`, the `dispatch`
+   record, and `activity` (who did what, newest first). If you were relaunched, also read the record
+   that closed last (`closed_at`): the last `past_blocks` entry's `replies`, or the last
+   `past_reviews` entry's `feedback` and failed `checks`.
 2. **Start.** `tsk status T12 started --no-dispatch` when you do the work yourself. Without
    `--no-dispatch`, starting an assigned task launches its agent instead of you. A task waiting on
    another refuses with `after-not-done`; add `--force` only when the user said to start it anyway.
 3. **Work.** Tick steps as you finish them: `tsk steps T12 toggle <short_id>`.
 4. **Hand back, or block.**
-   - Done with your part: `tsk status T12 review --done "…" --check "…" [--check "…"] [--next "…"]`.
+   - Done with your part: `tsk status T12 review --done "…" --check "…" [--check "…"] [--next "…"] [--artifact <url|path>]`.
      Keep `--done` to one short sentence; the board paints it under the row. Add one `--check` per
-     thing the user should verify. `--on <agent>` hands the review to another agent profile.
+     thing the user should verify. Repeat `--artifact` for each deploy, PR, or screenshot the
+     reviewer should open; they attach to this review round. `--on <agent>` hands the review to
+     another agent profile.
    - Stuck on the user: `tsk status T12 blocked --why "<your question>"`, with `--needs "…"` for what
      would unblock you and one `--option "…"` per answer they can pick. Keep `--needs`, or `--why`
      without it, to one short sentence. `--on T202` waits on another task instead.
@@ -58,9 +61,10 @@ review is on you (`review.on` names your profile), never on a review you asked f
    user says the task is done, and never unblock or approve your own task unless told.
 2. **Read JSON, not presentation.** Always add `--json` to `tsk list`. Write commands may answer in
    text only: trust the exit and refusal codes, then verify with `tsk list … --json`.
-3. **Never blind-retry.** `add`, `status`, `edit`, `checks`, and `archive` are safe to repeat. `reply`,
-   `dispatch`, `edit --append-notes`, `steps add`, `steps toggle`, and `steps remove` are not:
-   read the task first.
+3. **Never blind-retry.** `add`, `status`, `edit`, `checks`, `artifacts add`, and `archive` are safe
+   to repeat: adding an artifact already on the task only updates its label. `reply`, `dispatch`,
+   `edit --append-notes`, `steps add`, `steps toggle`, `steps remove`, and `artifacts remove` are
+   not: read the task first.
 4. **Use a known project name or a full path.** A name is a project's title or folder name.
    For `tsk add -p <project>`, unknown or ambiguous names refuse; `tsk list -p` lists
    nothing for an unknown name and refuses an ambiguous one. Only an

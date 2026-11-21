@@ -44,14 +44,14 @@ fn platform_nanos(nanos: u32) -> u32 {
 
 fn platform_current_fixture() -> Vec<u8> {
     #[cfg(not(windows))]
-    return include_bytes!("fixtures/current_store_v7.json").to_vec();
+    return include_bytes!("fixtures/current_store_v8.json").to_vec();
     #[cfg(windows)]
     {
         // Round-trip through the persisted type, not Value's sorted map. SystemTime applies
         // Windows' 100 ns precision while DomainState preserves the canonical field order.
         let state: DomainState =
-            serde_json::from_str(include_str!("fixtures/current_store_v7.json"))
-                .expect("v7 fixture");
+            serde_json::from_str(include_str!("fixtures/current_store_v8.json"))
+                .expect("v8 fixture");
         serde_json::to_vec_pretty(&state).expect("encode platform fixture")
     }
 }
@@ -346,35 +346,35 @@ fn literal_v5_fixture_migrates_to_canonical_current() {
     );
 }
 
-/// v7 is the current format: it opens with no migration, a task with no `due` key has no due
-/// day, it writes no version copy, and it saves byte for byte.
+/// v8 is the current format: it opens with no migration, a task with no `artifacts` key has no
+/// artifacts, it writes no version copy, and it saves byte for byte.
 #[test]
-fn literal_v7_fixture_is_current_and_round_trips() {
+fn literal_v8_fixture_is_current_and_round_trips() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let current = platform_current_fixture();
-    fs::write(dir.join("tsk.json"), &current).expect("install current v7 fixture");
+    fs::write(dir.join("tsk.json"), &current).expect("install current v8 fixture");
     let store = TaskStore::new(&dir);
 
-    let loaded = store.load().expect("load current v7 fixture");
+    let loaded = store.load().expect("load current v8 fixture");
     assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
-    assert!(loaded.tasks().iter().all(|task| task.due.is_none()));
+    assert!(loaded.tasks().iter().all(|task| task.artifacts.is_empty()));
     store.save(&loaded).expect("save current state");
     assert!(
-        !dir.join("tsk.json.v7").exists(),
+        !dir.join("tsk.json.v8").exists(),
         "a current document needs no version copy"
     );
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read live document"),
         current,
-        "a v7 state must serialize as canonical platform v7"
+        "a v8 state must serialize as canonical platform v8"
     );
 }
 
-/// A v7 store with an untitled archived project record opens as the current format with no
-/// version copy, and the archived project stays archived and untitled.
+/// A v7 store migrates to v8 on load, keeps a `tsk.json.v7` copy on first save, and keeps its
+/// archived project. Adding artifacts changes no other wire value, so the migration is a no-op.
 #[test]
-fn a_v7_untitled_archived_project_stays_archived_and_untitled() {
+fn v7_untitled_archived_project_migrates_to_v8() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let mut document: serde_json::Value =
@@ -386,13 +386,11 @@ fn a_v7_untitled_archived_project_stays_archived_and_untitled() {
 
     let loaded = store.load().expect("load v7 fixture");
     assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
+    assert!(loaded.tasks().iter().all(|task| task.artifacts.is_empty()));
     assert!(loaded.is_project_archived("/tmp/example-project"));
     assert_eq!(loaded.project_title("/tmp/example-project"), None);
     store.save(&loaded).expect("save migrated state");
-    assert!(
-        !dir.join("tsk.json.v7").exists(),
-        "a current document needs no copy"
-    );
+    assert!(dir.join("tsk.json.v7").exists(), "the old document is kept");
     let live: serde_json::Value =
         serde_json::from_slice(&fs::read(dir.join("tsk.json")).expect("live")).expect("json");
     assert_eq!(live["format_version"], STORE_FORMAT_VERSION);
@@ -478,11 +476,10 @@ fn literal_v6_fixture_migrates_to_canonical_current() {
     );
 }
 
-/// A dispatch dev build wrote the v6 layout as v7, the number the released format now uses.
-/// It opens as the current format, and its first save writes the current wire. There is no
-/// version copy: the number is the same.
+/// A dispatch dev build wrote the v6 layout as v7. It now migrates to the released artifact
+/// format, and its first save keeps a `tsk.json.v7` copy beside the current wire.
 #[test]
-fn literal_dev_v7_fixture_opens_as_the_current_format() {
+fn literal_dev_v7_fixture_migrates_to_the_current_format() {
     let dir = temp_state_dir();
     let _guard = TempDirGuard(dir.clone());
     let v7 = include_bytes!("fixtures/dev_store_v7.json");
@@ -492,11 +489,11 @@ fn literal_dev_v7_fixture_opens_as_the_current_format() {
     let loaded = store.load().expect("load dev v7 fixture");
     assert_eq!(loaded.format_version(), STORE_FORMAT_VERSION);
     store.save(&loaded).expect("save");
-    assert!(!dir.join("tsk.json.v7").exists());
+    assert!(dir.join("tsk.json.v7").exists(), "the old document is kept");
     assert_eq!(
         fs::read(dir.join("tsk.json")).expect("read live document"),
         platform_current_fixture().as_slice(),
-        "a dev v7 state must serialize as canonical platform v7"
+        "a dev v7 state must serialize as canonical platform v8"
     );
 }
 
@@ -1312,7 +1309,9 @@ fn noncurrent_store_is_refused_without_rewriting_the_file() {
     let error = TaskStore::new(&dir)
         .save(&DomainState::new())
         .expect_err("current writer refuses noncurrent store");
-    assert!(error.to_string().contains("expected 7"));
+    assert!(error
+        .to_string()
+        .contains(&format!("expected {STORE_FORMAT_VERSION}")));
     assert_eq!(fs::read(dir.join("tsk.json")).expect("read"), bytes);
 }
 
@@ -2096,11 +2095,12 @@ fn a_populated_v6_store_migrates_and_keeps_tsk_json_v6() {
     }
 }
 
-/// Unreleased dev builds marked their stores 8 to 18. Those numbers are refused like any newer
-/// format, never read as v7, and the refusal writes nothing.
+/// Unreleased dev builds marked their stores 9 to 18. Those numbers are refused like any newer
+/// format, never read as v8, and the refusal writes nothing. Format 8 is now the released
+/// artifact format.
 #[test]
-fn dev_formats_8_to_18_are_refused_without_a_write() {
-    for version in 8..=18u32 {
+fn dev_formats_9_to_18_are_refused_without_a_write() {
+    for version in 9..=18u32 {
         let dir = temp_state_dir();
         let _guard = TempDirGuard(dir.clone());
         let mut document: serde_json::Value =

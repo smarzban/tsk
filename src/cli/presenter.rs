@@ -7,6 +7,7 @@ use crate::cli::add::{AddError, FlagAddResult};
 use crate::cli::archive::{
     ArchiveCliError, ArchiveResult, ProjectResult, ProjectTitleError, ProjectTitleResult,
 };
+use crate::cli::artifacts::{ArtifactsError, ArtifactsResult};
 use crate::cli::checks::{ChecksError, ChecksResult};
 use crate::cli::edit::{EditError, EditResult};
 use crate::cli::list::{ListError, ListResult, ListRow, ListView};
@@ -125,8 +126,8 @@ const STATUS_USAGE: &[&str] = &[
     "tsk status <task> <status> [--state-dir <dir>]",
     "tsk status <task> started [--no-dispatch | --again] [--force]",
     "tsk status <task> done [--clean | --merge]",
-    "tsk status <task> blocked [--why <text>] [--needs <text>] [--option <text>]... [--on <who>]",
-    "tsk status <task> review [--done <text>] [--check <text>]... [--next <text>] [--on <who>]",
+    "tsk status <task> blocked [--why <text>] [--needs <text>] [--option <text>]... [--artifact <url|path>]... [--on <who>]",
+    "tsk status <task> review [--done <text>] [--check <text>]... [--artifact <url|path>]... [--next <text>] [--on <who>]",
 ];
 const EDIT_USAGE: &[&str] = &[
     "tsk edit <task> [--title <title>] [--notes <notes> | --append-notes <text>] [--assignee <name> | --unassign] [--thread <name> | --clear-thread] [--base <branch> | --clear-base] [--due <date> | --clear-due] [--after <task>]... [--clear-after] [--on <who>] [--state-dir <dir>]",
@@ -139,6 +140,10 @@ const STEPS_USAGE: &[&str] = &[
     "tsk steps <task> remove <step-short-id> [--state-dir <dir>]",
 ];
 const CHECKS_USAGE: &[&str] = &["tsk checks <task> set <n> open|passed|failed [--state-dir <dir>]"];
+const ARTIFACTS_USAGE: &[&str] = &[
+    "tsk artifacts <task> add <url|path> [--label <text>] [--state-dir <dir>]",
+    "tsk artifacts <task> remove <n> [--state-dir <dir>]",
+];
 const REPLY_USAGE: &[&str] = &["tsk reply <task> <text> [--send] [--state-dir <dir>]"];
 const DISPATCH_USAGE: &[&str] = &[
     "tsk dispatch <task> [--again] [--base <branch>] [--state-dir <dir>]",
@@ -213,6 +218,7 @@ pub fn top_level_help() -> String {
         "  edit     change title, notes, assignee, base, due, after, or who it waits on\n",
         "  steps    add, toggle, rename, move, or remove a step\n",
         "  checks   mark a review check open, passed, or failed\n",
+        "  artifacts attach URLs or paths to a task\n",
         "  reply    answer a block, or give feedback on a review\n",
         "  dispatch launch a task's assigned agent in its own worktree\n",
         "  clean    remove a dispatched task's worktree and merged branch\n\n",
@@ -510,6 +516,30 @@ impl<'a> From<&'a crate::domain::Dispatch> for DispatchJson<'a> {
     }
 }
 
+/// One artifact in `tsk list T12 --json`. `round` is always present, including zero.
+#[derive(serde::Serialize)]
+struct ArtifactJson<'a> {
+    target: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: &'a Option<String>,
+    by: &'a str,
+    round: u32,
+    #[serde(with = "crate::domain::time_serde")]
+    at: std::time::SystemTime,
+}
+
+impl<'a> From<&'a crate::domain::Artifact> for ArtifactJson<'a> {
+    fn from(artifact: &'a crate::domain::Artifact) -> Self {
+        Self {
+            target: &artifact.target,
+            label: &artifact.label,
+            by: &artifact.by,
+            round: artifact.round,
+            at: artifact.at,
+        }
+    }
+}
+
 /// Filtered listings keep the compact row schema. A directly addressed task
 /// carries its complete readable content in a stable field order.
 fn list_json(result: &ListResult) -> String {
@@ -531,6 +561,7 @@ fn list_json(result: &ListResult) -> String {
             steps: &'a [StepLine],
             steps_done: usize,
             steps_total: usize,
+            artifacts: Vec<ArtifactJson<'a>>,
             assignee: &'a Option<String>,
             assignee_kind: Option<&'static str>,
             base: &'a Option<String>,
@@ -564,6 +595,7 @@ fn list_json(result: &ListResult) -> String {
             steps: &direct.steps,
             steps_done: row.steps_done,
             steps_total: row.steps_total,
+            artifacts: direct.artifacts.iter().map(ArtifactJson::from).collect(),
             assignee: &row.assignee,
             assignee_kind: row.assignee_kind,
             base: &row.base,
@@ -1613,6 +1645,13 @@ fn task_refusal_message(code: &str, task: TaskAddress) -> String {
         "same-step" => "a step cannot be placed relative to itself".to_string(),
         "not-in-review" => format!("{display} has no open review round"),
         "unknown-check" => format!("{display}'s review round has no check at that position"),
+        "invalid-artifact" => "use an http(s) URL or an absolute path".to_string(),
+        "unknown-artifact" => format!("{display} has no artifact at that position"),
+        "empty-artifact-label" => "the artifact label is empty".to_string(),
+        "artifact-label-too-long" => format!(
+            "an artifact label is at most {} bytes",
+            crate::domain::BLOCK_TEXT_MAX
+        ),
         _ => return code.to_string(),
     };
     format!("{code}: {message}")
@@ -1692,6 +1731,93 @@ pub fn checks_rejected(error: ChecksError, task: TaskAddress) -> CliOutput {
     CliOutput {
         stdout: String::new(),
         stderr: format!("tsk checks: {detail}\n"),
+        code,
+    }
+}
+
+pub fn artifacts_help() -> CliOutput {
+    help(HelpDoc {
+        usage: lines(ARTIFACTS_USAGE),
+        purpose: "Attach or remove a task's artifacts: http(s) URLs or absolute paths.".into(),
+        groups: vec![
+            group(
+                "Arguments",
+                &[
+                    ("<task>", "a task number or UUID"),
+                    ("<url|path>", "an http(s) URL or an absolute file path"),
+                    (
+                        "<n>",
+                        "the artifact's position, from 1, in tsk list <task> --json order",
+                    ),
+                ],
+            ),
+            group(
+                "Actions",
+                &[
+                    (
+                        "add",
+                        "attach a target, or update the label of one already attached",
+                    ),
+                    ("remove", "remove the artifact at that position"),
+                ],
+            ),
+            group(
+                "Options",
+                &[
+                    (
+                        "--label <text>",
+                        "a short name shown in place of the target",
+                    ),
+                    ("--state-dir <dir>", "use another board store"),
+                ],
+            ),
+        ],
+        examples: vec![
+            "tsk artifacts T12 add https://github.com/org/repo/pull/42 --label \"PR #42\"".into(),
+            "tsk artifacts T12 add /tmp/screenshot.png".into(),
+            "tsk artifacts T12 remove 2".into(),
+        ],
+        refusals: vec![
+            "unknown-task, soft-deleted-task, invalid-artifact".into(),
+            "unknown-artifact, store-error".into(),
+        ],
+        exit: exit_line(
+            "artifact added, label updated, or artifact removed",
+            Some("artifact refusal, nothing persisted"),
+            true,
+        ),
+    })
+}
+
+pub fn artifacts(result: ArtifactsResult) -> CliOutput {
+    let verb = if result.changed {
+        "artifact"
+    } else {
+        "unchanged artifact"
+    };
+    CliOutput {
+        stdout: format!(
+            "{verb} {} {}\n",
+            result.count,
+            terminal_text(&result.target)
+        ),
+        stderr: String::new(),
+        code: 0,
+    }
+}
+
+pub fn artifacts_usage(reason: &str) -> CliOutput {
+    usage_error("artifacts", reason, ARTIFACTS_USAGE)
+}
+
+pub fn artifacts_rejected(error: ArtifactsError, task: TaskAddress) -> CliOutput {
+    let (detail, code) = match error {
+        ArtifactsError::Store(detail) => (detail, 3),
+        other => (task_refusal_message(other.code(), task), 1),
+    };
+    CliOutput {
+        stdout: String::new(),
+        stderr: format!("tsk artifacts: {detail}\n"),
         code,
     }
 }

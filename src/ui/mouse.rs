@@ -968,6 +968,7 @@ pub fn map_board_mouse(
             Some(QueueHitTarget::TrailHeading) => Some(BoardIntent::ToggleTrail),
             Some(QueueHitTarget::PageCheck(index)) => Some(BoardIntent::ClickCheck(index)),
             Some(QueueHitTarget::PassedFold) => Some(BoardIntent::ClickPassedFold),
+            Some(QueueHitTarget::Artifact(index)) => Some(BoardIntent::OpenArtifactAt(index)),
             Some(QueueHitTarget::PageScroll(offset)) => Some(BoardIntent::PageScrollTo(offset)),
             Some(QueueHitTarget::Verb(index)) => verb_intent(model, index),
             _ => None,

@@ -72,6 +72,12 @@ pub enum UndoEntry {
         previous: Vec<Step>,
         expected_revision: Uuid,
     },
+    /// A change to a task's artifacts; reversing puts the previous list back.
+    Artifacts {
+        id: Uuid,
+        previous: Vec<super::Artifact>,
+        expected_revision: Uuid,
+    },
     /// A board archive or unarchive (`ctrl+f`); reversing puts the `previous` flag back.
     Archive {
         id: Uuid,
@@ -132,6 +138,7 @@ impl UndoEntry {
                 | UndoEntry::Start { .. }
                 | UndoEntry::Status { .. }
                 | UndoEntry::Steps { .. }
+                | UndoEntry::Artifacts { .. }
                 | UndoEntry::Archive { .. }
                 | UndoEntry::SetAfter { .. }
                 | UndoEntry::SetOn { .. }
@@ -185,6 +192,11 @@ impl UndoEntry {
                     ..
                 }
                 | UndoEntry::Steps {
+                    id,
+                    expected_revision,
+                    ..
+                }
+                | UndoEntry::Artifacts {
                     id,
                     expected_revision,
                     ..
@@ -259,6 +271,11 @@ impl UndoEntry {
                 expected_revision,
                 ..
             }
+            | UndoEntry::Artifacts {
+                id: target,
+                expected_revision,
+                ..
+            }
             | UndoEntry::Archive {
                 id: target,
                 expected_revision,
@@ -300,6 +317,7 @@ impl UndoEntry {
                 state.restore_status(id, previous)
             }
             UndoEntry::Steps { id, previous, .. } => state.restore_steps(id, previous),
+            UndoEntry::Artifacts { id, previous, .. } => state.restore_artifacts(id, previous),
             UndoEntry::Archive { id, previous, .. } => state.restore_archived(id, previous),
             UndoEntry::SetAfter { id, previous, .. } => state.restore_after(id, previous),
             UndoEntry::SetOn { id, previous, .. } => state.restore_on(id, previous),

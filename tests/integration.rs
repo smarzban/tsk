@@ -18,6 +18,7 @@ mod board_project_title;
 mod board_start_cards;
 mod cli_after;
 mod cli_archive;
+mod cli_artifacts;
 mod cli_backup;
 mod cli_checks;
 mod cli_discovery;

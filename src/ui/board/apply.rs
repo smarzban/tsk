@@ -139,6 +139,7 @@ fn undo_action_word(domain: &DomainState, leaf: &UndoEntry) -> &'static str {
         UndoEntry::SetAfter { .. } => "after",
         UndoEntry::SetOn { .. } => "waiting on",
         UndoEntry::Steps { .. } => "steps",
+        UndoEntry::Artifacts { .. } => "artifacts",
         UndoEntry::HideAssignee { .. } => "remove",
         UndoEntry::ShowAssignee { .. } => "assignee",
         UndoEntry::ProjectTitle { .. } => "project title",
@@ -341,6 +342,7 @@ fn stale_undo_message(domain: &DomainState, id: Uuid) -> String {
         Some(UndoEntry::SetAfter { .. }) => "since its after change",
         Some(UndoEntry::SetOn { .. }) => "since its waiting-on change",
         Some(UndoEntry::Steps { .. }) => "since its step change",
+        Some(UndoEntry::Artifacts { .. }) => "since its artifact change",
         Some(
             UndoEntry::HideAssignee { .. }
             | UndoEntry::ShowAssignee { .. }
@@ -1502,6 +1504,37 @@ fn apply_board_intent(
         BoardIntent::ClickPassedFold => {
             if super::block::select_stop(model, super::block::BlockTarget::PassedFold) {
                 super::block::toggle_passed_checks(model);
+            }
+            return Ok(IntentOutcome::None);
+        }
+        BoardIntent::OpenArtifact | BoardIntent::OpenArtifactAt(_) => {
+            let index = match intent {
+                BoardIntent::OpenArtifactAt(index) => {
+                    if !super::block::select_stop(model, super::block::BlockTarget::Artifact(index))
+                    {
+                        return Ok(IntentOutcome::None);
+                    }
+                    index
+                }
+                _ => match model.block_target() {
+                    Some(super::block::BlockTarget::Artifact(index)) => index,
+                    _ => {
+                        model.set_message("select an artifact first");
+                        return Ok(IntentOutcome::None);
+                    }
+                },
+            };
+            let target = model
+                .form
+                .as_ref()
+                .and_then(|form| form.task_id())
+                .and_then(|id| model.tasks.iter().find(|task| task.id == id))
+                .and_then(|task| task.artifacts.get(index))
+                .map(|artifact| artifact.target.clone());
+            if let Some(target) = target {
+                if let Err(reason) = crate::open::open_target(&target) {
+                    model.set_message(reason);
+                }
             }
             return Ok(IntentOutcome::None);
         }

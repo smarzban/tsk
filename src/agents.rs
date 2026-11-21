@@ -68,6 +68,7 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #   {title}     task title
 #   {notes}     task notes
 #   {steps}     task steps, one per line as [ ] or [x]
+#   {artifacts} task artifacts, one per line: `label or target — target`
 #   {worktree}  path of the task's worktree
 #   {branch}    the task's branch
 #   {base}      the branch the work starts from, e.g. main
@@ -89,6 +90,8 @@ pub const STARTER_CONFIG: &str = r##"# tsk configuration
 #   5. Set the task to review with what you did and what to check:
 #      `tsk status {number} review --on {on} --done "…" --check "…"`, one
 #      `--check` per thing to verify, adding `--next` for what comes after.
+#      Attach a deploy, PR or screenshot with `--artifact <url|path>` on that
+#      review.
 #      When you need a decision, block it with your question: `tsk status
 #      {number} blocked --on {on} --why "…"`, adding `--needs` and one
 #      `--option` per choice, then stop. If your notes name someone else to
@@ -339,7 +342,7 @@ pub const DEFAULT_PROMPT: &str = "You were dispatched to T{number} ({title}) in 
 2. Read the repo's agent instructions (AGENTS.md or CLAUDE.md) if present.
 3. Work only on {branch}. Run the project's checks before saying you are done.
 4. Push and open a pull request into {base}. Never merge it.
-5. Set the task to review with what you did and what to check: `tsk status {number} review --on {on} --done \"…\" --check \"…\"`, one `--check` per thing to verify, adding `--next` for what comes after. When you need a decision, block it with your question: `tsk status {number} blocked --on {on} --why \"…\"`, adding `--needs` and one `--option` per choice, then stop. If your notes name someone else to hand it to, use that name instead of {on}.
+5. Set the task to review with what you did and what to check: `tsk status {number} review --on {on} --done \"…\" --check \"…\"`, one `--check` per thing to verify, adding `--next` for what comes after. Attach a deploy, PR or screenshot with `--artifact <url|path>` on that review. When you need a decision, block it with your question: `tsk status {number} blocked --on {on} --why \"…\"`, adding `--needs` and one `--option` per choice, then stop. If your notes name someone else to hand it to, use that name instead of {on}.
 6. On a relaunch, first read whichever record closed last (`closed_at`) in `tsk list {number} --json`: the `replies` of the last `past_blocks` entry, or the `feedback` and failed `checks` of the last `past_reviews` entry when it was `sent_back`.
 7. A message `[tsk T{number} sent back] …` is review feedback, with any failed checks: address it, then set review again.
 8. Never set the task to done; the person who reviews it does.";
@@ -575,6 +578,7 @@ pub struct RenderContext<'a> {
     pub title: &'a str,
     pub notes: &'a str,
     pub steps: &'a str,
+    pub artifacts: &'a str,
     pub worktree: &'a str,
     pub branch: &'a str,
     pub base: &'a str,
@@ -1233,6 +1237,7 @@ fn render_template(template: &str, context: &RenderContext<'_>, on: &str) -> Str
         ("{title}", context.title),
         ("{notes}", context.notes),
         ("{steps}", context.steps),
+        ("{artifacts}", context.artifacts),
         ("{worktree}", context.worktree),
         ("{branch}", context.branch),
         ("{base}", context.base),
@@ -1341,6 +1346,7 @@ mod tests {
             title: "Load profiles",
             notes: "First line\nSecond line",
             steps: "[ ] parse\n[x] validate",
+            artifacts: "PR #42 — https://example.com/pr/42",
             worktree: "/tmp/tsk-t101",
             branch: "tsk/t101-load-profiles",
             base: "dispatch",
@@ -1849,7 +1855,8 @@ tsk/t101-load-profiles, based on dispatch.
 4. Push and open a pull request into dispatch. Never merge it.
 5. Set the task to review with what you did and what to check: `tsk status 101 review --on you \
 --done \"…\" --check \"…\"`, one `--check` per thing to verify, adding `--next` for what comes \
-after. When you need a decision, block it with your question: `tsk status 101 blocked --on you \
+after. Attach a deploy, PR or screenshot with `--artifact <url|path>` on that review. When you \
+need a decision, block it with your question: `tsk status 101 blocked --on you \
 --why \"…\"`, adding `--needs` and one `--option` per choice, then stop. If your notes name someone \
 else to hand it to, use that name instead of you.
 6. On a relaunch, first read whichever record closed last (`closed_at`) in `tsk list 101 --json`: \

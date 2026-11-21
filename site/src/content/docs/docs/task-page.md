@@ -3,7 +3,7 @@ title: Task page
 description: Read a task in full, edit its fields, and answer blocks and reviews.
 ---
 
-The task page shows one task in full: notes, steps, metadata, any open block or review, and its paper trail. Edit the task here, and answer an agent's question or review. Every key on the page: [Task page keys](/docs/keys/#task-page).
+The task page shows one task in full: notes, steps, metadata, artifacts, any open block or review, and its paper trail. Edit the task here, and answer an agent's question or review. Every key on the page: [Task page keys](/docs/keys/#task-page).
 
 ## Open
 
@@ -13,7 +13,7 @@ The task page shows one task in full: notes, steps, metadata, any open block or 
 
 ## What the page shows
 
-From the top: the title and status, a BLOCKED or REVIEW section while the task has one, the notes, the [steps](/docs/steps/), and the [paper trail](#paper-trail). After a [dispatch](/docs/dispatch/#dispatch), the page also shows the worktree, branch, `from <ref> @ <short sha>`, when it was dispatched, and whether the worktree was cleaned up.
+From the top: the title and status, a BLOCKED or REVIEW section while the task has one, an ARTIFACTS section when the task has references, the notes, the [steps](/docs/steps/), and the [paper trail](#paper-trail). After a [dispatch](/docs/dispatch/#dispatch), the page also shows the worktree, branch, `from <ref> @ <short sha>`, when it was dispatched, and whether the worktree was cleaned up.
 
 Click the task's `T` number to copy it.
 
@@ -148,12 +148,14 @@ w waiting on
 ```
 
 - The top line says who asked for the review, who it is on, and for how long: `@claude needs your review · 40m`, or `@claude needs a review from @pi · 1m`.
-- Below it come what was done, what is next, the checks, and your feedback. Checks are `✓` passed, `✗` failed, or `○` open.
+- Below it come what was done, its artifacts, what is next, the checks, and your feedback. Checks are `✓` passed, `✗` failed, or `○` open.
 - Passed checks fold into a dim `N passed ▸` line. A check you pass stays in place until the page opens again, or until you fold the line.
 - The page opens on the first open check.
 - Checks belong to the review and never become steps.
 - Scripts and agents mark checks with [`tsk checks`](/docs/cli/#checks).
 - When the round closes, it moves to the paper trail. The page shows no round number.
+
+Artifacts attached with `tsk status T12 review --artifact …` are listed under **Artifacts** below what was done. They carry this round's number and stay on the task after the round closes.
 
 ### Feedback box
 
@@ -185,6 +187,24 @@ In the box:
 - Saved feedback waits for the send-back.
 - The empty box reads `feedback to @claude…`. Like the reply box, it belongs to the round it opened on.
 - Editing the checks keeps the state of every check whose text is unchanged.
+
+
+## Artifacts
+
+An artifact is a named reference on the task: an http(s) URL or an absolute file path. tsk keeps the reference only. It never fetches or copies the target, and it does not check that a path exists. Add them with [`tsk artifacts`](/docs/cli/#artifacts), or with `--artifact` when you open a block or review.
+
+```
+ARTIFACTS · 2
+◆ PR #42   https://github.com/org/repo/pull/42   @claude · 40m
+◆ /tmp/shot.png   /tmp/shot.png   you · 5m
+───────────────────────────────────────────────────────────────────────────────────
+```
+
+- Each line shows the label or target, the target, and who attached it with its age.
+- `Tab` moves through the artifacts with the block or review rows; `o` or a click opens the selected artifact with the system opener. On Linux that is `xdg-open`, on macOS `open`, and on Windows `start`.
+- A line is also a clickable hyperlink where the terminal supports OSC 8. An opener that fails shows a status message; the page keeps working.
+- Add and remove write a [paper trail](#paper-trail) entry. `ctrl+u` undoes them like other task edits.
+- Notices cannot carry artifacts. Archived and deleted tasks keep theirs.
 
 ## Waiting on
 
