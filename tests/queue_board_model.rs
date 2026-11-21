@@ -50,6 +50,7 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, updated_se
         provenance: ProvenanceOrigin::Manual,
         history: vec![TaskEvent::new(TaskEventKind::Created, at)],
         steps: Vec::new(),
+        artifacts: Vec::new(),
         soft_deleted: false,
         archived: false,
         created_at: at,

@@ -29,6 +29,8 @@ pub enum BlockTarget {
     Check(usize),
     /// The dim `N passed ▸` line the passed checks fold into.
     PassedFold,
+    /// An artifact on the page's ARTIFACT section, by its index on the task.
+    Artifact(usize),
     Reply(usize),
 }
 
@@ -736,6 +738,20 @@ fn page_block_task(model: &BoardModel) -> Option<&Task> {
         .filter(|task| has_open_section(task))
 }
 
+/// The task whose page section ring may hold the cursor: an open block or review, or artifacts.
+fn page_ring_task(model: &BoardModel) -> Option<&Task> {
+    let form = model.form.as_ref().filter(|form| form.is_task())?;
+    if form.editing {
+        return None;
+    }
+    let id = form.task_id()?;
+    model
+        .tasks
+        .iter()
+        .find(|task| task.id == id)
+        .filter(|task| has_open_section(task) || (!task.is_notice() && !task.artifacts.is_empty()))
+}
+
 /// Whether the page shows its BLOCKED or REVIEW section.
 pub(super) fn page_section_open(model: &BoardModel) -> bool {
     page_block_task(model).is_some()
@@ -778,8 +794,9 @@ pub(super) fn block_ring(
     passed_open: bool,
     fold: Option<&CheckFold>,
 ) -> Vec<BlockTarget> {
+    let artifact_ring = || (0..task.artifacts.len()).map(BlockTarget::Artifact);
     let Some(block) = task.block.as_ref() else {
-        return Vec::new();
+        return artifact_ring().collect();
     };
     let mut ring = vec![BlockTarget::Heading];
     ring.extend((0..block.options.len()).map(BlockTarget::Option));
@@ -801,6 +818,7 @@ pub(super) fn block_ring(
             .filter(|(_, reply)| !reply.deleted)
             .map(|(index, _)| BlockTarget::Reply(index)),
     );
+    ring.extend(artifact_ring());
     ring
 }
 
@@ -814,15 +832,13 @@ pub(super) fn selected_block_target(model: &BoardModel) -> Option<BlockTarget> {
     if matches!(target, BlockTarget::Trail(_) | BlockTarget::TrailHeading) {
         return trail_stops(model).contains(&target).then_some(target);
     }
-    let task = page_block_task(model)?;
-    block_ring(task, form.block.passed_open, form.block.fold.as_ref())
-        .contains(&target)
-        .then_some(target)
+    let task = page_ring_task(model)?;
+    page_ring(model, task).contains(&target).then_some(target)
 }
 
 /// Select `target` when the page's open section has it as a stop (a click). False otherwise.
 pub(super) fn select_stop(model: &mut BoardModel, target: BlockTarget) -> bool {
-    let Some(task) = page_block_task(model) else {
+    let Some(task) = page_ring_task(model) else {
         return false;
     };
     if !page_ring(model, task).contains(&target) {
@@ -995,7 +1011,7 @@ pub(super) enum PageTab {
 
 /// Move the page's Tab ring through the BLOCKED section. Steps and `+ step` follow it.
 pub(super) fn move_block_tab(model: &mut BoardModel, forward: bool) -> PageTab {
-    let Some(task) = page_block_task(model) else {
+    let Some(task) = page_ring_task(model) else {
         return PageTab::NotHandled;
     };
     let ring = page_ring(model, task);
@@ -1025,7 +1041,7 @@ pub(super) fn move_block_tab(model: &mut BoardModel, forward: bool) -> PageTab {
 
 /// Enter the ring at its heading (forward) or its last stop (backward). False without a block.
 pub(super) fn enter_block_ring(model: &mut BoardModel, forward: bool) -> bool {
-    let Some(task) = page_block_task(model) else {
+    let Some(task) = page_ring_task(model) else {
         return false;
     };
     let ring = page_ring(model, task);

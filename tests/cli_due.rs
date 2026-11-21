@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use tsk_tui::cli::{run_with, CliOutput};
+use tsk_tui::domain::STORE_FORMAT_VERSION;
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -433,5 +434,5 @@ fn the_store_has_no_due_key_for_an_undated_or_cleared_task() {
         let has_key = task.get("due").is_some();
         assert_eq!(has_key, task["title"] == "dated", "{task}");
     }
-    assert_eq!(document["format_version"], 7);
+    assert_eq!(document["format_version"], STORE_FORMAT_VERSION);
 }

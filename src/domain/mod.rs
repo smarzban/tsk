@@ -1,6 +1,7 @@
 //! Task Domain: lifecycle invariants and commands.
 
 mod after;
+mod artifact;
 mod block;
 mod due;
 mod events;
@@ -10,6 +11,7 @@ pub(crate) mod time_serde;
 mod undo;
 
 pub use after::status_word;
+pub use artifact::*;
 pub use block::*;
 pub use due::*;
 pub use events::*;

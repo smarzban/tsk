@@ -6,8 +6,8 @@ this file names things.
 ## CLI contract
 
 - **data command**: a verb that reads or writes the board: `add`, `list`, `status`, `edit`,
-  `steps`, `reply`, `dispatch`, `clean`, `archive`, `unarchive`, `project`, `trash`,
-  `backup`, `restore`. Takes `--state-dir` and follows the exit contract.
+  `steps`, `checks`, `artifacts`, `reply`, `dispatch`, `clean`, `archive`, `unarchive`,
+  `project`, `trash`, `backup`, `restore`. Takes `--state-dir` and follows the exit contract.
 - **add command**: `tsk add`, which creates tasks without opening a TUI.
 - **list command**: `tsk list`, which prints tasks without changing them.
 - **status command**: `tsk status`, which sets a task's human status. `start` is an alias
@@ -44,6 +44,9 @@ this file names things.
 
 - **human status**: `open`, `ready`, `started`, `blocked`, `review`, or `done`. The board's
   source of truth, never derived from agent state.
+- **artifact**: a named reference attached to a task: an http(s) URL or an absolute file path. tsk stores the target, never the file or page it points at.
+- **artifact label**: a short name shown in place of an artifact's target.
+- **artifact round**: the review round an artifact came with, or zero outside a review. Artifacts stay on the task when the round closes.
 - **task number**: the board-wide integer a task gets when it is created, shown as `T12`.
   Unique across the desk, every project and thread, done and deleted tasks included, and
   never reused. An address, not identity and not an order.

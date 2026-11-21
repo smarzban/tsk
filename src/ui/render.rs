@@ -372,6 +372,11 @@ pub fn row_step_label(task: &Task) -> Option<String> {
     step_progress_label(task.status, done, task.steps.len())
 }
 
+/// The small `◆N` marker on a board row with artifacts. Notice rows cannot carry them.
+pub fn row_artifact_marker(task: &Task) -> Option<String> {
+    (!task.is_notice() && !task.artifacts.is_empty()).then(|| format!("◆{}", task.artifacts.len()))
+}
+
 /// The task's open block or review record, when it matches the status.
 fn open_block(task: &Task) -> Option<&crate::domain::Block> {
     let review = task.status == HumanStatus::Review;
@@ -726,8 +731,8 @@ pub struct StepView {
     pub inserted: bool,
 }
 
-/// One painted row of a task-page section (BLOCKED, REVIEW, PAPER TRAIL), and what a click on
-/// it does. Rows come pre-wrapped.
+/// One painted row of a task-page section (BLOCKED, REVIEW, ARTIFACTS, PAPER TRAIL), and what a
+/// click on it does. Rows come pre-wrapped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockPageRow {
     pub text: String,
@@ -735,6 +740,8 @@ pub struct BlockPageRow {
     /// The first row of the selected ring stop carries the `▸` gutter.
     pub selected: bool,
     pub target: Option<QueueHitTarget>,
+    /// An artifact row's target, emitted as an OSC 8 hyperlink around the painted text.
+    pub link: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1243,6 +1250,8 @@ pub enum QueueHitTarget {
     Step(usize),
     /// The dim trailing task-page control that starts a new inline step.
     StepAdd,
+    /// One artifact on the task page's ARTIFACT section: a click selects and opens it.
+    Artifact(usize),
     /// A closed block or review round on the PAPER TRAIL, by its index in `past_blocks`: a
     /// click selects it and expands or folds it.
     TrailRecord(usize),
@@ -1302,6 +1311,8 @@ pub struct QueueHitMap {
     /// inside these, so chrome — scrollbars, borders, verb bars, dividers — is
     /// excluded by construction.
     pub copyable: Vec<Rect>,
+    /// OSC 8 links to emit after the frame: the painted row and the artifact target.
+    pub links: Vec<(Rect, String)>,
     /// Furthest help-card scroll the painted frame could show, when the card was up.
     /// The reducer clamps with it so the offset never runs past the last page.
     pub help_max_scroll: Option<usize>,
@@ -1328,6 +1339,13 @@ impl QueueHitMap {
         }
     }
 
+    /// Declare one painted artifact row as a hyperlink to emit after the frame.
+    pub fn push_link(&mut self, area: Rect, target: &str) {
+        if area.width > 0 && area.height > 0 {
+            self.links.push((area, target.to_string()));
+        }
+    }
+
     fn translate_and_clip(&mut self, area: Rect) {
         for hit in &mut self.regions {
             hit.area = local_rect(area, hit.area);
@@ -1339,6 +1357,9 @@ impl QueueHitMap {
         }
         self.copyable
             .retain(|copyable| copyable.width > 0 && copyable.height > 0);
+        for (link_rect, _) in &mut self.links {
+            *link_rect = local_rect(area, *link_rect);
+        }
         if let Some(footer) = self.footer {
             let footer = local_rect(area, footer);
             self.footer = (footer.width > 0 && footer.height > 0).then_some(footer);
@@ -3873,6 +3894,9 @@ fn paint_task_page(
             if let Some(target) = row.target {
                 hits.push(target, Rect::new(0, y, content_width, 1));
             }
+            if let Some(target) = row.link.as_deref() {
+                hits.push_link(Rect::new(0, y, content_width, 1), target);
+            }
             if !matches!(row.kind, BlockRowKind::Rule) {
                 hits.push_copyable(Rect::new(2, y, content_width.saturating_sub(3), 1));
             }
@@ -4196,8 +4220,10 @@ fn paint_task_page(
     Some(lay)
 }
 
-/// One row of a task-page section (BLOCKED, REVIEW, PAPER TRAIL): the `▸` gutter on a selected
-/// stop, the closing rule, or text in the row's weight.
+/// One row of a task-page section (BLOCKED, REVIEW, ARTIFACTS, PAPER TRAIL): the `▸` gutter on
+/// a selected stop, the closing rule, or text in the row's weight. An artifact's OSC 8 link is
+/// emitted after the frame, never inside the buffer: escape bytes in a cell would take up
+/// display width and shift the row.
 fn paint_section_row(row: &BlockPageRow, content_width: u16) -> Line<'static> {
     let gutter = if row.selected { "▸ " } else { "  " };
     let room = (content_width as usize).saturating_sub(2);
@@ -6130,6 +6156,11 @@ fn build_list_rows_inner(
             row_step_label(task),
             Some(meta.clone()),
         );
+        let row_meta = match row_artifact_marker(task) {
+            Some(marker) if !row_meta.is_empty() => format!("{marker} · {row_meta}"),
+            Some(marker) => marker,
+            None => row_meta,
+        };
         let row_meta = if hidden_message {
             fit_row_meta(
                 None,
@@ -7777,6 +7808,37 @@ fn put_line_at(frame: &mut Frame<'_>, area: Rect, rect: Rect, line: Line<'static
 
 pub(crate) fn display_width(s: &str) -> usize {
     Line::from(s).width()
+}
+
+/// One painted artifact line's OSC 8 link: the row and the clipboard-safe target. The
+/// emitter writes it after the frame so escape bytes never occupy buffer cells.
+pub fn emit_artifact_links(rows: &[String], links: &[(Rect, String)]) {
+    use std::io::Write;
+
+    if links.is_empty() {
+        return;
+    }
+    let mut out = std::io::stdout().lock();
+    for (rect, target) in links {
+        let Some(row) = rows.get(rect.y as usize) else {
+            continue;
+        };
+        let from = rect.x as usize;
+        let shown: String = row.chars().skip(from).take(rect.width as usize).collect();
+        if shown.trim().is_empty() {
+            continue;
+        }
+        let safe = crate::ui::terminal_text(target);
+        let _ = write!(
+            out,
+            "\x1b[{};{}H\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\",
+            rect.y + 1,
+            rect.x + 1,
+            safe,
+            shown
+        );
+    }
+    let _ = out.flush();
 }
 
 fn bound_line(line: Line<'static>, max_width: usize) -> Line<'static> {

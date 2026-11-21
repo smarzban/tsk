@@ -3,11 +3,12 @@
 use std::path::{Path, PathBuf};
 
 use crate::agents::AgentProfiles;
+use crate::cli::artifacts::parse_attached;
 use crate::cli::parser::{BlockFlags, TaskAddress};
 use crate::dispatch::{self, DispatchError, DispatchHost, DispatchResult, HostKind, StartRoute};
 use crate::domain::{
-    actor_from_env, BlockDraft, BlockField, BlockKind, BlockOn, BlockPatch, DomainError,
-    DomainState, HumanStatus, ReviewDraft, ReviewPatch, OWNER,
+    actor_from_env, ArtifactError, BlockDraft, BlockField, BlockKind, BlockOn, BlockPatch,
+    DomainError, DomainState, HumanStatus, ReviewDraft, ReviewPatch, OWNER,
 };
 use crate::store::{default_state_dir, TaskStore};
 use uuid::Uuid;
@@ -29,6 +30,8 @@ pub enum StatusError {
     TextTooLong(BlockField),
     /// `--on` names the task itself or a task that is not on the board.
     InvalidBlocker,
+    /// An `--artifact` target or label is invalid.
+    InvalidArtifact(ArtifactError),
     /// Starting a dispatched task whose agent is gone, without `--again` or `--no-dispatch`.
     AgentGone(String),
     /// Starting an assigned task dispatched it, and the dispatch refused.
@@ -46,6 +49,7 @@ impl StatusError {
             Self::SoftDeletedTask => "soft-deleted-task",
             Self::TextTooLong(_) => "text-too-long",
             Self::InvalidBlocker => "invalid-blocker",
+            Self::InvalidArtifact(error) => error.code(),
             Self::AgentGone(_) => "agent-gone",
             Self::Dispatch(error) => error.code(),
             Self::AfterNotDone(_) => "after-not-done",
@@ -498,6 +502,16 @@ fn apply(
     if found.soft_deleted {
         return (Err(StatusError::SoftDeletedTask), false);
     }
+    // Validate before the status change so a bad target never leaves a half-open round.
+    let attached = match flags
+        .artifacts
+        .iter()
+        .map(|raw| parse_attached(raw, None))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(attached) => attached,
+        Err(error) => return (Err(StatusError::InvalidArtifact(error)), false),
+    };
     let result = StatusResult {
         number,
         title: found.title,
@@ -533,11 +547,25 @@ fn apply(
     } else {
         state.set_status_by(found.id, status, actor).map(|()| true)
     };
-    match outcome {
-        Ok(changed) => (Ok(result), changed),
-        Err(DomainError::UnknownId(_)) => (Err(StatusError::UnknownTask), false),
-        Err(other) => (Err(StatusError::Store(other.to_string())), false),
+    let mut changed = match outcome {
+        Ok(changed) => changed,
+        Err(DomainError::UnknownId(_)) => return (Err(StatusError::UnknownTask), false),
+        Err(other) => return (Err(StatusError::Store(other.to_string())), false),
+    };
+    if matches!(status, HumanStatus::Blocked | HumanStatus::Review) && !attached.is_empty() {
+        let round = state
+            .get(found.id)
+            .and_then(|task| task.block.as_ref())
+            .map(|block| block.round)
+            .unwrap_or(0);
+        for (target, label) in attached {
+            match state.add_artifact(found.id, target, label, round, actor) {
+                Ok(added) => changed |= added,
+                Err(error) => return (Err(StatusError::Store(error.to_string())), changed),
+            }
+        }
     }
+    (Ok(result), changed)
 }
 
 /// Validate the flags into a draft. A task `--on` names must be another task on the board.

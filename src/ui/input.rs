@@ -387,6 +387,10 @@ pub enum BoardIntent {
     ClickCheck(usize),
     /// A click on the task page's `N passed` line: select it and unfold or fold the checks.
     ClickPassedFold,
+    /// Task page `o`: open the selected artifact with the system opener.
+    OpenArtifact,
+    /// A click on an artifact on the task page: select it, then open it.
+    OpenArtifactAt(usize),
     /// Task page `g`, or `Enter` on (a click on) the PAPER TRAIL heading: expand or collapse it.
     ToggleTrail,
     /// Task page `Enter` on a closed block or review round on the PAPER TRAIL (`None`), or a
@@ -2396,6 +2400,7 @@ fn map_task_page(key: KeyEvent) -> Option<BoardIntent> {
         KeyCode::Char('@') if !extra => Some(BoardIntent::OpenAssigneePicker),
         KeyCode::Char('r') if !extra => Some(BoardIntent::BeginReply),
         KeyCode::Char('g') if !extra => Some(BoardIntent::ToggleTrail),
+        KeyCode::Char('o') if !extra => Some(BoardIntent::OpenArtifact),
         KeyCode::Char(digit @ '1'..='9') if !extra => {
             Some(BoardIntent::PickOption(digit as usize - '1' as usize))
         }

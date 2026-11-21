@@ -24,14 +24,15 @@ The human works the board in a TUI; agents read and write the same tasks with th
 - Review: work handed back with what was done and checks to verify. The human marks the checks, then approves or sends it back with feedback.
 - After: a task waits until the tasks it runs after are done. The last done starts it if it is ready.
 - Due: an optional calendar day, `YYYY-MM-DD`, with no time of day. `tsk add --due`, `tsk edit --due` and `--clear-due` set it, as do the board's Due field and quick-add `!d 2026-11-30`; `tsk list --sort due --json` orders by it, undated last.
+- Artifact: a named reference on a task, an http(s) URL or an absolute path. tsk stores the target only; it never fetches or copies it.
 - Paper trail: who changed what on a task, newest first.
 
 ## For agents
 
 - Run `tsk guide` first: it prints the workflow and the rules. `tsk help <command>` is the syntax reference.
-- Read with `tsk list --json`. Each row carries `steps_done` and `steps_total`. `tsk list T12 --json` returns one task in full: notes, steps, block, review, dispatch, and `activity`.
-- Write with `tsk add`, `tsk edit`, `tsk steps`, and `tsk checks`. Read the exit code before any retry; `tsk reply`, `tsk dispatch`, `tsk edit --append-notes`, and some `tsk steps` commands are not idempotent.
-- When your work is finished, hand it back: `tsk status T12 review --done "…" --check "…"`. Set `done` only when the user says so.
+- Read with `tsk list --json`. Each row carries `steps_done` and `steps_total`. `tsk list T12 --json` returns one task in full: notes, steps, artifacts, block, review, dispatch, and `activity`.
+- Write with `tsk add`, `tsk edit`, `tsk steps`, `tsk artifacts`, and `tsk checks`. Read the exit code before any retry; `tsk reply`, `tsk dispatch`, `tsk edit --append-notes`, `artifacts remove`, and some `tsk steps` commands are not idempotent.
+- When your work is finished, hand it back: `tsk status T12 review --done "…" --check "…" --artifact <url|path>`. Attach deploys, PRs, and screenshots so the human can open them. Set `done` only when the user says so.
 - When you need the human: `tsk status T12 blocked --why "…" --option "…"`, then stop. `tsk reply T12 "…"` answers a block or adds review feedback.
 - `tsk dispatch T12` launches an assigned project task's agent in Herdr or Rex. `tsk dispatch T12 --show-prompt` prints the prompt it would send. `tsk clean T12` removes its worktree and merged branch, and closes its Herdr workspace or Rex tab; never clean the worktree you run in.
 - Inside a dispatched agent, `TSK_AGENT` names the profile as the author of each change.

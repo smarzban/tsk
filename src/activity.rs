@@ -246,6 +246,17 @@ pub fn event_text(event: &TaskEvent) -> Option<String> {
         TaskEventKind::StepUnchecked => "step unchecked".to_string(),
         TaskEventKind::StepRenamed => "step renamed".to_string(),
         TaskEventKind::StepRemoved => "step removed".to_string(),
+        TaskEventKind::ArtifactAdded | TaskEventKind::ArtifactRemoved => {
+            let verb = if event.kind == TaskEventKind::ArtifactAdded {
+                "artifact added"
+            } else {
+                "artifact removed"
+            };
+            match detail.and_then(|detail| detail.artifact.as_deref()) {
+                Some(target) => format!("{verb} · {}", crate::ui::terminal_text(target)),
+                None => verb.to_string(),
+            }
+        }
         TaskEventKind::BlockEdited
         | TaskEventKind::Replied
         | TaskEventKind::ReplyEdited

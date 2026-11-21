@@ -1668,6 +1668,7 @@ mod tests {
             provenance: ProvenanceOrigin::Manual,
             history: vec![TaskEvent::new(TaskEventKind::Created, at)],
             steps: Vec::new(),
+            artifacts: Vec::new(),
             soft_deleted,
             archived: false,
             created_at: at,

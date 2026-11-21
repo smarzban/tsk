@@ -117,6 +117,7 @@ pub(crate) struct AfterLink {
 pub(crate) struct DirectTaskDetails {
     pub(crate) notes: Option<String>,
     pub(crate) steps: Vec<crate::cli::steps::StepLine>,
+    pub(crate) artifacts: Vec<crate::domain::Artifact>,
     pub(crate) dispatch: Option<crate::domain::Dispatch>,
     pub(crate) block: Option<crate::domain::Block>,
     pub(crate) past_blocks: Vec<crate::domain::Block>,
@@ -443,6 +444,7 @@ pub fn run(input: ListInput) -> Result<ListResult, ListError> {
             direct: Some(DirectTaskDetails {
                 notes: task.notes.clone(),
                 steps: crate::cli::steps::step_lines(&task.steps),
+                artifacts: task.artifacts.clone(),
                 dispatch: task.dispatch.clone(),
                 block: task.block.clone(),
                 past_blocks: task.past_blocks.clone(),

@@ -10,8 +10,8 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::{Frame, Terminal};
 use tsk_tui::domain::{
-    Dispatch, DomainState, HumanStatus, Notice, ProvenanceOrigin, Task, TaskEvent, TaskEventKind,
-    TaskScope, STORE_FORMAT_VERSION,
+    Artifact, Block, BlockOn, Dispatch, DomainState, HumanStatus, Notice, ProvenanceOrigin,
+    ReviewDraft, Task, TaskEvent, TaskEventKind, TaskScope, STORE_FORMAT_VERSION,
 };
 use tsk_tui::ui::input::map_key;
 use tsk_tui::ui::queue::{self, BoardFilter, BoardLens, NavTab, QueueView};
@@ -62,6 +62,7 @@ fn task(id: u128, title: &str, status: HumanStatus, scope: TaskScope, secs_ago: 
         provenance: ProvenanceOrigin::Manual,
         history: vec![TaskEvent::new(TaskEventKind::Created, at)],
         steps: Vec::new(),
+        artifacts: Vec::new(),
         soft_deleted: false,
         archived: false,
         created_at: at,
@@ -3456,6 +3457,95 @@ fn long_combined_filter_wraps_chip_and_footer_without_losing_either_choice() {
     assert_eq!(chips.len(), 2, "one hit per wrapped chip row");
 }
 
+/// One board row with an artifact marker, and one review page whose round carries the same
+/// reference. Both use the fixture's pinned clock.
+fn artifact_scenes() -> Vec<GoldenScene> {
+    let mut tasks = fixture_tasks();
+    for task in &mut tasks {
+        match task.id.as_u128() {
+            1 => task.artifacts.push(Artifact {
+                target: "https://github.com/org/repo/pull/42".into(),
+                label: Some("PR #42".into()),
+                by: "claude".into(),
+                round: 0,
+                at: at_secs_ago(5 * 60),
+            }),
+            21 => {
+                task.artifacts.push(Artifact {
+                    target: "https://example.com/deploy/42".into(),
+                    label: None,
+                    by: "claude".into(),
+                    round: 1,
+                    at: at_secs_ago(10 * 60),
+                });
+                let draft = ReviewDraft::from_input(
+                    Some("Shipped the review fixtures"),
+                    &["docs match".into()],
+                    None,
+                    BlockOn::You,
+                )
+                .expect("draft");
+                task.block = Some(Block::open_review(draft, "claude", at_secs_ago(10 * 60), 1));
+            }
+            _ => {}
+        }
+    }
+
+    let board = clocked(BoardModel::from_tasks(
+        tasks.clone(),
+        Some(PathBuf::from("/repos/tsk")),
+    ));
+    let board_rows = scene_rows(&board, 78, 24);
+
+    let mut domain = DomainState::new();
+    let id = domain
+        .create(
+            "Docs refresh pass after F9 ships",
+            None,
+            project("/repos/herdr"),
+            ProvenanceOrigin::Manual,
+            None,
+        )
+        .expect("review fixture task");
+    let draft = ReviewDraft::from_input(
+        Some("Shipped the review fixtures"),
+        &["docs match".into()],
+        None,
+        BlockOn::You,
+    )
+    .expect("draft");
+    domain.review(id, draft, "claude").expect("review");
+    domain
+        .add_artifact(
+            id,
+            "https://example.com/deploy/42".into(),
+            None,
+            1,
+            "claude",
+        )
+        .expect("artifact");
+    let mut page = clocked(BoardModel::from_domain(
+        &domain,
+        Some(PathBuf::from("/repos/herdr")),
+    ));
+    apply_intent(&mut domain, &mut page, BoardIntent::OpenTaskPage, None)
+        .expect("open task page with artifacts");
+    assert_eq!(page.input_mode(), BoardInputMode::TaskPage);
+    let page_rows = scene_rows(&page, 78, 24);
+
+    vec![
+        GoldenScene {
+            name: "artifacts_board_row_78x24",
+            rows: board_rows,
+            width: 78,
+        },
+        GoldenScene {
+            name: "artifacts_review_page_78x24",
+            rows: page_rows,
+            width: 78,
+        },
+    ]
+}
 fn golden_scenes() -> Vec<GoldenScene> {
     let tasks = fixture_tasks();
 
@@ -3828,6 +3918,7 @@ fn golden_scenes() -> Vec<GoldenScene> {
     ]
     .into_iter()
     .chain(grouping_scenes())
+    .chain(artifact_scenes())
     .collect()
 }
 

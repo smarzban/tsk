@@ -4186,12 +4186,14 @@ pub fn preview_prompt(
         },
     };
     let steps = rendered_steps(task);
+    let artifacts = rendered_artifacts(task);
     let rendered = profile.render(
         &RenderContext {
             number,
             title: &task.title,
             notes: task.notes.as_deref().unwrap_or_default(),
             steps: &steps,
+            artifacts: &artifacts,
             worktree: &worktree,
             branch: &branch,
             base: &base,
@@ -4407,6 +4409,7 @@ pub fn launch_with_host(
     let name_launch = !host.launches_as_command()
         && (task.dispatch.is_none() || host.pane_has_agent(&pane_id) == Ok(false));
     let steps = rendered_steps(task);
+    let artifacts = rendered_artifacts(task);
     let short_base = base
         .as_deref()
         .map(|base| crate::git_base::short_name_for_remote(base, base_remote.as_deref()))
@@ -4417,6 +4420,7 @@ pub fn launch_with_host(
             title: &task.title,
             notes: task.notes.as_deref().unwrap_or_default(),
             steps: &steps,
+            artifacts: &artifacts,
             worktree: &worktree,
             branch: &branch,
             base: &short_base,
@@ -4805,6 +4809,24 @@ fn rendered_steps(task: &Task) -> String {
     task.steps
         .iter()
         .map(|step| format!("[{}] {}", if step.done { 'x' } else { ' ' }, step.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn rendered_artifacts(task: &Task) -> String {
+    task.artifacts
+        .iter()
+        .map(|artifact| {
+            if artifact
+                .label
+                .as_deref()
+                .is_some_and(|label| label != artifact.target)
+            {
+                format!("{} — {}", artifact.name(), artifact.target)
+            } else {
+                artifact.target.clone()
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

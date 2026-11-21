@@ -15,6 +15,7 @@ pub mod domain;
 pub(crate) mod fsperm;
 pub mod git_base;
 pub mod guides;
+pub mod open;
 pub mod save_recovery;
 pub mod scope;
 pub mod setup;
